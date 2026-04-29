@@ -5671,8 +5671,12 @@
         const atlAlpha = 1 - Math.exp(-1/7);
 
         // ===== STEP 1: get current CTL/ATL from computeFitness (single source of truth) =====
+        // CRITICAL: pass new Date() (current time), NOT today-at-midnight, to match exactly
+        // what FormTrendCard does. Otherwise activities done earlier today would be excluded
+        // from computeFitness's daily bucketing (dayDiff would be negative), giving slightly
+        // lower CTL/ATL than the card shown elsewhere.
         const activitiesWithTss = activities.map(a => ({ ...a, tss: computeTSS(a, profile.cp) }));
-        const fitnessNow = computeFitness(activitiesWithTss, today);
+        const fitnessNow = computeFitness(activitiesWithTss);
         const ctlToday = fitnessNow.ctl;
         const atlToday = fitnessNow.atl;
 
@@ -5698,43 +5702,46 @@
         const futureDays = Math.round((endMs - todayMs) / 86400000);
         const todayIdx = Math.round((todayMs - startMs) / 86400000);
 
-        // ===== STEP 3: build PAST series by reading from computeFitness.series =====
-        // computeFitness returns series in oldest→newest order. The last value is "today" inclusive.
-        // dailyTss[i] in the reversed series corresponds to (90-1-i) days ago.
-        // Index 89 = today, index 88 = yesterday, etc.
-        const fitSeries = fitnessNow.series; // { ctl, atl, tsb, dailyTss }, all in oldest→newest order
-        const fitLen = fitSeries.ctl.length; // = 90
-        // For day d in our window (d = 0 to totalDays-1), the date is startMs + d * 86400000.
-        // The corresponding index in fitSeries is fitLen - 1 - daysAgo = fitLen - 1 - (todayMs - date)/dayMs.
+        // ===== STEP 3: build series from computeFitness for the past INCLUDING today =====
+        // CRITICAL: today is NOT future. The current ATL/CTL already reflects today's actual
+        // activity (if any). We read it from fitness.series (the last point = today) so the
+        // displayed values are 100% identical to FormTrendCard.
+        const fitSeries = fitnessNow.series;
+        const fitLen = fitSeries.ctl.length;
         const series = [];
         for (let d = 0; d < totalDays; d++) {
           const date = new Date(startMs + d * 86400000);
-          const isFuture = date.getTime() >= todayMs;
-          if (!isFuture) {
+          const isToday = Math.abs(date.getTime() - todayMs) < 86400000 / 2;
+          const isPastOrToday = date.getTime() <= todayMs + 86400000 / 2;
+
+          if (isPastOrToday) {
             const daysAgo = Math.round((todayMs - date.getTime()) / 86400000);
             const fitIdx = fitLen - 1 - daysAgo;
             if (fitIdx >= 0 && fitIdx < fitLen) {
               series.push({
-                d, date, isFuture: false,
+                d, date,
+                isFuture: false,
+                isToday,
                 tss: fitSeries.dailyTss[fitIdx] || 0,
                 ctl: fitSeries.ctl[fitIdx],
                 atl: fitSeries.atl[fitIdx],
                 tsb: fitSeries.tsb[fitIdx],
               });
             } else {
-              // Out of computeFitness window (more than 90 days ago) — interpolate from start
-              series.push({ d, date, isFuture: false, tss: 0, ctl: 0, atl: 0, tsb: 0 });
+              series.push({ d, date, isFuture: false, isToday: false, tss: 0, ctl: 0, atl: 0, tsb: 0 });
             }
           }
         }
 
-        // ===== STEP 4: project FUTURE from current CTL/ATL using planned TSS =====
-        let ctl = ctlToday;
-        let atl = atlToday;
+        // ===== STEP 4: project FUTURE (starting tomorrow) from today's CTL/ATL =====
+        // Find the index of "today" in our series — that's where we'll start projecting from
+        const todaySeriesItem = series[series.length - 1]; // last item is today
+        let ctl = todaySeriesItem ? todaySeriesItem.ctl : ctlToday;
+        let atl = todaySeriesItem ? todaySeriesItem.atl : atlToday;
         for (let d = 0; d < totalDays; d++) {
           const date = new Date(startMs + d * 86400000);
-          const isFuture = date.getTime() >= todayMs;
-          if (!isFuture) continue;
+          const isPastOrToday = date.getTime() <= todayMs + 86400000 / 2;
+          if (isPastOrToday) continue; // already in series
 
           // Find planned session for this day
           const wsDate = getWeekStart(date);
@@ -5761,7 +5768,7 @@
           ctl = ctl + ctlAlpha * (tss - ctl);
           atl = atl + atlAlpha * (tss - atl);
           series.push({
-            d, date, isFuture: true, tss, ctl, atl, tsb: ctl - atl,
+            d, date, isFuture: true, isToday: false, tss, ctl, atl, tsb: ctl - atl,
           });
         }
 
@@ -5821,8 +5828,8 @@
       const yMax = Math.max(...allCtl, ...allAtl) * 1.15 || 50;
       const y = (v) => padT + ch - (v / yMax) * ch;
 
-      const todayIdx = xs.findIndex(p => p.isFuture);
-      const todayX = todayIdx > 0 ? x(todayIdx) : x(14);
+      const todayIdx = xs.findIndex(p => p.isToday);
+      const todayX = todayIdx >= 0 ? x(todayIdx) : x(14);
 
       function handleMouseMove(e) {
         if (!svgRef.current) return;
@@ -5863,8 +5870,12 @@
           {hovered ? (
             <div className="mb-2 leading-relaxed" style={{ color: 'var(--text-faint)' }}>
               <div className="font-mono text-xs">
-                <span style={{ color: hovered.isFuture ? 'var(--compass)' : 'var(--accent)' }}>{fmtDate(hovered.date, true)}</span>
-                {hovered.isFuture ? <span className="ml-1" style={{ color: 'var(--text-faint)' }}>(projeté)</span> : <span className="ml-1" style={{ color: 'var(--text-faint)' }}>(passé)</span>}
+                <span style={{ color: hovered.isFuture ? 'var(--compass)' : (hovered.isToday ? 'var(--compass)' : 'var(--accent)') }}>{fmtDate(hovered.date, true)}</span>
+                {hovered.isFuture
+                  ? <span className="ml-1" style={{ color: 'var(--text-faint)' }}>(projeté)</span>
+                  : (hovered.isToday
+                      ? <span className="ml-1" style={{ color: 'var(--compass)' }}>(aujourd'hui)</span>
+                      : <span className="ml-1" style={{ color: 'var(--text-faint)' }}>(passé)</span>)}
               </div>
               <div className="font-mono text-xs mt-1 flex flex-wrap gap-3">
                 <span>CTL <span className="font-bold tabular" style={{ color: '#4A9EFF' }}>{hovered.ctl.toFixed(1)}</span></span>
@@ -6315,17 +6326,17 @@
           <div className="grid grid-cols-3 gap-3 md:gap-6">
             <div>
               <div className="font-mono text-[9px] tracking-widest mb-2" style={{ color: 'var(--text-faint)' }}>FORME · CTL</div>
-              <div className="font-display text-3xl md:text-5xl font-bold tabular leading-none" style={{ color: 'var(--compass)' }}>{ctl.toFixed(0)}</div>
+              <div className="font-display text-3xl md:text-5xl font-bold tabular leading-none" style={{ color: 'var(--compass)' }}>{ctl.toFixed(1)}</div>
               <div className="text-[11px] mt-2" style={{ color: 'var(--text-dim)' }}>moyenne 42 jours</div>
             </div>
             <div>
               <div className="font-mono text-[9px] tracking-widest mb-2" style={{ color: 'var(--text-faint)' }}>FATIGUE · ATL</div>
-              <div className="font-display text-3xl md:text-5xl font-bold tabular leading-none" style={{ color: 'var(--warn)' }}>{atl.toFixed(0)}</div>
+              <div className="font-display text-3xl md:text-5xl font-bold tabular leading-none" style={{ color: 'var(--warn)' }}>{atl.toFixed(1)}</div>
               <div className="text-[11px] mt-2" style={{ color: 'var(--text-dim)' }}>moyenne 7 jours</div>
             </div>
             <div>
               <div className="font-mono text-[9px] tracking-widest mb-2" style={{ color: 'var(--text-faint)' }}>FRAÎCHEUR · TSB</div>
-              <div className="font-display text-3xl md:text-5xl font-bold tabular leading-none" style={{ color: tsbColor }}>{tsb > 0 ? '+' : ''}{tsb.toFixed(0)}</div>
+              <div className="font-display text-3xl md:text-5xl font-bold tabular leading-none" style={{ color: tsbColor }}>{tsb > 0 ? '+' : ''}{tsb.toFixed(1)}</div>
               <div className="text-[11px] mt-2" style={{ color: tsbColor }}>{tsbZone}</div>
             </div>
           </div>
@@ -6450,7 +6461,7 @@
           </div>
           {hoverIdx !== null && (
             <div className="mb-2 font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
-              {fmtDate(hoverDate, true)} · <span style={{ color: 'var(--compass)' }}>CTL {Math.round(ctl[hoverIdx] || 0)}</span> · <span style={{ color: 'var(--warn)' }}>ATL {Math.round(atl[hoverIdx] || 0)}</span>
+              {fmtDate(hoverDate, true)} · <span style={{ color: 'var(--compass)' }}>CTL {(ctl[hoverIdx] || 0).toFixed(1)}</span> · <span style={{ color: 'var(--warn)' }}>ATL {(atl[hoverIdx] || 0).toFixed(1)}</span>
             </div>
           )}
           <svg viewBox={`0 0 ${W} ${H}`} className="w-full cursor-crosshair" style={{ height: 'auto' }} preserveAspectRatio="xMidYMid meet" onMouseMove={handleMouseMove} onMouseLeave={() => setHoverIdx(null)}>
@@ -6484,8 +6495,8 @@
                 <g>
                   <line x1={x(hoverIdx)} y1={padT} x2={x(hoverIdx)} y2={padT + ch} stroke="#8A8A8A" strokeWidth="0.8" strokeDasharray="3,3" opacity="0.8" />
                   <rect x={tx} y={ty} width={tooltipW} height={tooltipH} rx="4" fill="#0A0A0A" stroke="#2A2A2A" />
-                  <text x={tx + 4} y={ty + 16} fontFamily="JetBrains Mono" fontSize="9" fill="#4A9EFF">CTL {Math.round(ctl[hoverIdx] || 0)}</text>
-                  <text x={tx + 48} y={ty + 16} fontFamily="JetBrains Mono" fontSize="9" fill="#FFB020">ATL {Math.round(atl[hoverIdx] || 0)}</text>
+                  <text x={tx + 4} y={ty + 16} fontFamily="JetBrains Mono" fontSize="9" fill="#4A9EFF">CTL {(ctl[hoverIdx] || 0).toFixed(1)}</text>
+                  <text x={tx + 48} y={ty + 16} fontFamily="JetBrains Mono" fontSize="9" fill="#FFB020">ATL {(atl[hoverIdx] || 0).toFixed(1)}</text>
                 </g>
               );
             })()}
