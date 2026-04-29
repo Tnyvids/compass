@@ -5667,9 +5667,16 @@
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         const todayMs = today.getTime();
+        const ctlAlpha = 1 - Math.exp(-1/42);
+        const atlAlpha = 1 - Math.exp(-1/7);
 
-        // Find the LAST day with a planned session in planOverrides (in the future).
-        // Window extends from 14 days ago up to that last planned date (minimum 14 future days).
+        // ===== STEP 1: get current CTL/ATL from computeFitness (single source of truth) =====
+        const activitiesWithTss = activities.map(a => ({ ...a, tss: computeTSS(a, profile.cp) }));
+        const fitnessNow = computeFitness(activitiesWithTss, today);
+        const ctlToday = fitnessNow.ctl;
+        const atlToday = fitnessNow.atl;
+
+        // ===== STEP 2: find the last planned session date in the future =====
         const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
         let lastPlannedMs = todayMs + 14 * 86400000; // default: 14 future days
         Object.entries(planOverrides || {}).forEach(([wsKey, week]) => {
@@ -5685,91 +5692,81 @@
             }
           });
         });
-        // Add 7 days of buffer after last planned session to see how form recovers
         const endMs = lastPlannedMs + 7 * 86400000;
         const startMs = todayMs - 14 * 86400000;
         const totalDays = Math.round((endMs - startMs) / 86400000);
         const futureDays = Math.round((endMs - todayMs) / 86400000);
+        const todayIdx = Math.round((todayMs - startMs) / 86400000);
 
-        // Collect actual TSS per day (history)
-        const dailyTss = new Array(totalDays).fill(0);
-        activities.forEach(a => {
-          if (a.startMs < startMs || a.startMs >= todayMs) return;
-          const dayIdx = Math.floor((a.startMs - startMs) / 86400000);
-          if (dayIdx >= 0 && dayIdx < totalDays) {
-            dailyTss[dayIdx] += computeTSS(a, profile.cp) || 0;
-          }
-        });
-
-        // For each future day, look up the planned session in planOverrides and estimate TSS
+        // ===== STEP 3: build PAST series by reading from computeFitness.series =====
+        // computeFitness returns series in oldest→newest order. The last value is "today" inclusive.
+        // dailyTss[i] in the reversed series corresponds to (90-1-i) days ago.
+        // Index 89 = today, index 88 = yesterday, etc.
+        const fitSeries = fitnessNow.series; // { ctl, atl, tsb, dailyTss }, all in oldest→newest order
+        const fitLen = fitSeries.ctl.length; // = 90
+        // For day d in our window (d = 0 to totalDays-1), the date is startMs + d * 86400000.
+        // The corresponding index in fitSeries is fitLen - 1 - daysAgo = fitLen - 1 - (todayMs - date)/dayMs.
+        const series = [];
         for (let d = 0; d < totalDays; d++) {
           const date = new Date(startMs + d * 86400000);
-          if (date.getTime() < todayMs) continue; // already counted from activities
+          const isFuture = date.getTime() >= todayMs;
+          if (!isFuture) {
+            const daysAgo = Math.round((todayMs - date.getTime()) / 86400000);
+            const fitIdx = fitLen - 1 - daysAgo;
+            if (fitIdx >= 0 && fitIdx < fitLen) {
+              series.push({
+                d, date, isFuture: false,
+                tss: fitSeries.dailyTss[fitIdx] || 0,
+                ctl: fitSeries.ctl[fitIdx],
+                atl: fitSeries.atl[fitIdx],
+                tsb: fitSeries.tsb[fitIdx],
+              });
+            } else {
+              // Out of computeFitness window (more than 90 days ago) — interpolate from start
+              series.push({ d, date, isFuture: false, tss: 0, ctl: 0, atl: 0, tsb: 0 });
+            }
+          }
+        }
+
+        // ===== STEP 4: project FUTURE from current CTL/ATL using planned TSS =====
+        let ctl = ctlToday;
+        let atl = atlToday;
+        for (let d = 0; d < totalDays; d++) {
+          const date = new Date(startMs + d * 86400000);
+          const isFuture = date.getTime() >= todayMs;
+          if (!isFuture) continue;
+
+          // Find planned session for this day
           const wsDate = getWeekStart(date);
           const wsKey = toLocalDateKey(wsDate);
           const dayIdx = (date.getDay() + 6) % 7;
           const dayKey = dayKeys[dayIdx];
           const planned = planOverrides[wsKey] && planOverrides[wsKey][dayKey];
-          if (!planned || planned.type === 'rest') continue;
 
-          // Estimate TSS for this planned session
-          const hasExplicitMin = Number.isFinite(planned.plannedMin) && planned.plannedMin > 0;
-          const hasExplicitKm = Number.isFinite(planned.plannedKm) && planned.plannedKm > 0;
-          const estimatedDur = estimateSessionDuration(planned.detail, planned.type);
-          const dur = hasExplicitMin
-            ? planned.plannedMin
-            : (estimatedDur > 0
-                ? estimatedDur
-                : (hasExplicitKm
-                    ? deriveDurationFromKm(planned.type, profile.cp, profile.weightKg, planned.plannedKm, powerPaceTable)
-                    : 0));
-          if (dur > 0) {
-            dailyTss[d] = estimateSessionTSS(planned.type, profile.cp, dur);
+          let tss = 0;
+          if (planned && planned.type !== 'rest') {
+            const hasExplicitMin = Number.isFinite(planned.plannedMin) && planned.plannedMin > 0;
+            const hasExplicitKm = Number.isFinite(planned.plannedKm) && planned.plannedKm > 0;
+            const estimatedDur = estimateSessionDuration(planned.detail, planned.type);
+            const dur = hasExplicitMin
+              ? planned.plannedMin
+              : (estimatedDur > 0
+                  ? estimatedDur
+                  : (hasExplicitKm
+                      ? deriveDurationFromKm(planned.type, profile.cp, profile.weightKg, planned.plannedKm, powerPaceTable)
+                      : 0));
+            if (dur > 0) tss = estimateSessionTSS(planned.type, profile.cp, dur);
           }
-        }
 
-        // Compute starting CTL/ATL from the user's actual activities BEFORE startMs
-        // (so the projection has a realistic anchor).
-        let ctl = 0, atl = 0;
-        const oldActs = activities.filter(a => a.startMs < startMs).sort((a, b) => a.startMs - b.startMs);
-        if (oldActs.length > 0) {
-          const firstMs = oldActs[0].startMs;
-          let cursor = firstMs;
-          // Use the exact same EWMA formula as computeFitness (Coggan/TrainingPeaks standard)
-          const ctlAlpha = 1 - Math.exp(-1/42);
-          const atlAlpha = 1 - Math.exp(-1/7);
-          // Walk daily from first activity to startMs
-          while (cursor < startMs) {
-            const dayStart = cursor;
-            const dayEnd = cursor + 86400000;
-            let dayTss = 0;
-            oldActs.forEach(a => { if (a.startMs >= dayStart && a.startMs < dayEnd) dayTss += computeTSS(a, profile.cp) || 0; });
-            ctl = ctl + ctlAlpha * (dayTss - ctl);
-            atl = atl + atlAlpha * (dayTss - atl);
-            cursor = dayEnd;
-          }
-        }
-        // Use same EWMA formula for the projection window too (already declared above if oldActs existed)
-        const ctlAlpha = 1 - Math.exp(-1/42);
-        const atlAlpha = 1 - Math.exp(-1/7);
-
-        // Compute CTL/ATL/TSB through the projection window
-        const series = [];
-        for (let d = 0; d < totalDays; d++) {
-          ctl = ctl + ctlAlpha * (dailyTss[d] - ctl);
-          atl = atl + atlAlpha * (dailyTss[d] - atl);
-          const tsb = ctl - atl;
-          const date = new Date(startMs + d * 86400000);
+          ctl = ctl + ctlAlpha * (tss - ctl);
+          atl = atl + atlAlpha * (tss - atl);
           series.push({
-            d,
-            date,
-            isFuture: date.getTime() >= todayMs,
-            tss: dailyTss[d],
-            ctl,
-            atl,
-            tsb,
+            d, date, isFuture: true, tss, ctl, atl, tsb: ctl - atl,
           });
         }
+
+        // Sort by d (just to be safe)
+        series.sort((a, b) => a.d - b.d);
 
         // Find peak fitness day in the future
         const futurePoints = series.filter(p => p.isFuture);
