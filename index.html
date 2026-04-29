@@ -5735,23 +5735,29 @@
         if (oldActs.length > 0) {
           const firstMs = oldActs[0].startMs;
           let cursor = firstMs;
+          // Use the exact same EWMA formula as computeFitness (Coggan/TrainingPeaks standard)
+          const ctlAlpha = 1 - Math.exp(-1/42);
+          const atlAlpha = 1 - Math.exp(-1/7);
           // Walk daily from first activity to startMs
           while (cursor < startMs) {
             const dayStart = cursor;
             const dayEnd = cursor + 86400000;
             let dayTss = 0;
             oldActs.forEach(a => { if (a.startMs >= dayStart && a.startMs < dayEnd) dayTss += computeTSS(a, profile.cp) || 0; });
-            ctl = ctl + (dayTss - ctl) / 42;
-            atl = atl + (dayTss - atl) / 7;
+            ctl = ctl + ctlAlpha * (dayTss - ctl);
+            atl = atl + atlAlpha * (dayTss - atl);
             cursor = dayEnd;
           }
         }
+        // Use same EWMA formula for the projection window too (already declared above if oldActs existed)
+        const ctlAlpha = 1 - Math.exp(-1/42);
+        const atlAlpha = 1 - Math.exp(-1/7);
 
-        // Compute CTL/ATL/TSB through the 28-day window
+        // Compute CTL/ATL/TSB through the projection window
         const series = [];
         for (let d = 0; d < totalDays; d++) {
-          ctl = ctl + (dailyTss[d] - ctl) / 42;
-          atl = atl + (dailyTss[d] - atl) / 7;
+          ctl = ctl + ctlAlpha * (dailyTss[d] - ctl);
+          atl = atl + atlAlpha * (dailyTss[d] - atl);
           const tsb = ctl - atl;
           const date = new Date(startMs + d * 86400000);
           series.push({
