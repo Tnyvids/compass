@@ -201,6 +201,7 @@
       races: 'compass_races_v1',
       planNotes: 'compass_plan_notes_v1',
       planOverrides: 'compass_plan_overrides_v1',
+      sessionTemplates: 'compass_session_templates_v1',
     };
     const storage = {
       get(k, fb = null) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fb; } catch (e) { console.error('[Compass] storage.get failed for key', k, e); return fb; } },
@@ -1124,6 +1125,127 @@
     const IconFile = (p) => <Ico {...p}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></Ico>;
     const IconExternal = (p) => <Ico {...p}><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></Ico>;
     const IconRefresh = (p) => <Ico {...p}><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></Ico>;
+    const IconBookmark = (p) => <Ico {...p}><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></Ico>;
+    const IconLayers = (p) => <Ico {...p}><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></Ico>;
+    const IconUndo = (p) => <Ico {...p}><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></Ico>;
+    const IconSave = (p) => <Ico {...p}><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></Ico>;
+
+    // ========================================================================
+    // TOAST CONTEXT — global notification system with optional undo
+    // ========================================================================
+    // Shape: { id, message, undo?: () => void, kind?: 'info'|'success'|'warn' }
+    // Auto-dismisses after 7 sec. Click "Annuler" → calls undo(), dismisses.
+    const ToastContext = React.createContext({ push: () => {}, dismiss: () => {} });
+    const useToast = () => React.useContext(ToastContext);
+
+    function ToastProvider({ children }) {
+      const [toasts, setToasts] = useState([]);
+      const timersRef = useRef({});
+
+      const dismiss = useCallback((id) => {
+        setToasts(prev => prev.filter(t => t.id !== id));
+        if (timersRef.current[id]) { clearTimeout(timersRef.current[id]); delete timersRef.current[id]; }
+      }, []);
+
+      const push = useCallback((msg, opts = {}) => {
+        const id = 'toast_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+        const toast = { id, message: msg, undo: opts.undo || null, kind: opts.kind || 'info' };
+        setToasts(prev => [...prev, toast]);
+        timersRef.current[id] = setTimeout(() => dismiss(id), opts.duration || 7000);
+        return id;
+      }, [dismiss]);
+
+      const handleUndo = (toast) => {
+        if (toast.undo) toast.undo();
+        dismiss(toast.id);
+      };
+
+      useEffect(() => () => { Object.values(timersRef.current).forEach(t => clearTimeout(t)); }, []);
+
+      return (
+        <ToastContext.Provider value={{ push, dismiss }}>
+          {children}
+          <div className="fixed z-[60] flex flex-col gap-2 pointer-events-none" style={{ bottom: 'calc(80px + env(safe-area-inset-bottom))', right: 16, left: 16, maxWidth: 480, marginLeft: 'auto' }}>
+            {toasts.map(t => {
+              const colorMap = { info: 'var(--compass)', success: 'var(--go)', warn: 'var(--warn)' };
+              const c = colorMap[t.kind] || 'var(--compass)';
+              return (
+                <div key={t.id} className="pointer-events-auto rounded-xl px-4 py-3 flex items-center gap-3 shadow-2xl scale-in" style={{ background: 'var(--bg-elev)', border: `1px solid ${c}` }}>
+                  <div className="flex-1 text-sm" style={{ color: 'var(--text)' }}>{t.message}</div>
+                  {t.undo && (
+                    <button onClick={() => handleUndo(t)} className="btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-[11px] tracking-widest flex-shrink-0" style={{ background: c, color: '#000' }}>
+                      <IconUndo size={12} /> ANNULER
+                    </button>
+                  )}
+                  <button onClick={() => dismiss(t.id)} className="btn w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: 'var(--bg-elev-2)', color: 'var(--text-dim)' }}><IconX size={12} /></button>
+                </div>
+              );
+            })}
+          </div>
+        </ToastContext.Provider>
+      );
+    }
+
+    // ========================================================================
+    // SESSION TEMPLATES — reusable session storage
+    // ========================================================================
+    // Template shape: { id, name, type, detail, blocks, plannedKm, plannedMin, strengthToday, createdAt, lastUsed, useCount }
+    function makeTemplateId() { return 'tpl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7); }
+
+    function dayToTemplate(day, name) {
+      return {
+        id: makeTemplateId(),
+        name: name || (day.label || `Séance ${day.type}`),
+        type: day.type,
+        detail: day.detail || '',
+        blocks: Array.isArray(day.blocks) ? JSON.parse(JSON.stringify(day.blocks)) : null,
+        plannedKm: day.plannedKm ?? null,
+        plannedMin: day.plannedMin ?? null,
+        strengthToday: day.strengthToday ?? null,
+        createdAt: Date.now(),
+        lastUsed: null,
+        useCount: 0,
+      };
+    }
+
+    function templateToDay(tpl) {
+      // Deep clone blocks with fresh IDs to avoid React key collisions when applied to different days
+      let freshBlocks = null;
+      if (Array.isArray(tpl.blocks)) {
+        freshBlocks = tpl.blocks.map(b => {
+          const newB = { ...b, id: 'b_' + Math.random().toString(36).slice(2, 9) };
+          if (b.kind === 'group' && Array.isArray(b.children)) {
+            newB.children = b.children.map(c => ({ ...c, id: 'b_' + Math.random().toString(36).slice(2, 9) }));
+          }
+          return newB;
+        });
+      }
+      return {
+        type: tpl.type,
+        label: tpl.name,
+        detail: tpl.detail || '',
+        blocks: freshBlocks,
+        plannedKm: tpl.plannedKm ?? null,
+        plannedMin: tpl.plannedMin ?? null,
+        strengthToday: tpl.strengthToday ?? null,
+      };
+    }
+
+    // Recompute display values when CP changes — template watts auto-rescale
+    function rescaleTemplateForCP(tpl, oldCP, newCP) {
+      if (!oldCP || !newCP || oldCP === newCP || !Array.isArray(tpl.blocks)) return tpl;
+      const ratio = newCP / oldCP;
+      const rescale = (b) => {
+        const n = { ...b };
+        if (Number.isFinite(n.powerLow)) n.powerLow = Math.round(n.powerLow * ratio);
+        if (Number.isFinite(n.powerHigh)) n.powerHigh = Math.round(n.powerHigh * ratio);
+        if (n.kind === 'group' && Array.isArray(n.children)) n.children = n.children.map(rescale);
+        return n;
+      };
+      return { ...tpl, blocks: tpl.blocks.map(rescale) };
+    }
+
+
 
     // ========================================================================
     // STRENGTH PROGRAM DATA
@@ -1583,16 +1705,22 @@
       }, [session, profile.cp, activities, checkins]);
 
       return (
-        <Card className="p-7 h-full min-h-[280px] flex flex-col" accent={typeColor}>
-          <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
-            <div className="font-mono text-[11px] tracking-widest" style={{ color: typeColor }}>PROCHAINE SÉANCE</div>
-            <Tag color={typeColor}>{typeLabel}</Tag>
+        <Card className="p-7 md:p-8 h-full min-h-[320px] flex flex-col relative overflow-hidden" accent={typeColor}>
+          {/* Subtle background gradient to draw the eye */}
+          <div className="absolute inset-0 pointer-events-none opacity-[0.04]" style={{ background: `radial-gradient(circle at top right, ${typeColor}, transparent 60%)` }}></div>
+          <div className="relative flex items-start justify-between mb-4 flex-wrap gap-2">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-8 rounded-full" style={{ background: typeColor }}></div>
+              <div>
+                <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>PROCHAINE SÉANCE · {dateBadge}</div>
+                <div className="font-mono text-[11px] tracking-widest mt-0.5" style={{ color: typeColor }}>{typeLabel}</div>
+              </div>
+            </div>
           </div>
-          <div className="font-mono text-xs mb-3 tracking-widest" style={{ color: 'var(--text-faint)' }}>{dateBadge}{session.weekIdx ? ` · SEM ${session.weekIdx}${session.totalWeeks ? '/' + session.totalWeeks : ''}` : ''}</div>
-          <div className="font-display text-2xl font-bold mb-2 leading-tight">{session.label}</div>
-          <div className="text-sm mb-3" style={{ color: 'var(--text-dim)' }}>{session.detail}</div>
+          <div className="relative font-display text-3xl md:text-4xl font-bold mb-3 leading-tight">{session.label}</div>
+          <div className="relative text-sm mb-3" style={{ color: 'var(--text-dim)' }}>{session.detail}</div>
           {(session.plannedMin || session.plannedKm) && (
-            <div className="font-mono text-sm mb-4 tabular" style={{ color: typeColor }}>
+            <div className="relative font-mono text-base mb-4 tabular font-bold" style={{ color: typeColor }}>
               {session.plannedMin ? `${session.plannedMin} min` : ''}
               {session.plannedMin && session.plannedKm ? ' · ' : ''}
               {session.plannedKm ? `${session.plannedKm} km` : ''}
@@ -2413,7 +2541,7 @@
       );
     }
 
-    function PlanView({ profile, races, checkins, activities, strengthSessions, planOverrides, onSavePlanWeek, onGeneratePlan, onAddRace, onRemoveRace, onSaveProfile }) {
+    function PlanView({ profile, races, checkins, activities, strengthSessions, planOverrides, sessionTemplates, onSaveTemplate, onApplyTemplate, onSavePlanWeek, onGeneratePlan, onAddRace, onRemoveRace, onSaveProfile }) {
       const [adding, setAdding] = useState(false);
       const [form, setForm] = useState({ name: '', distance: '10k', date: '', objective: '', priority: 'A' });
       const [showRoadmap, setShowRoadmap] = useState(false);
@@ -2492,6 +2620,31 @@
               <IconZap size={14} /> GÉNÉRER UN PROGRAMME
             </button>
           </div>
+
+          {/* Empty plan state — show only when nothing is planned anywhere */}
+          {Object.keys(planOverrides || {}).length === 0 && (
+            <Card className="p-6 md:p-8 mb-4 text-center" accent="var(--accent)">
+              <IconCalendar size={32} style={{ color: 'var(--accent)' }} className="mx-auto mb-4" />
+              <div className="font-display text-xl md:text-2xl font-bold mb-2">Pas encore de plan</div>
+              <div className="text-sm max-w-lg mx-auto mb-5" style={{ color: 'var(--text-dim)' }}>
+                Tu n'as encore rien planifié. Trois options pour démarrer :
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 max-w-3xl mx-auto text-left">
+                <div className="p-4 rounded-xl" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
+                  <div className="font-display font-bold mb-1" style={{ color: 'var(--accent)' }}>1. Générer un programme</div>
+                  <div className="text-xs" style={{ color: 'var(--text-dim)' }}>Compass te construit un plan complet à partir de ta CP, ta course objectif et tes contraintes (3-6 séances/sem, renfo).</div>
+                </div>
+                <div className="p-4 rounded-xl" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
+                  <div className="font-display font-bold mb-1" style={{ color: 'var(--compass)' }}>2. Saisir manuellement</div>
+                  <div className="text-xs" style={{ color: 'var(--text-dim)' }}>Clique sur la semaine ci-dessous pour ajouter tes séances jour par jour. Idéal si tu suis déjà un plan Stryd ou coach.</div>
+                </div>
+                <div className="p-4 rounded-xl" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
+                  <div className="font-display font-bold mb-1" style={{ color: 'var(--go)' }}>3. Charger un template</div>
+                  <div className="text-xs" style={{ color: 'var(--text-dim)' }}>Si tu as déjà sauvegardé des séances dans la <span style={{ color: 'var(--accent)' }}>Bibliothèque</span>, tu peux les ré-injecter en un clic dans n'importe quel jour.</div>
+                </div>
+              </div>
+            </Card>
+          )}
 
           {/* Current week */}
           <Card className="p-6 md:p-8 mb-4">
@@ -2678,7 +2831,7 @@
             </div>
           )}
 
-          {editingWeek && <WeekEditorModal key={editingWeek} wsKey={editingWeek} initial={editingWeekInitial} planOverrides={planOverrides} onSave={(week) => { onSavePlanWeek(editingWeek, week); setEditingWeek(null); }} onDelete={() => { onSavePlanWeek(editingWeek, buildDeletedWeek()); setEditingWeek(null); }} onClose={() => setEditingWeek(null)} weekContext={{ cp: profile.cp, weightKg: profile.weightKg, ppt: buildPowerPaceTable(activities || []) }} />}
+          {editingWeek && <WeekEditorModal key={editingWeek} wsKey={editingWeek} initial={editingWeekInitial} planOverrides={planOverrides} sessionTemplates={sessionTemplates} onSaveTemplate={onSaveTemplate} onApplyTemplate={onApplyTemplate} onSave={(week) => { onSavePlanWeek(editingWeek, week); setEditingWeek(null); }} onDelete={() => { onSavePlanWeek(editingWeek, buildDeletedWeek()); setEditingWeek(null); }} onClose={() => setEditingWeek(null)} weekContext={{ cp: profile.cp, weightKg: profile.weightKg, ppt: buildPowerPaceTable(activities || []) }} />}
           {generatorOpen && <PlanGeneratorModal profile={profile} races={races} activities={activities} onGenerate={(overrides, meta) => { onGeneratePlan(overrides, meta); setGeneratorOpen(false); }} onCancel={() => setGeneratorOpen(false)} />}
         </div>
       );
@@ -3168,7 +3321,83 @@
       );
     }
 
-    function WeekEditorModal({ wsKey, initial, planOverrides, onSave, onClose, onDelete, weekContext }) {
+    // ========================================================================
+    // TEMPLATE PICKER — dropdown to load a session template into a day
+    // ========================================================================
+    function TemplatePicker({ templates, currentType, onApply }) {
+      const [open, setOpen] = useState(false);
+      const ref = useRef(null);
+      useEffect(() => {
+        const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+        document.addEventListener('mousedown', h);
+        return () => document.removeEventListener('mousedown', h);
+      }, []);
+
+      // Sort: prefer same-type templates first, then most-recently used, then most-used
+      const sorted = useMemo(() => {
+        const list = [...(templates || [])];
+        list.sort((a, b) => {
+          const aMatch = a.type === currentType ? 0 : 1;
+          const bMatch = b.type === currentType ? 0 : 1;
+          if (aMatch !== bMatch) return aMatch - bMatch;
+          if (a.lastUsed !== b.lastUsed) return (b.lastUsed || 0) - (a.lastUsed || 0);
+          return (b.useCount || 0) - (a.useCount || 0);
+        });
+        return list;
+      }, [templates, currentType]);
+
+      if (!templates || templates.length === 0) {
+        return (
+          <span className="font-mono italic flex-1" style={{ color: 'var(--text-faint)', fontSize: 11 }}>
+            Aucun template — sauvegarde tes séances pour les ré-utiliser ici.
+          </span>
+        );
+      }
+
+      const typeLabels = { easy: 'Easy', tempo: 'Tempo', intervals: 'Intervals', long: 'Long', test: 'Test', rest: 'Repos' };
+
+      return (
+        <div className="relative" ref={ref}>
+          <button
+            onClick={() => setOpen(!open)}
+            className="btn flex items-center gap-1 px-2.5 py-1.5 rounded font-mono tracking-widest"
+            style={{ background: 'var(--bg-elev)', color: 'var(--compass)', border: '1px solid rgba(74, 158, 255, 0.3)', fontSize: 11 }}
+          >
+            <IconLayers size={11} /> CHARGER ({templates.length})
+            <IconChevronDown size={10} style={{ transform: open ? 'rotate(180deg)' : 'rotate(0)', transition: 'transform 0.2s' }} />
+          </button>
+          {open && (
+            <div className="absolute z-20 mt-1 w-80 max-h-80 overflow-y-auto rounded-lg shadow-2xl" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border-bright)' }}>
+              {sorted.map(t => {
+                const sameType = t.type === currentType;
+                return (
+                  <button
+                    key={t.id}
+                    onClick={() => { onApply(t); setOpen(false); }}
+                    className="btn w-full text-left px-3 py-2.5 flex items-start gap-2 hover:bg-white/5 border-b"
+                    style={{ borderColor: 'var(--border)' }}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate" style={{ color: 'var(--text)' }}>{t.name}</div>
+                      <div className="font-mono text-[10px] mt-0.5 flex items-center gap-2" style={{ color: 'var(--text-faint)' }}>
+                        <span style={{ color: sameType ? 'var(--go)' : 'var(--text-dim)' }}>{typeLabels[t.type] || t.type}</span>
+                        {t.plannedMin && <span>· {t.plannedMin} min</span>}
+                        {t.plannedKm && <span>· {t.plannedKm} km</span>}
+                        {Array.isArray(t.blocks) && t.blocks.length > 0 && <span>· {t.blocks.length} bloc{t.blocks.length > 1 ? 's' : ''}</span>}
+                        {(t.useCount || 0) > 0 && <span style={{ color: 'var(--accent)' }}>· {t.useCount}×</span>}
+                      </div>
+                    </div>
+                    {sameType && <div className="font-mono text-[9px] tracking-widest flex-shrink-0 mt-0.5" style={{ color: 'var(--go)' }}>MATCH</div>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function WeekEditorModal({ wsKey, initial, planOverrides, sessionTemplates = [], onSaveTemplate, onApplyTemplate, onSave, onClose, onDelete, weekContext }) {
       const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
       const dayLabels = { lun: 'Lundi', mar: 'Mardi', mer: 'Mercredi', jeu: 'Jeudi', ven: 'Vendredi', sam: 'Samedi', dim: 'Dimanche' };
       const typeOptions = [
@@ -3245,15 +3474,24 @@
       }, [week]);
 
       const [showDebug, setShowDebug] = useState(false);
+      const debugTapsRef = useRef(0);
+
+      useEffect(() => {
+        const h = (e) => {
+          if (e.ctrlKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) { e.preventDefault(); setShowDebug(s => !s); }
+        };
+        window.addEventListener('keydown', h);
+        return () => window.removeEventListener('keydown', h);
+      }, []);
 
       return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/85 backdrop-blur-md" onClick={onClose} />
-          <div className="relative w-full max-w-4xl max-h-[92vh] overflow-y-auto rounded-2xl scale-in" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
-            <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-5 backdrop-blur-xl" style={{ background: 'rgba(17,17,17,0.9)', borderBottom: '1px solid var(--border)' }}>
+          <div className="relative w-full max-w-4xl max-h-[92vh] flex flex-col rounded-2xl scale-in" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
+            <div className="flex items-center justify-between px-6 py-5 flex-shrink-0" style={{ background: 'rgba(17,17,17,0.95)', borderBottom: '1px solid var(--border)', borderRadius: '1rem 1rem 0 0' }}>
               <div>
                 <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--text-dim)' }}>ÉDITER LA SEMAINE</div>
-                <div className="font-display text-xl font-bold">{fmtDate(wsDate)} → {fmtDate(wsEnd)}</div>
+                <div className="font-display text-xl font-bold" onClick={() => { debugTapsRef.current = (debugTapsRef.current || 0) + 1; if (debugTapsRef.current >= 5) { setShowDebug(s => !s); debugTapsRef.current = 0; } }}>{fmtDate(wsDate)} → {fmtDate(wsEnd)}</div>
                 <div className="font-mono text-xs tabular mt-2" style={{ color: 'var(--compass)' }}>
                   Total semaine : <span className="font-bold">{liveTotals.totalSessions} séance{liveTotals.totalSessions > 1 ? 's' : ''}</span>
                   {' · '}
@@ -3262,28 +3500,21 @@
                   <span className="font-bold">{liveTotals.totalKm} km</span>
                 </div>
               </div>
-              <div className="flex gap-2">
-                <button onClick={() => setShowDebug(s => !s)} className="btn px-3 h-10 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev-2)', color: 'var(--text-faint)' }}>DEBUG</button>
-                <button onClick={onClose} className="btn w-10 h-10 rounded-full flex items-center justify-center" style={{ background: 'var(--bg-elev-2)' }}><IconX size={18} /></button>
-              </div>
+              <button onClick={onClose} className="btn w-10 h-10 rounded-full flex items-center justify-center" style={{ background: 'var(--bg-elev-2)' }}><IconX size={18} /></button>
             </div>
             {showDebug && (
-              <div className="p-4 m-4 rounded-lg font-mono text-[11px] overflow-auto" style={{ background: '#000', color: '#8FE86A', maxHeight: 500 }}>
+              <div className="p-4 m-4 rounded-lg font-mono text-[11px] overflow-auto flex-shrink-0" style={{ background: '#000', color: '#8FE86A', maxHeight: 300 }}>
                 <div style={{ color: 'var(--accent)', marginBottom: 8, fontWeight: 'bold' }}>=== DIAGNOSTIC FLUX DES DONNÉES ===</div>
-
                 <div style={{ color: '#FFB020' }}>// localStorage size : {storage.getSizeKB()} KB (limite navigateur ~5-10 MB)</div>
-
-                <div style={{ color: '#FFB020', marginTop: 12 }}>// 1. planOverrides[wsKey] (RAW, ce qui est en localStorage) :</div>
+                <div style={{ color: '#FFB020', marginTop: 12 }}>// 1. planOverrides[wsKey] (RAW) :</div>
                 <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{JSON.stringify(planOverrides && planOverrides[wsKey] ? planOverrides[wsKey] : '(vide ou absent)', null, 2)}</pre>
-
-                <div style={{ color: '#FFB020', marginTop: 12 }}>// 2. initial (ce que le modal a reçu en prop) :</div>
+                <div style={{ color: '#FFB020', marginTop: 12 }}>// 2. initial :</div>
                 <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{JSON.stringify(initial, null, 2)}</pre>
-
-                <div style={{ color: '#FFB020', marginTop: 12 }}>// 3. week (state actuel du modal, ce qui sera sauvegardé) :</div>
+                <div style={{ color: '#FFB020', marginTop: 12 }}>// 3. week (state actuel) :</div>
                 <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{JSON.stringify(week, null, 2)}</pre>
               </div>
             )}
-            <div className="p-5 md:p-6 space-y-3">
+            <div className="overflow-y-auto flex-1 p-5 md:p-6 space-y-3">
               <div className="flex justify-between items-center mb-4 gap-3 flex-wrap">
                 <div className="text-sm flex-1 min-w-[200px]" style={{ color: 'var(--text-dim)' }}>Renseigne tes séances Stryd jour par jour. <span style={{ color: 'var(--text)' }}>Note la séance complète (échauffement + blocs + récup + retour au calme)</span> pour fiabiliser les km et la durée prévus.</div>
                 <div className="flex gap-2 flex-shrink-0">
@@ -3312,6 +3543,33 @@
                     </div>
                     {day.type !== 'rest' && (
                       <>
+                        {/* Template controls — load from library / save as template */}
+                        <div className="ml-5 md:ml-32 mb-3 p-3 rounded-lg flex items-center gap-2 flex-wrap" style={{ background: 'rgba(212, 255, 0, 0.04)', border: '1px solid rgba(212, 255, 0, 0.18)' }}>
+                          <IconBookmark size={13} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                          <span className="font-mono tracking-widest" style={{ color: 'var(--accent)', fontSize: 11 }}>BIBLIOTHÈQUE</span>
+                          <TemplatePicker
+                            templates={sessionTemplates}
+                            currentType={day.type}
+                            onApply={(tpl) => {
+                              const dayPatch = templateToDay(tpl);
+                              setDayMulti(k, dayPatch);
+                              if (onApplyTemplate) onApplyTemplate(tpl);
+                            }}
+                          />
+                          <button
+                            onClick={() => {
+                              const defaultName = day.label && day.label.trim().length > 0 ? day.label : `Séance ${day.type}`;
+                              const name = prompt('Nom du template :', defaultName);
+                              if (name && name.trim() && onSaveTemplate) onSaveTemplate(day, name.trim());
+                            }}
+                            className="btn flex items-center gap-1 px-2.5 py-1.5 rounded font-mono tracking-widest"
+                            style={{ background: 'var(--bg-elev)', color: 'var(--accent)', border: '1px solid rgba(212, 255, 0, 0.3)', fontSize: 11 }}
+                            title="Sauvegarder cette séance comme template réutilisable"
+                          >
+                            <IconSave size={11} /> SAUVER
+                          </button>
+                        </div>
+
                         {/* Snapshot of what's currently saved for this day - to make data visibility crystal clear */}
                         <div className="ml-5 md:ml-32 mb-3 p-3 rounded-lg" style={{ background: 'rgba(74, 158, 255, 0.05)', border: '1px solid rgba(74, 158, 255, 0.2)' }}>
                           <div className="font-mono mb-2 tracking-widest" style={{ color: 'var(--compass)', fontSize: 11 }}>📋 DONNÉES ACTUELLES POUR CE JOUR</div>
@@ -3374,10 +3632,10 @@
                   </div>
                 );
               })}
-              <div className="flex gap-2 pt-4 sticky bottom-0 pb-2" style={{ background: 'var(--bg-elev)' }}>
-                <button onClick={onClose} className="btn flex-1 py-3 rounded-lg font-mono text-[11px] tracking-widest" style={{ background: 'var(--bg-elev-2)' }}>ANNULER</button>
-                <button onClick={handleSave} className="btn lift flex-1 py-3 rounded-lg font-display font-bold" style={{ background: 'var(--compass)', color: '#000' }}>ENREGISTRER</button>
-              </div>
+            </div>
+            <div className="flex gap-2 px-5 md:px-6 py-3 flex-shrink-0" style={{ background: 'var(--bg-elev)', borderTop: '1px solid var(--border)', borderRadius: '0 0 1rem 1rem' }}>
+              <button onClick={onClose} className="btn flex-1 py-3 rounded-lg font-mono text-[11px] tracking-widest" style={{ background: 'var(--bg-elev-2)' }}>ANNULER</button>
+              <button onClick={handleSave} className="btn lift flex-1 py-3 rounded-lg font-display font-bold" style={{ background: 'var(--compass)', color: '#000' }}>ENREGISTRER</button>
             </div>
           </div>
         </div>
@@ -3450,6 +3708,34 @@
               </Card>
             </div>
           </div>
+
+          {/* Empty state — first-time onboarding */}
+          {strengthSessions.length === 0 && (
+            <Card className="p-6 md:p-7 mb-4" accent="var(--accent)">
+              <div className="flex items-start gap-4 flex-wrap">
+                <div className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(212, 255, 0, 0.12)' }}>
+                  <IconDumbbell size={24} style={{ color: 'var(--accent)' }} />
+                </div>
+                <div className="flex-1 min-w-[240px]">
+                  <div className="font-display text-xl font-bold mb-1">Bienvenue dans le programme Renfo</div>
+                  <div className="text-sm leading-relaxed mb-3" style={{ color: 'var(--text-dim)' }}>
+                    Deux séances de 15 minutes par semaine pour <span style={{ color: 'var(--text)' }}>protéger ton tendon rotulien</span> et améliorer ta foulée. Le programme s'intensifie progressivement sur 7 semaines.
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs" style={{ color: 'var(--text-dim)' }}>
+                    <div className="p-2.5 rounded-lg" style={{ background: 'var(--bg-elev)' }}>
+                      <span style={{ color: 'var(--accent)' }} className="font-bold">Séance A</span> — Jambes, genou, soleus. Protocole Stanish validé scientifiquement.
+                    </div>
+                    <div className="p-2.5 rounded-lg" style={{ background: 'var(--bg-elev)' }}>
+                      <span style={{ color: 'var(--accent)' }} className="font-bold">Séance B</span> — Hanches, fessiers, mobilité. Étirement psoas crucial vu ta posture assise.
+                    </div>
+                  </div>
+                  <div className="mt-3 font-mono text-[11px] italic" style={{ color: 'var(--text-faint)' }}>
+                    Démarre par la séance A ci-dessous. Compass guide chaque exercice avec timer + vidéo de référence.
+                  </div>
+                </div>
+              </div>
+            </Card>
+          )}
 
           {/* Session selection */}
           <div className="font-display text-xl font-bold mt-8 mb-4">Démarrer une séance</div>
@@ -4161,13 +4447,37 @@
       );
     }
 
-    function ActivityDetailModal({ activity, cp, onClose, profile, allActivities }) {
+    function ActivityDetailModal({ activity, cp, onClose, profile, allActivities, onNavigate }) {
       if (!activity) return null;
       const tss = computeTSS(activity, cp);
       const intensityFactor = activity.normalizedPower && cp ? (activity.normalizedPower / cp) : null;
       const efforts = activity.bestEfforts || {};
       const effortRows = Object.entries(efforts).filter(([d]) => [60, 180, 300, 600, 1200, 1800].includes(parseInt(d))).map(([d, p]) => ({ d: parseInt(d), p }));
       const [showDebug, setShowDebug] = useState(false);
+
+      // Compute prev/next activity (sorted by date desc — newer is "prev" in the timeline view)
+      const { prevActivity, nextActivity, currentIndex, totalCount } = useMemo(() => {
+        if (!Array.isArray(allActivities) || allActivities.length <= 1) {
+          return { prevActivity: null, nextActivity: null, currentIndex: -1, totalCount: 0 };
+        }
+        const sorted = [...allActivities].sort((a, b) => b.startMs - a.startMs);
+        const idx = sorted.findIndex(a => a.id === activity.id);
+        if (idx === -1) return { prevActivity: null, nextActivity: null, currentIndex: -1, totalCount: sorted.length };
+        return {
+          prevActivity: idx > 0 ? sorted[idx - 1] : null, // newer
+          nextActivity: idx < sorted.length - 1 ? sorted[idx + 1] : null, // older
+          currentIndex: idx,
+          totalCount: sorted.length,
+        };
+      }, [activity, allActivities]);
+
+      useEffect(() => {
+        const h = (e) => {
+          if (e.ctrlKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) { e.preventDefault(); setShowDebug(s => !s); }
+        };
+        window.addEventListener('keydown', h);
+        return () => window.removeEventListener('keydown', h);
+      }, []);
 
       // Compute diagnostic stats on trackpointPowers
       const tpDiag = useMemo(() => {
@@ -4194,17 +4504,57 @@
 
       useEffect(() => { const h = (e) => { if (e.key === 'Escape') onClose(); }; window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h); }, [onClose]);
 
+      // Arrow key navigation between activities (← newer, → older)
+      useEffect(() => {
+        if (!onNavigate) return;
+        const h = (e) => {
+          // Ignore if user is typing in an input/textarea
+          const tag = (e.target && e.target.tagName) || '';
+          if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+          if (e.key === 'ArrowLeft' && nextActivity) { e.preventDefault(); onNavigate(nextActivity); }
+          else if (e.key === 'ArrowRight' && prevActivity) { e.preventDefault(); onNavigate(prevActivity); }
+        };
+        window.addEventListener('keydown', h);
+        return () => window.removeEventListener('keydown', h);
+      }, [onNavigate, prevActivity, nextActivity]);
+
       return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/85 backdrop-blur-md" onClick={onClose} />
           <div className="relative w-full max-w-3xl max-h-[92vh] overflow-y-auto rounded-2xl scale-in" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
-            <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-5 backdrop-blur-xl" style={{ background: 'rgba(17,17,17,0.9)', borderBottom: '1px solid var(--border)' }}>
-              <div>
-                <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--text-dim)' }}>ACTIVITÉ · {activity.source.toUpperCase()}</div>
-                <div className="font-display text-xl font-bold">{fmtDate(activity.startMs, true)}</div>
+            <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-5 backdrop-blur-xl gap-3" style={{ background: 'rgba(17,17,17,0.9)', borderBottom: '1px solid var(--border)' }}>
+              <div className="flex-1 min-w-0">
+                <div className="font-mono text-[10px] tracking-widest mb-1 flex items-center gap-2" style={{ color: 'var(--text-dim)' }}>
+                  <span>ACTIVITÉ · {activity.source.toUpperCase()}</span>
+                  {currentIndex >= 0 && totalCount > 1 && (
+                    <span style={{ color: 'var(--text-faint)' }}>· {currentIndex + 1} / {totalCount}</span>
+                  )}
+                </div>
+                <div className="font-display text-xl font-bold truncate">{fmtDate(activity.startMs, true)}</div>
               </div>
-              <div className="flex gap-2">
-                <button onClick={() => setShowDebug(s => !s)} className="btn px-3 h-10 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev-2)', color: 'var(--text-faint)' }}>DEBUG</button>
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                {onNavigate && (
+                  <>
+                    <button
+                      onClick={() => nextActivity && onNavigate(nextActivity)}
+                      disabled={!nextActivity}
+                      className="btn w-10 h-10 rounded-full flex items-center justify-center"
+                      style={{ background: 'var(--bg-elev-2)', opacity: nextActivity ? 1 : 0.3 }}
+                      title={nextActivity ? `← Plus ancienne (${fmtDate(nextActivity.startMs)})` : 'Aucune activité plus ancienne'}
+                    >
+                      <IconChevronLeft size={16} />
+                    </button>
+                    <button
+                      onClick={() => prevActivity && onNavigate(prevActivity)}
+                      disabled={!prevActivity}
+                      className="btn w-10 h-10 rounded-full flex items-center justify-center"
+                      style={{ background: 'var(--bg-elev-2)', opacity: prevActivity ? 1 : 0.3 }}
+                      title={prevActivity ? `→ Plus récente (${fmtDate(prevActivity.startMs)})` : 'Aucune activité plus récente'}
+                    >
+                      <IconChevronRight size={16} />
+                    </button>
+                  </>
+                )}
                 <button onClick={onClose} className="btn w-10 h-10 rounded-full flex items-center justify-center" style={{ background: 'var(--bg-elev-2)' }}><IconX size={18} /></button>
               </div>
             </div>
@@ -4902,7 +5252,222 @@
     // ========================================================================
     // LIBRARY VIEW — Glossary & training principles
     // ========================================================================
-    function LibraryView() {
+    function LibraryView({ sessionTemplates = [], onDeleteTemplate, onRenameTemplate, profile }) {
+      const [tab, setTab] = useState('sessions');
+      return (
+        <div className="max-w-[1100px] mx-auto px-5 md:px-10 py-6 md:py-10 fade-in pb-nav">
+          <div className="mb-6">
+            <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--compass)' }}>BIBLIOTHÈQUE</div>
+            <div className="font-display text-4xl md:text-5xl font-bold leading-tight">Tes séances et tes définitions</div>
+            <div className="text-sm mt-2" style={{ color: 'var(--text-dim)' }}>Réutilise tes séances types, et explore le vocabulaire de l'entraînement par puissance.</div>
+          </div>
+          {/* Tab nav */}
+          <div className="flex gap-2 mb-5 border-b" style={{ borderColor: 'var(--border)' }}>
+            {[
+              { k: 'sessions', l: 'Mes séances', icon: '🧰', count: sessionTemplates.length },
+              { k: 'glossary', l: 'Glossaire', icon: '📖' },
+            ].map(t => (
+              <button
+                key={t.k}
+                onClick={() => setTab(t.k)}
+                className="px-4 py-2.5 font-mono text-xs tracking-widest transition-all flex items-center gap-2"
+                style={{
+                  color: tab === t.k ? 'var(--compass)' : 'var(--text-dim)',
+                  borderBottom: tab === t.k ? '2px solid var(--compass)' : '2px solid transparent',
+                  marginBottom: '-1px',
+                }}
+              >
+                <span>{t.icon}</span>{t.l.toUpperCase()}
+                {Number.isFinite(t.count) && <span style={{ color: tab === t.k ? 'var(--compass)' : 'var(--text-faint)' }}>· {t.count}</span>}
+              </button>
+            ))}
+          </div>
+
+          {tab === 'sessions' && <MySessionsView templates={sessionTemplates} onDelete={onDeleteTemplate} onRename={onRenameTemplate} profile={profile} />}
+          {tab === 'glossary' && <GlossaryView />}
+        </div>
+      );
+    }
+
+    function MySessionsView({ templates, onDelete, onRename, profile }) {
+      const [filter, setFilter] = useState('all'); // all | easy | tempo | intervals | long | test
+      const [expanded, setExpanded] = useState(null);
+      const cp = profile?.cp;
+
+      if (!templates || templates.length === 0) {
+        return (
+          <Card className="p-10 text-center">
+            <IconBookmark size={32} style={{ color: 'var(--text-faint)' }} className="mx-auto mb-4" />
+            <div className="font-display text-xl font-bold mb-2">Pas encore de séance sauvegardée</div>
+            <div className="text-sm max-w-md mx-auto leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+              Quand tu construis une séance dans <span style={{ color: 'var(--compass)' }}>Plan</span>, clique sur le bouton <span className="font-mono px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-elev)', color: 'var(--accent)' }}>SAUVER</span> pour la garder ici. Tu pourras ensuite la ré-injecter sur n'importe quel jour en un clic.
+            </div>
+            <div className="mt-5 text-xs italic" style={{ color: 'var(--text-faint)' }}>
+              Astuce : sauvegarde tes séances de référence (footing easy 50min, séance VMA 30/30, sortie longue 90min...) pour les répéter chaque semaine sans tout reconstruire.
+            </div>
+          </Card>
+        );
+      }
+
+      const typeLabels = { easy: 'Easy', tempo: 'Tempo', intervals: 'Intervals', long: 'Long', test: 'Test' };
+      const typeColors = { easy: 'var(--go)', tempo: 'var(--warn)', intervals: 'var(--alert)', long: 'var(--compass)', test: 'var(--danger)' };
+
+      const filtered = filter === 'all' ? templates : templates.filter(t => t.type === filter);
+      // Sort: most recently used first, then most used, then most recent
+      const sorted = [...filtered].sort((a, b) => {
+        if ((b.lastUsed || 0) !== (a.lastUsed || 0)) return (b.lastUsed || 0) - (a.lastUsed || 0);
+        if ((b.useCount || 0) !== (a.useCount || 0)) return (b.useCount || 0) - (a.useCount || 0);
+        return (b.createdAt || 0) - (a.createdAt || 0);
+      });
+
+      const types = ['all', ...new Set(templates.map(t => t.type))];
+
+      return (
+        <>
+          {/* Filter chips */}
+          <div className="flex gap-2 mb-4 flex-wrap">
+            {types.map(t => {
+              const count = t === 'all' ? templates.length : templates.filter(x => x.type === t).length;
+              const isActive = filter === t;
+              const c = t === 'all' ? 'var(--compass)' : (typeColors[t] || 'var(--text-dim)');
+              return (
+                <button
+                  key={t}
+                  onClick={() => setFilter(t)}
+                  className="btn px-3 py-1.5 rounded-lg font-mono text-[10px] tracking-widest transition"
+                  style={{
+                    background: isActive ? c : 'var(--bg-elev)',
+                    color: isActive ? '#000' : c,
+                    border: `1px solid ${isActive ? c : 'var(--border)'}`,
+                  }}
+                >
+                  {(t === 'all' ? 'TOUS' : (typeLabels[t] || t).toUpperCase())} · {count}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="space-y-2">
+            {sorted.map(tpl => {
+              const isOpen = expanded === tpl.id;
+              const c = typeColors[tpl.type] || 'var(--text-dim)';
+              const blocksCount = Array.isArray(tpl.blocks) ? tpl.blocks.length : 0;
+              return (
+                <Card key={tpl.id} className="overflow-hidden" accent={isOpen ? c : null}>
+                  <div className="p-4 flex items-center gap-3 flex-wrap">
+                    <div className="w-2 h-10 rounded-full flex-shrink-0" style={{ background: c }} />
+                    <div className="flex-1 min-w-[180px]">
+                      <div className="font-display font-bold text-base">{tpl.name}</div>
+                      <div className="font-mono text-[11px] mt-1 flex items-center gap-2 flex-wrap" style={{ color: 'var(--text-dim)' }}>
+                        <span style={{ color: c }}>{typeLabels[tpl.type] || tpl.type}</span>
+                        {tpl.plannedMin && <span>· {tpl.plannedMin} min</span>}
+                        {tpl.plannedKm && <span>· {tpl.plannedKm} km</span>}
+                        {blocksCount > 0 && <span>· {blocksCount} bloc{blocksCount > 1 ? 's' : ''}</span>}
+                        {tpl.strengthToday && <span>· renfo {tpl.strengthToday}</span>}
+                      </div>
+                      {(tpl.useCount || 0) > 0 && (
+                        <div className="font-mono text-[10px] mt-1" style={{ color: 'var(--accent)' }}>
+                          Utilisée {tpl.useCount}× · dernière fois {tpl.lastUsed ? fmtDate(new Date(tpl.lastUsed)) : '—'}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => setExpanded(isOpen ? null : tpl.id)}
+                      className="btn px-3 py-2 rounded-lg font-mono text-[10px] tracking-widest"
+                      style={{ background: 'var(--bg-elev)', color: 'var(--text-dim)' }}
+                    >
+                      {isOpen ? 'MASQUER' : 'VOIR'} <IconChevronDown size={11} style={{ display: 'inline', transform: isOpen ? 'rotate(180deg)' : 'rotate(0)', transition: 'transform 0.2s' }} />
+                    </button>
+                    <button
+                      onClick={() => {
+                        const newName = prompt('Renommer le template :', tpl.name);
+                        if (newName && newName.trim() && newName.trim() !== tpl.name && onRename) onRename(tpl.id, newName.trim());
+                      }}
+                      className="btn w-9 h-9 rounded-lg flex items-center justify-center"
+                      style={{ background: 'var(--bg-elev)', color: 'var(--text-dim)' }}
+                      title="Renommer"
+                    >
+                      <IconSave size={13} />
+                    </button>
+                    <button
+                      onClick={() => onDelete && onDelete(tpl.id)}
+                      className="btn w-9 h-9 rounded-lg flex items-center justify-center"
+                      style={{ background: 'rgba(255, 91, 91, 0.08)', color: 'var(--danger)' }}
+                      title="Supprimer"
+                    >
+                      <IconTrash size={13} />
+                    </button>
+                  </div>
+                  {isOpen && (
+                    <div className="px-4 pb-4 fade-in">
+                      {tpl.detail && (
+                        <div className="mb-3 p-3 rounded-lg font-mono" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                          {tpl.detail}
+                        </div>
+                      )}
+                      {Array.isArray(tpl.blocks) && tpl.blocks.length > 0 && (
+                        <div className="space-y-1.5">
+                          <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--text-faint)' }}>BLOCS</div>
+                          {tpl.blocks.map((b, i) => <TemplateBlockRow key={i} block={b} cp={cp} />)}
+                        </div>
+                      )}
+                      {(!tpl.detail || tpl.detail.trim().length === 0) && (!Array.isArray(tpl.blocks) || tpl.blocks.length === 0) && (
+                        <div className="text-xs italic" style={{ color: 'var(--text-faint)' }}>Aucun détail ni bloc enregistré.</div>
+                      )}
+                      <div className="mt-3 font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
+                        Créée le {fmtDate(new Date(tpl.createdAt), true)}
+                        {cp && Array.isArray(tpl.blocks) && tpl.blocks.length > 0 && (
+                          <> · Watts cibles ajustés à ta CP actuelle ({cp}W) si tu modifies ta CP plus tard</>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </Card>
+              );
+            })}
+          </div>
+        </>
+      );
+    }
+
+    function TemplateBlockRow({ block, cp }) {
+      const kindLabels = { warmup: 'Échauffement', work: 'Travail', recovery: 'Récup', cooldown: 'Retour calme' };
+      const kindColors = { warmup: 'var(--text-dim)', work: 'var(--compass)', recovery: 'var(--text-dim)', cooldown: 'var(--text-dim)' };
+      if (block.kind === 'group') {
+        return (
+          <div className="rounded-lg p-2.5" style={{ background: 'rgba(74, 158, 255, 0.06)', border: '1px solid rgba(74, 158, 255, 0.2)' }}>
+            <div className="font-mono text-[11px] mb-1" style={{ color: 'var(--compass)' }}>{block.reps}× SÉRIE</div>
+            <div className="space-y-1 ml-3 pl-2" style={{ borderLeft: '2px solid rgba(74, 158, 255, 0.3)' }}>
+              {(block.children || []).map((c, i) => <TemplateBlockRow key={i} block={c} cp={cp} />)}
+            </div>
+          </div>
+        );
+      }
+      const dur = (() => {
+        const total = Math.round((block.durMin || 0) * 60);
+        const m = Math.floor(total / 60);
+        const s = total % 60;
+        if (m === 0) return `${s}s`;
+        if (s === 0) return `${m} min`;
+        return `${m}'${String(s).padStart(2, '0')}"`;
+      })();
+      const watts = (block.powerLow != null && block.powerHigh != null)
+        ? (block.powerLow === block.powerHigh ? `${block.powerLow}W` : `${block.powerLow}-${block.powerHigh}W`)
+        : null;
+      const ifRange = (cp && watts && block.powerLow != null && block.powerHigh != null)
+        ? `${(block.powerLow / cp).toFixed(2)}-${(block.powerHigh / cp).toFixed(2)} IF`
+        : null;
+      return (
+        <div className="font-mono flex items-center gap-2" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+          <span style={{ color: kindColors[block.blockKind], fontWeight: 600, minWidth: 110 }}>{kindLabels[block.blockKind] || block.blockKind}</span>
+          <span style={{ color: 'var(--text)' }}>{dur}</span>
+          {watts && <span style={{ color: 'var(--text)' }}>· {watts}</span>}
+          {ifRange && <span style={{ color: 'var(--text-faint)' }}>({ifRange})</span>}
+        </div>
+      );
+    }
+
+    function GlossaryView() {
       const [open, setOpen] = useState(null);
       const sections = [
         { id: 'cp', term: 'CP — Critical Power', def: "Puissance maximale que tu peux maintenir théoriquement à l'infini sans accumulation de fatigue. Calculée à partir de tests d'efforts maximaux. C'est ton seuil métabolique exprimé en watts.", more: "Pour Tony : ta CP estimée actuelle est 255W (4.25 W/kg) à recalibrer en frais. Tes zones d'entraînement Stryd dépendent de cette valeur. Une CP qui monte = tu progresses." },
@@ -4917,12 +5482,7 @@
         { id: 'dérive', term: 'Dérive cardiaque', def: 'Augmentation de la FC à puissance constante au cours d\'une séance. Indicateur de fatigue, déshydratation, ou manque de fond aérobie.', more: 'Sur une sortie longue à allure constante, une dérive >5% en 2h indique un manque de base aérobie. Objectif : dérive <3% sur tes longs.' },
       ];
       return (
-        <div className="max-w-[1100px] mx-auto px-5 md:px-10 py-6 md:py-10 fade-in pb-nav">
-          <div className="mb-8">
-            <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--compass)' }}>BIBLIOTHÈQUE</div>
-            <div className="font-display text-4xl md:text-5xl font-bold leading-tight">Le vocabulaire du coureur</div>
-            <div className="text-sm mt-2" style={{ color: 'var(--text-dim)' }}>Tous les termes que tu rencontres dans Stryd, COMPASS et la littérature scientifique de l'entraînement par puissance.</div>
-          </div>
+        <>
           <div className="space-y-2">
             {sections.map((s) => (
               <Card key={s.id} className="overflow-hidden">
@@ -4952,7 +5512,7 @@
             <div className="font-display text-lg font-bold mb-2 leading-tight">Polarisation de l'entraînement</div>
             <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>Les coureurs élites passent ~80% de leur volume en zone facile (Z1-Z2) et ~20% en zone difficile (Z4-Z5), en évitant la zone moyenne ("no-man's land" Z3). Le plan Stryd que tu suis applique ce principe. C'est pour ça que tes footings doivent rester FACILES : ils construisent ton moteur aérobie.</div>
           </div>
-        </div>
+        </>
       );
     }
 
@@ -5867,25 +6427,39 @@
           </div>
 
           {/* Hover info bar */}
-          {hovered ? (
-            <div className="mb-2 leading-relaxed" style={{ color: 'var(--text-faint)' }}>
-              <div className="font-mono text-xs">
-                <span style={{ color: hovered.isFuture ? 'var(--compass)' : (hovered.isToday ? 'var(--compass)' : 'var(--accent)') }}>{fmtDate(hovered.date, true)}</span>
-                {hovered.isFuture
-                  ? <span className="ml-1" style={{ color: 'var(--text-faint)' }}>(projeté)</span>
-                  : (hovered.isToday
-                      ? <span className="ml-1" style={{ color: 'var(--compass)' }}>(aujourd'hui)</span>
-                      : <span className="ml-1" style={{ color: 'var(--text-faint)' }}>(passé)</span>)}
+          {hovered ? (() => {
+            // TSB → human-friendly state
+            const tsb = hovered.tsb;
+            let stateLabel, stateColor, stateDesc;
+            if (tsb >= 15) { stateLabel = '✨ Très frais'; stateColor = 'var(--go)'; stateDesc = "Forme optimale, jour idéal pour PR ou compétition"; }
+            else if (tsb >= 5) { stateLabel = '✓ Frais'; stateColor = 'var(--go)'; stateDesc = 'Bonne fraîcheur, peut taper fort'; }
+            else if (tsb >= -10) { stateLabel = '⟳ Productif'; stateColor = 'var(--text)'; stateDesc = "Équilibre entraînement / récup, dans le rythme"; }
+            else if (tsb >= -25) { stateLabel = '⚠ Fatigué'; stateColor = 'var(--warn)'; stateDesc = "Charge accumulée, prévoir récup à venir"; }
+            else { stateLabel = '⛔ Surchargé'; stateColor = 'var(--danger)'; stateDesc = "Risque de surentraînement"; }
+            return (
+              <div className="mb-3 leading-relaxed">
+                <div className="font-mono text-xs">
+                  <span style={{ color: hovered.isFuture ? 'var(--compass)' : (hovered.isToday ? 'var(--compass)' : 'var(--accent)') }}>{fmtDate(hovered.date, true)}</span>
+                  {hovered.isFuture
+                    ? <span className="ml-1" style={{ color: 'var(--text-faint)' }}>(projeté)</span>
+                    : (hovered.isToday
+                        ? <span className="ml-1" style={{ color: 'var(--compass)' }}>(aujourd'hui)</span>
+                        : <span className="ml-1" style={{ color: 'var(--text-faint)' }}>(passé)</span>)}
+                </div>
+                <div className="mt-1.5 flex items-baseline gap-2 flex-wrap">
+                  <span className="font-display text-base font-bold" style={{ color: stateColor }}>{stateLabel}</span>
+                  <span className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>{stateDesc}</span>
+                </div>
+                <div className="font-mono text-[11px] mt-1.5 flex flex-wrap gap-3" style={{ color: 'var(--text-faint)' }}>
+                  <span>Forme (CTL) <span className="font-bold tabular" style={{ color: '#4A9EFF' }}>{hovered.ctl.toFixed(1)}</span></span>
+                  <span>Fatigue (ATL) <span className="font-bold tabular" style={{ color: '#FF8040' }}>{hovered.atl.toFixed(1)}</span></span>
+                  <span>Fraîcheur (TSB) <span className="font-bold tabular" style={{ color: stateColor }}>{tsb >= 0 ? '+' : ''}{tsb.toFixed(1)}</span></span>
+                  {hovered.tss > 0 && <span>TSS du jour <span className="font-bold tabular" style={{ color: 'var(--accent)' }}>{Math.round(hovered.tss)}</span></span>}
+                </div>
               </div>
-              <div className="font-mono text-xs mt-1 flex flex-wrap gap-3">
-                <span>CTL <span className="font-bold tabular" style={{ color: '#4A9EFF' }}>{hovered.ctl.toFixed(1)}</span></span>
-                <span>ATL <span className="font-bold tabular" style={{ color: '#FF8040' }}>{hovered.atl.toFixed(1)}</span></span>
-                <span>TSB <span className="font-bold tabular" style={{ color: hovered.tsb < -15 ? 'var(--warn)' : hovered.tsb > 15 ? 'var(--go)' : 'var(--text)' }}>{hovered.tsb >= 0 ? '+' : ''}{hovered.tsb.toFixed(1)}</span></span>
-                {hovered.tss > 0 && <span>TSS du jour <span className="font-bold tabular" style={{ color: 'var(--accent)' }}>{Math.round(hovered.tss)}</span></span>}
-              </div>
-            </div>
-          ) : (
-            <div className="mb-2 font-mono text-xs italic" style={{ color: 'var(--text-faint)' }}>Survole le graphique pour voir CTL/ATL/TSB jour par jour</div>
+            );
+          })() : (
+            <div className="mb-2 font-mono text-xs italic" style={{ color: 'var(--text-faint)' }}>Survole le graphique pour l'état de forme jour par jour. <span className="ml-1">CTL = forme accumulée · ATL = fatigue récente · <span style={{ color: 'var(--compass)' }}>TSB = fraîcheur (CTL − ATL, positif = frais)</span></span></div>
           )}
 
           <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet" onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave} style={{ cursor: 'crosshair' }}>
@@ -5942,6 +6516,343 @@
       );
     }
 
+    // ========================================================================
+    // FUTURE PACE PROJECTION — projects predicted race times forward based on
+    // planned training load. Models CP gain from CTL gain using a conservative
+    // linear coefficient (k W per CTL point) capped to a realistic ceiling.
+    // ========================================================================
+    function FuturePaceProjectionCard({ activities, profile, planOverrides, races }) {
+      const [hoverIdx, setHoverIdx] = useState(null);
+      const svgRef = useRef(null);
+
+      const projection = useMemo(() => {
+        if (!profile.cp || !profile.weightKg) return null;
+        const powerPaceTable = buildPowerPaceTable(activities || []);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayMs = today.getTime();
+        const ctlAlpha = 1 - Math.exp(-1/42);
+        const atlAlpha = 1 - Math.exp(-1/7);
+
+        // Current CTL/ATL
+        const activitiesWithTss = activities.map(a => ({ ...a, tss: computeTSS(a, profile.cp) }));
+        const fitnessNow = computeFitness(activitiesWithTss);
+        const ctlBaseline = fitnessNow.ctl;
+
+        // Find last planned session
+        const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
+        let lastPlannedMs = todayMs;
+        Object.entries(planOverrides || {}).forEach(([wsKey, week]) => {
+          if (!week) return;
+          const wsDate = new Date(wsKey + 'T00:00:00');
+          if (isNaN(wsDate.getTime())) return;
+          dayKeys.forEach((dk, i) => {
+            const d = week[dk];
+            if (!d || d.type === 'rest') return;
+            const dayMs = wsDate.getTime() + i * 86400000;
+            if (dayMs >= todayMs && dayMs > lastPlannedMs) lastPlannedMs = dayMs;
+          });
+        });
+
+        // Need at least 14 days of horizon to make this meaningful
+        const horizonMs = Math.max(lastPlannedMs + 7 * 86400000, todayMs + 14 * 86400000);
+        const totalDays = Math.round((horizonMs - todayMs) / 86400000);
+        if (totalDays < 14) return null;
+
+        // Project CTL forward day-by-day from planned TSS
+        let ctl = ctlBaseline, atl = fitnessNow.atl;
+        const projection = [];
+        // Day 0 is today
+        projection.push({ d: 0, date: today, ctl: ctlBaseline, isToday: true });
+
+        for (let d = 1; d <= totalDays; d++) {
+          const date = new Date(todayMs + d * 86400000);
+          const wsDate = getWeekStart(date);
+          const wsKey = toLocalDateKey(wsDate);
+          const dayIdx = (date.getDay() + 6) % 7;
+          const dayKey = dayKeys[dayIdx];
+          const planned = planOverrides[wsKey] && planOverrides[wsKey][dayKey];
+
+          let tss = 0;
+          if (planned && planned.type !== 'rest') {
+            const hasExplicitMin = Number.isFinite(planned.plannedMin) && planned.plannedMin > 0;
+            const hasExplicitKm = Number.isFinite(planned.plannedKm) && planned.plannedKm > 0;
+            const estimatedDur = estimateSessionDuration(planned.detail, planned.type);
+            const dur = hasExplicitMin
+              ? planned.plannedMin
+              : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(planned.type, profile.cp, profile.weightKg, planned.plannedKm, powerPaceTable) : 0));
+            if (dur > 0) tss = estimateSessionTSS(planned.type, profile.cp, dur);
+          }
+          ctl = ctl + ctlAlpha * (tss - ctl);
+          atl = atl + atlAlpha * (tss - atl);
+          projection.push({ d, date, ctl, isToday: false });
+        }
+
+        // Derive projected CP from CTL gain
+        // Empirical coefficient: ~0.4 W gained per CTL point above baseline
+        // for a trained intermediate runner. Cap absolute gain at ±5% of current CP
+        // over the projection window — honest about model uncertainty.
+        const K = 0.4;
+        const cpCeil = profile.cp * 1.05;  // +5% absolute ceiling
+        const cpFloor = profile.cp * 0.95; // -5% (detraining)
+
+        const distMap = { '5k': 5, '10k': 10, semi: 21.1, marathon: 42.2 };
+
+        const series = projection.map(p => {
+          const ctlDelta = p.ctl - ctlBaseline;
+          let projCp = profile.cp + ctlDelta * K;
+          // Apply taper bonus: if TSB ≥ +10, +1% effective CP for race-day freshness
+          // (kept simple — actual TSB isn't projected here, but day-of-race detection):
+          projCp = Math.max(cpFloor, Math.min(cpCeil, projCp));
+          const times = {};
+          Object.entries(distMap).forEach(([k, km]) => {
+            const pred = predictRaceTime(projCp, profile.weightKg, km, profile.prs);
+            if (pred) times[k] = pred.timeSec;
+          });
+          return { ...p, projCp: Math.round(projCp), times };
+        });
+
+        // Find first day each race target is met (if any)
+        const targets = {};
+        const upcomingRaces = (races || []).filter(r => new Date(r.date) >= today);
+        upcomingRaces.forEach(r => {
+          // Map race distance to predictor key (case-insensitive)
+          const distMatch = { '5k': '5k', '10k': '10k', 'semi': 'semi', 'semi-marathon': 'semi', 'marathon': 'marathon' };
+          const k = distMatch[(r.distance || '').toLowerCase().trim()];
+          if (!k) return;
+          // Parse objective (eg "sub-40:00" or "39:30")
+          const objStr = (r.objective || '').replace(/sub-?/i, '').trim();
+          const parts = objStr.split(':').map(Number);
+          let targetSec = null;
+          if (parts.length === 2 && !parts.some(isNaN)) targetSec = parts[0] * 60 + parts[1];
+          else if (parts.length === 3 && !parts.some(isNaN)) targetSec = parts[0] * 3600 + parts[1] * 60 + parts[2];
+          if (!targetSec) return;
+          const raceMs = new Date(r.date).getTime();
+          const raceDayPoint = series.find(s => Math.abs(s.date.getTime() - raceMs) < 86400000 / 2);
+          targets[r.id] = {
+            race: r,
+            distKey: k,
+            targetSec,
+            projectedSec: raceDayPoint ? raceDayPoint.times[k] : null,
+            projectedDate: raceDayPoint ? raceDayPoint.date : null,
+            firstAchievedDate: (() => {
+              const hit = series.find(s => s.times[k] && s.times[k] <= targetSec);
+              return hit ? hit.date : null;
+            })(),
+          };
+        });
+
+        const finalCp = series[series.length - 1].projCp;
+        const cpDelta = finalCp - profile.cp;
+        const finalTimes = series[series.length - 1].times;
+        const todayTimes = series[0].times;
+
+        return { series, ctlBaseline, finalCp, cpDelta, finalTimes, todayTimes, targets, futureDays: totalDays };
+      }, [activities, profile.cp, profile.weightKg, profile.prs, planOverrides, races]);
+
+      if (!projection) {
+        return (
+          <Card className="p-6 flex flex-col items-center justify-center text-center" style={{ minHeight: 200 }}>
+            <IconTrending size={28} style={{ color: 'var(--text-faint)' }} className="mb-3" />
+            <div className="font-display text-base font-bold mb-1">Projection des allures</div>
+            <div className="text-xs max-w-xs" style={{ color: 'var(--text-dim)' }}>
+              Planifie au moins 2 semaines de séances dans <span style={{ color: 'var(--compass)' }}>Plan</span> et renseigne ta CP + ton poids dans Profil pour voir comment tes allures vont évoluer.
+            </div>
+          </Card>
+        );
+      }
+
+      const { series, finalCp, cpDelta, finalTimes, todayTimes, targets, futureDays } = projection;
+
+      // SVG layout
+      const W = 800, H = 280;
+      const padL = 56, padR = 90, padT = 24, padB = 32;
+      const cw = W - padL - padR, ch = H - padT - padB;
+
+      const x = (i) => padL + (i / Math.max(1, series.length - 1)) * cw;
+      const allTimes = series.flatMap(s => Object.values(s.times)).filter(Boolean);
+      const minT = Math.min(...allTimes) * 0.99;
+      const maxT = Math.max(...allTimes) * 1.01;
+      const y = (sec) => padT + ch - ((sec - minT) / (maxT - minT)) * ch;
+
+      const colors = { '5k': '#D4FF00', '10k': '#4A9EFF', semi: '#FFB020', marathon: '#FF8040' };
+      const labels = { '5k': '5K', '10k': '10K', semi: 'Semi', marathon: 'Marathon' };
+
+      const fmtT = (sec) => {
+        if (!sec) return '—';
+        const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = Math.round(sec % 60);
+        if (h > 0) return `${h}h${String(m).padStart(2,'0')}'${String(s).padStart(2,'0')}`;
+        return `${m}'${String(s).padStart(2,'0')}`;
+      };
+
+      function handleMouseMove(e) {
+        if (!svgRef.current) return;
+        const rect = svgRef.current.getBoundingClientRect();
+        const mouseX = ((e.clientX - rect.left) / rect.width) * W;
+        let nearestIdx = 0, minDist = Infinity;
+        series.forEach((p, i) => {
+          const sx = x(i);
+          const d = Math.abs(sx - mouseX);
+          if (d < minDist) { minDist = d; nearestIdx = i; }
+        });
+        if (minDist < 30) setHoverIdx(nearestIdx);
+        else setHoverIdx(null);
+      }
+      function handleMouseLeave() { setHoverIdx(null); }
+
+      const hovered = hoverIdx !== null ? series[hoverIdx] : null;
+
+      // Verdict
+      let verdict, verdictColor, verdictDesc;
+      if (cpDelta > 5) {
+        verdict = `Progression projetée : +${cpDelta}W`;
+        verdictColor = 'var(--go)';
+        verdictDesc = `Ton plan devrait te faire gagner environ ${cpDelta}W (CP ${profile.cp} → ${finalCp}W). Sur 10K, ça représente ${todayTimes['10k'] && finalTimes['10k'] ? `${fmtT(todayTimes['10k'])} → ${fmtT(finalTimes['10k'])}` : '—'}.`;
+      } else if (cpDelta < -3) {
+        verdict = `Recul projeté : ${cpDelta}W`;
+        verdictColor = 'var(--warn)';
+        verdictDesc = `Ton plan ne soutient pas le maintien de ta forme actuelle. CP projetée : ${finalCp}W. Augmente le volume ou la fréquence des séances qualité.`;
+      } else {
+        verdict = 'Maintien projeté';
+        verdictColor = 'var(--text)';
+        verdictDesc = `Ton plan stabilise ta forme autour de la CP actuelle (${profile.cp}W). Bien pour consolider, à pousser un peu si tu veux progresser.`;
+      }
+
+      return (
+        <Card className="p-6 md:p-7" accent={verdictColor}>
+          <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+            <div className="flex items-center gap-2">
+              <IconTrending size={14} style={{ color: 'var(--accent)' }} />
+              <div className="font-mono text-xs tracking-widest" style={{ color: 'var(--text-dim)' }}>ALLURES PROJETÉES · {futureDays} JOURS</div>
+            </div>
+            <div className="flex gap-3 font-mono text-[10px] flex-wrap">
+              {['5k','10k','semi','marathon'].map(k => (
+                <div key={k} className="flex items-center gap-1.5"><div className="w-3 h-0.5" style={{ background: colors[k] }}></div><span style={{ color: 'var(--text-dim)' }}>{labels[k]}</span></div>
+              ))}
+            </div>
+          </div>
+
+          <div className="mb-4">
+            <div className="font-display text-lg font-bold" style={{ color: verdictColor }}>{verdict}</div>
+            <div className="text-sm leading-relaxed mt-1" style={{ color: 'var(--text-dim)' }}>{verdictDesc}</div>
+          </div>
+
+          {/* Hover info bar */}
+          {hovered ? (
+            <div className="mb-3 leading-relaxed">
+              <div className="font-mono text-xs">
+                <span style={{ color: hovered.isToday ? 'var(--compass)' : 'var(--accent)' }}>{fmtDate(hovered.date, true)}</span>
+                {' · CP projetée '}<span style={{ color: 'var(--text)' }} className="font-bold">{hovered.projCp}W</span>
+              </div>
+              <div className="font-mono text-xs mt-1 flex flex-wrap gap-3">
+                {['5k','10k','semi','marathon'].filter(k => hovered.times[k]).map(k => (
+                  <span key={k}>{labels[k]} : <span style={{ color: colors[k] }} className="font-bold tabular">{fmtT(hovered.times[k])}</span></span>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="mb-2 font-mono text-xs italic" style={{ color: 'var(--text-faint)' }}>Survole le graphique pour voir les temps prédits jour par jour.</div>
+          )}
+
+          <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet" onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave} style={{ cursor: 'crosshair' }}>
+            {/* Y grid */}
+            {[0, 0.25, 0.5, 0.75, 1].map((p, i) => {
+              const yy = padT + ch - p * ch;
+              const v = minT + p * (maxT - minT);
+              return (
+                <g key={i}>
+                  <line x1={padL} y1={yy} x2={W - padR} y2={yy} stroke="#1F1F1F" strokeWidth="0.5" strokeDasharray="2,3" />
+                  <text x={padL - 6} y={yy + 3} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{fmtT(v)}</text>
+                </g>
+              );
+            })}
+
+            {/* Race markers — vertical lines at race dates */}
+            {Object.values(targets).map((t, idx) => {
+              const raceMs = new Date(t.race.date).getTime();
+              const todayMs = series[0].date.getTime();
+              const dayIdx = Math.round((raceMs - todayMs) / 86400000);
+              if (dayIdx < 0 || dayIdx >= series.length) return null;
+              const xx = x(dayIdx);
+              return (
+                <g key={t.race.id}>
+                  <line x1={xx} y1={padT} x2={xx} y2={padT + ch} stroke="var(--accent)" strokeWidth="1" strokeDasharray="2,3" opacity="0.5" />
+                  <text x={xx} y={padT - 6} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="9" fill="var(--accent)">{t.race.name.length > 14 ? t.race.name.slice(0, 12) + '…' : t.race.name}</text>
+                </g>
+              );
+            })}
+
+            {/* Hover crosshair */}
+            {hovered && (
+              <line x1={x(hoverIdx)} y1={padT} x2={x(hoverIdx)} y2={padT + ch} stroke="#8A8A8A" strokeWidth="0.8" strokeDasharray="3,3" opacity="0.6" />
+            )}
+
+            {/* Lines per distance */}
+            {['5k','10k','semi','marathon'].map(k => {
+              const pts = series.filter(s => s.times[k]).map((s, i) => ({ x: x(series.indexOf(s)), y: y(s.times[k]), t: s.times[k] }));
+              if (pts.length < 2) return null;
+              const path = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+              const last = pts[pts.length - 1];
+              return (
+                <g key={k}>
+                  <path d={path} fill="none" stroke={colors[k]} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+                  <text x={last.x + 6} y={last.y + 3} fontFamily="JetBrains Mono" fontSize="9" fill={colors[k]}>{fmtT(last.t)}</text>
+                </g>
+              );
+            })}
+
+            {/* Hover dots */}
+            {hovered && ['5k','10k','semi','marathon'].filter(k => hovered.times[k]).map(k => (
+              <circle key={k} cx={x(hoverIdx)} cy={y(hovered.times[k])} r="4" fill={colors[k]} stroke="#0A0A0A" strokeWidth="1.5" />
+            ))}
+
+            {/* X axis */}
+            <text x={padL} y={H - 8} textAnchor="start" fontFamily="JetBrains Mono" fontSize="9" fill="#555">aujourd'hui</text>
+            <text x={W - padR} y={H - 8} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{fmtDate(series[series.length - 1].date)}</text>
+          </svg>
+
+          {/* Race target box */}
+          {Object.values(targets).length > 0 && (
+            <div className="mt-4 space-y-2">
+              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>OBJECTIFS DE COURSE</div>
+              {Object.values(targets).map(t => {
+                const c = colors[t.distKey] || 'var(--compass)';
+                const onTrack = t.projectedSec && t.projectedSec <= t.targetSec;
+                const gap = t.projectedSec ? t.projectedSec - t.targetSec : null;
+                return (
+                  <div key={t.race.id} className="rounded-lg p-3 flex items-center gap-3 flex-wrap" style={{ background: 'var(--bg-elev)', border: `1px solid ${onTrack ? 'rgba(143, 232, 106, 0.3)' : 'rgba(138, 138, 138, 0.2)'}` }}>
+                    <div className="flex-1 min-w-[140px]">
+                      <div className="font-display font-bold text-sm" style={{ color: c }}>{t.race.name}</div>
+                      <div className="font-mono text-[11px]" style={{ color: 'var(--text-dim)' }}>{fmtDate(new Date(t.race.date))} · {t.race.distance} · objectif <span style={{ color: 'var(--text)' }}>{fmtT(t.targetSec)}</span></div>
+                    </div>
+                    <div className="font-mono text-xs flex flex-col items-end">
+                      <div>
+                        Projeté : <span className="font-bold tabular" style={{ color: c }}>{fmtT(t.projectedSec)}</span>
+                      </div>
+                      {gap !== null && (
+                        <div className="font-mono text-[10px] mt-0.5" style={{ color: onTrack ? 'var(--go)' : 'var(--warn)' }}>
+                          {onTrack ? '✓ DANS LE BUDGET' : `${gap > 0 ? '+' : ''}${Math.round(gap)}s vs objectif`}
+                        </div>
+                      )}
+                      {t.firstAchievedDate && !onTrack && (
+                        <div className="font-mono text-[10px] mt-0.5" style={{ color: 'var(--text-faint)' }}>
+                          Atteint dans le plan le {fmtDate(t.firstAchievedDate)}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="mt-4 p-3 rounded-lg font-mono text-[10px] leading-relaxed" style={{ background: 'rgba(74, 158, 255, 0.04)', color: 'var(--text-faint)', border: '1px solid var(--border)' }}>
+            <span style={{ color: 'var(--compass)' }}>Modèle :</span> CP projetée = CP actuelle + (CTL projetée − CTL actuelle) × 0.4 W/CTL, plafonnée à ±5% sur la fenêtre. Les temps sont dérivés via le modèle Coût Énergétique (Running Economy) calibré sur tes records personnels. <span style={{ color: 'var(--text-dim)' }}>C'est une projection optimiste qui suppose que tu fais effectivement les séances planifiées et que tu récupères correctement.</span>
+          </div>
+        </Card>
+      );
+    }
+
     function VirtualCompetitionCard({ activities, profile }) {
       const comp = useMemo(() => findBenchmarkComparison(activities, profile), [activities, profile]);
       if (!comp) return null;
@@ -5968,7 +6879,9 @@
       );
     }
 
-    function AnalyticsView({ activities, profile, checkins, planOverrides }) {
+    function AnalyticsView({ activities, profile, checkins, planOverrides, races }) {
+      const [tab, setTab] = useState('forme'); // forme | tendances | performance
+
       const activitiesWithTss = useMemo(() =>
         activities.map(a => ({ ...a, tss: computeTSS(a, profile.cp) })),
       [activities, profile.cp]);
@@ -6068,17 +6981,8 @@
         <div className="max-w-[1500px] mx-auto px-5 md:px-10 py-6 md:py-10 fade-in pb-nav">
           {header}
 
-          {/* Coach verdict — plain French, at the top */}
+          {/* Coach verdict — always at the top, regardless of tab */}
           <div className="mb-4"><CoachCard verdict={verdict} /></div>
-
-          {/* Form trend detector */}
-          <div className="mb-4"><FormTrendCard activitiesWithTss={activitiesWithTss} cp={profile.cp} /></div>
-
-          {/* Future load projection from planned sessions */}
-          <div className="mb-4"><FutureLoadProjectionCard activities={activities} profile={profile} planOverrides={planOverrides} /></div>
-
-          {/* Virtual competition */}
-          <div className="mb-4"><VirtualCompetitionCard activities={activities} profile={profile} /></div>
 
           {/* Power data warning */}
           {!hasPowerData && (
@@ -6101,35 +7005,65 @@
             </Card>
           )}
 
-          {/* Trio + ACWR (only if power data) */}
-          {hasPowerData && (
+          {/* Tab navigation */}
+          <div className="flex gap-2 mb-5 border-b" style={{ borderColor: 'var(--border)' }}>
+            {[
+              { k: 'forme', l: 'Forme actuelle', icon: '🎯' },
+              { k: 'tendances', l: 'Tendances', icon: '📈' },
+              { k: 'performance', l: 'Performance', icon: '🏆' },
+            ].map(t => (
+              <button
+                key={t.k}
+                onClick={() => setTab(t.k)}
+                className="px-4 py-2.5 font-mono text-xs tracking-widest transition-all"
+                style={{
+                  color: tab === t.k ? 'var(--compass)' : 'var(--text-dim)',
+                  borderBottom: tab === t.k ? '2px solid var(--compass)' : '2px solid transparent',
+                  marginBottom: '-1px',
+                }}
+              >
+                <span className="mr-1.5">{t.icon}</span>{t.l.toUpperCase()}
+              </button>
+            ))}
+          </div>
+
+          {/* Tab content: Forme actuelle */}
+          {tab === 'forme' && (
             <>
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-4">
-                <div className="lg:col-span-2"><FitnessTrioCard fitness={fitness} /></div>
-                <div><ACWRCard acwr={acwr} /></div>
-              </div>
-              <FitnessChartCard series={fitness.series} />
+              {hasPowerData && (
+                <>
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-4">
+                    <div className="lg:col-span-2"><FitnessTrioCard fitness={fitness} /></div>
+                    <div><ACWRCard acwr={acwr} /></div>
+                  </div>
+                </>
+              )}
+              <div className="mb-4"><FutureLoadProjectionCard activities={activities} profile={profile} planOverrides={planOverrides} /></div>
             </>
           )}
 
-          {/* Weekly load — always shown */}
-          <div className={`grid grid-cols-1 ${hasPowerData ? 'lg:grid-cols-2' : ''} gap-3 ${hasPowerData ? 'mt-4' : ''}`}>
-            <WeeklyTSSCard weeks={weeklyTss} hasPowerData={hasPowerData} />
-            {hasPowerData && <PowerCurveCard data={powerCurve} cp={profile.cp} />}
-          </div>
+          {/* Tab content: Tendances */}
+          {tab === 'tendances' && (
+            <>
+              <div className="mb-4"><FormTrendCard activitiesWithTss={activitiesWithTss} cp={profile.cp} /></div>
+              {hasPowerData && <div className="mb-4"><UnifiedFitnessChartCard series={fitness.series} /></div>}
+              <div className={`grid grid-cols-1 ${hasPowerData ? 'lg:grid-cols-2' : ''} gap-3 mb-4`}>
+                <WeeklyTSSCard weeks={weeklyTss} hasPowerData={hasPowerData} />
+                {hasPowerData && <PowerCurveCard data={powerCurve} cp={profile.cp} />}
+              </div>
+              <div className="mb-4"><YearHeatmapCard activities={activities} profile={profile} /></div>
+            </>
+          )}
 
-          {/* Annual heatmap — GitHub-style activity calendar */}
-          <div className="mt-4">
-            <YearHeatmapCard activities={activities} profile={profile} />
-          </div>
-
-          {/* Race predictions — always shown */}
-          <RacePredictorCard predictions={predictions} cp={profile.cp} />
-
-          {/* Race time projection over time — evolution of predicted times */}
-          <div className="mt-4">
-            <RaceTimeProjectionCard profile={profile} />
-          </div>
+          {/* Tab content: Performance */}
+          {tab === 'performance' && (
+            <>
+              <div className="mb-4"><RacePredictorCard predictions={predictions} cp={profile.cp} /></div>
+              <div className="mb-4"><FuturePaceProjectionCard activities={activities} profile={profile} planOverrides={planOverrides} races={races} /></div>
+              <div className="mb-4"><RaceTimeProjectionCard profile={profile} /></div>
+              <div className="mb-4"><VirtualCompetitionCard activities={activities} profile={profile} /></div>
+            </>
+          )}
         </div>
       );
     }
@@ -6407,6 +7341,176 @@
             </div>
             <div style={{ color: 'var(--text-dim)' }}>{displayedZone.advice}</div>
           </div>
+        </Card>
+      );
+    }
+
+    // ========================================================================
+    // UNIFIED FITNESS CHART — combines daily TSS bars + CTL/ATL/TSB lines on
+    // a single 90-day timeline. Replaces the separate FitnessChartCard +
+    // WeeklyTSSCard in the Tendances tab. Daily granularity matches EWMA.
+    // ========================================================================
+    function UnifiedFitnessChartCard({ series }) {
+      const [hoverIdx, setHoverIdx] = useState(null);
+      const ctl = series.ctl;
+      const atl = series.atl;
+      const tsb = series.tsb;
+      const dailyTss = series.dailyTss;
+      const days = ctl.length;
+
+      // Two y-axes:
+      //  Left axis: 0 → max(CTL, ATL, TSS) with TSS bars and CTL/ATL lines
+      //  Right axis: TSB centered around 0 (negative below center, positive above)
+      const loadMax = Math.ceil(Math.max(30, ...ctl, ...atl, ...dailyTss) / 10) * 10;
+      const tsbAbsMax = Math.max(20, ...tsb.map(Math.abs));
+
+      const W = 1000, H = 320;
+      const padL = 42, padR = 50, padT = 22, padB = 36;
+      const cw = W - padL - padR;
+      const ch = H - padT - padB;
+
+      const x = (i) => padL + (i / Math.max(1, days - 1)) * cw;
+      const yLoad = (v) => padT + ch - (v / loadMax) * ch;
+      // TSB axis: 0 at vertical middle, +tsbAbsMax at top, -tsbAbsMax at bottom
+      const yTsb = (v) => padT + ch / 2 - (v / tsbAbsMax) * (ch / 2);
+
+      const ctlPath = ctl.map((v, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${yLoad(v).toFixed(1)}`).join(' ');
+      const atlPath = atl.map((v, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${yLoad(v).toFixed(1)}`).join(' ');
+      const ctlAreaPath = ctlPath + ` L ${x(days - 1).toFixed(1)} ${yLoad(0).toFixed(1)} L ${x(0).toFixed(1)} ${yLoad(0).toFixed(1)} Z`;
+      const tsbPath = tsb.map((v, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${yTsb(v).toFixed(1)}`).join(' ');
+
+      const today = new Date();
+      const tickIndices = [0, Math.floor(days * 0.25), Math.floor(days * 0.5), Math.floor(days * 0.75), days - 1];
+      const xLabels = tickIndices.map(i => {
+        const d = new Date(today); d.setDate(today.getDate() - (days - 1 - i));
+        return { i, label: `${d.getDate()}/${d.getMonth() + 1}` };
+      });
+      const yTicksLeft = [0, 0.25, 0.5, 0.75, 1].map(p => ({ v: p * loadMax, y: padT + ch - p * ch }));
+      const yTicksRight = [-tsbAbsMax, 0, tsbAbsMax].map(v => ({ v, y: yTsb(v) }));
+
+      const hoverDate = hoverIdx !== null ? new Date(today.getTime() - (days - 1 - hoverIdx) * 86400000) : null;
+      const totalTss = Math.round(dailyTss.reduce((s, v) => s + v, 0));
+
+      function handleMouseMove(e) {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const svgX = ((e.clientX - rect.left) / rect.width) * W;
+        const idx = Math.round(((svgX - padL) / cw) * Math.max(1, days - 1));
+        setHoverIdx(Math.max(0, Math.min(days - 1, idx)));
+      }
+
+      // Bar width — slim because daily on 90 days
+      const slot = cw / days;
+      const barW = Math.max(1.2, slot * 0.7);
+
+      return (
+        <Card className="p-6 md:p-7">
+          <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+            <div>
+              <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--text-dim)' }}>FORME · FATIGUE · FRAÎCHEUR · CHARGE — 90 JOURS</div>
+              <div className="font-display text-lg md:text-xl font-bold">Toute ta charge sur un seul graphique</div>
+            </div>
+            <div className="flex gap-3 font-mono text-[10px] flex-wrap">
+              <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm" style={{ background: '#8A8A8A', opacity: 0.4 }}></div><span style={{ color: 'var(--text-dim)' }}>TSS du jour</span></div>
+              <div className="flex items-center gap-1.5"><div className="w-4 h-0.5" style={{ background: '#4A9EFF' }}></div><span style={{ color: 'var(--text-dim)' }}>CTL · Forme</span></div>
+              <div className="flex items-center gap-1.5"><div className="w-4 h-0" style={{ borderTop: '1.5px dashed #FFB020' }}></div><span style={{ color: 'var(--text-dim)' }}>ATL · Fatigue</span></div>
+              <div className="flex items-center gap-1.5"><div className="w-4 h-0.5" style={{ background: '#8FE86A' }}></div><span style={{ color: 'var(--text-dim)' }}>TSB · Fraîcheur</span></div>
+            </div>
+          </div>
+
+          {hoverIdx !== null ? (
+            <div className="mb-2 font-mono text-xs flex flex-wrap gap-x-4 gap-y-1" style={{ color: 'var(--text-faint)' }}>
+              <span style={{ color: 'var(--text)' }}>{fmtDate(hoverDate, true)}</span>
+              <span><span style={{ color: 'var(--compass)' }}>CTL</span> {(ctl[hoverIdx] || 0).toFixed(1)}</span>
+              <span><span style={{ color: 'var(--warn)' }}>ATL</span> {(atl[hoverIdx] || 0).toFixed(1)}</span>
+              <span><span style={{ color: tsb[hoverIdx] >= 0 ? 'var(--go)' : 'var(--alert)' }}>TSB</span> {tsb[hoverIdx] >= 0 ? '+' : ''}{(tsb[hoverIdx] || 0).toFixed(1)}</span>
+              <span><span style={{ color: 'var(--accent)' }}>TSS</span> {Math.round(dailyTss[hoverIdx] || 0)}</span>
+            </div>
+          ) : (
+            <div className="mb-2 font-mono text-xs italic" style={{ color: 'var(--text-faint)' }}>
+              Survole le graphique pour voir CTL, ATL, TSB et TSS jour par jour. Total 90j : <span style={{ color: 'var(--accent)' }}>{totalTss} TSS</span>
+            </div>
+          )}
+
+          <svg viewBox={`0 0 ${W} ${H}`} className="w-full cursor-crosshair" style={{ height: 'auto' }} preserveAspectRatio="xMidYMid meet" onMouseMove={handleMouseMove} onMouseLeave={() => setHoverIdx(null)}>
+            <defs>
+              <linearGradient id="ctlGradUnified" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#4A9EFF" stopOpacity="0.18" />
+                <stop offset="100%" stopColor="#4A9EFF" stopOpacity="0" />
+              </linearGradient>
+            </defs>
+
+            {/* Y grid (left axis) */}
+            {yTicksLeft.map((t, i) => (
+              <g key={i}>
+                <line x1={padL} y1={t.y} x2={W - padR} y2={t.y} stroke="#1F1F1F" strokeWidth="0.5" strokeDasharray="2,3" />
+                <text x={padL - 6} y={t.y + 3} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{Math.round(t.v)}</text>
+              </g>
+            ))}
+
+            {/* TSB axis label (right) */}
+            {yTicksRight.map((t, i) => (
+              <text key={i} x={W - padR + 6} y={t.y + 3} textAnchor="start" fontFamily="JetBrains Mono" fontSize="9" fill={t.v === 0 ? '#8FE86A' : '#555'}>
+                {t.v === 0 ? '0' : `${t.v > 0 ? '+' : ''}${Math.round(t.v)}`}
+              </text>
+            ))}
+            {/* TSB zero baseline (mid) */}
+            <line x1={padL} y1={yTsb(0)} x2={W - padR} y2={yTsb(0)} stroke="#8FE86A" strokeWidth="0.5" strokeDasharray="1,4" opacity="0.4" />
+
+            {/* Daily TSS bars (background layer) */}
+            {dailyTss.map((v, i) => {
+              if (v <= 0) return null;
+              const barH = Math.max(1, (v / loadMax) * ch);
+              const xx = x(i) - barW / 2;
+              const isHover = hoverIdx === i;
+              // Color daily TSS: dim by default, intense on hover or for high-TSS days
+              let barColor = '#555';
+              if (v > 80) barColor = '#D4FF00';
+              else if (v > 50) barColor = '#4A9EFF';
+              else if (v > 20) barColor = '#8A8A8A';
+              else barColor = '#444';
+              return (
+                <rect key={i} x={xx} y={padT + ch - barH} width={barW} height={barH} rx={0.5} fill={barColor} opacity={isHover ? 0.95 : 0.45} />
+              );
+            })}
+
+            {/* CTL area + line */}
+            <path d={ctlAreaPath} fill="url(#ctlGradUnified)" />
+            <path d={ctlPath} fill="none" stroke="#4A9EFF" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+
+            {/* ATL line (dashed) */}
+            <path d={atlPath} fill="none" stroke="#FFB020" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" strokeDasharray="3,3" />
+
+            {/* TSB line (right axis, separate scale) */}
+            <path d={tsbPath} fill="none" stroke="#8FE86A" strokeWidth="1.2" strokeLinejoin="round" strokeLinecap="round" opacity="0.85" />
+
+            {/* Today vertical marker */}
+            <line x1={x(days - 1)} y1={padT} x2={x(days - 1)} y2={padT + ch} stroke="#D4FF00" strokeWidth="1" strokeDasharray="2,2" opacity="0.5" />
+            <text x={x(days - 1) - 4} y={padT + 9} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#D4FF00">AUJ.</text>
+
+            {/* Hover vertical line + dots */}
+            {hoverIdx !== null && (() => {
+              const hx = x(hoverIdx);
+              return (
+                <g>
+                  <line x1={hx} y1={padT} x2={hx} y2={padT + ch} stroke="#8A8A8A" strokeWidth="0.8" strokeDasharray="3,3" opacity="0.7" />
+                  <circle cx={hx} cy={yLoad(ctl[hoverIdx])} r="3.5" fill="#4A9EFF" stroke="#0A0A0A" strokeWidth="1.5" />
+                  <circle cx={hx} cy={yLoad(atl[hoverIdx])} r="3" fill="#FFB020" stroke="#0A0A0A" strokeWidth="1.5" />
+                  <circle cx={hx} cy={yTsb(tsb[hoverIdx])} r="3" fill={tsb[hoverIdx] >= 0 ? '#8FE86A' : '#FF5B5B'} stroke="#0A0A0A" strokeWidth="1.5" />
+                </g>
+              );
+            })()}
+
+            {/* Current point markers */}
+            <circle cx={x(days - 1)} cy={yLoad(ctl[ctl.length - 1])} r="4" fill="#4A9EFF" stroke="#0A0A0A" strokeWidth="2" />
+            <circle cx={x(days - 1)} cy={yLoad(atl[atl.length - 1])} r="3" fill="#FFB020" stroke="#0A0A0A" strokeWidth="2" />
+
+            {/* X axis labels */}
+            {xLabels.map((t, i) => (
+              <text key={i} x={x(t.i)} y={H - 14} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{t.label}</text>
+            ))}
+            <text x={padL} y={H - 4} textAnchor="start" fontFamily="JetBrains Mono" fontSize="8" fill="#444">← passé</text>
+            <text x={padL + cw / 2 - 4} y={padT - 8} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="8" fill="#444">échelle gauche : TSS / CTL / ATL · échelle droite : TSB</text>
+          </svg>
         </Card>
       );
     }
@@ -8573,6 +9677,7 @@
       // State
       const [view, setView] = useState('today');
       const [profile, setProfile] = useState(getProfile());
+      const toast = useToast();
 
       // PWA install state
       const [installPrompt, setInstallPrompt] = useState(null);
@@ -8663,6 +9768,7 @@
         { id: 2, name: '10K Septembre', distance: '10K', date: '2026-09-15', objective: 'sub-40:00 confirmé', priority: 'A' },
       ]));
       const [planOverrides, setPlanOverrides] = useState(() => storage.get(KEYS.planOverrides, DEFAULT_PLAN_OVERRIDES));
+      const [sessionTemplates, setSessionTemplates] = useState(() => storage.get(KEYS.sessionTemplates, []));
 
       // Track CP changes: whenever CP updates, log a history entry
       useEffect(() => {
@@ -8743,6 +9849,7 @@
       useEffect(() => { if (strengthStart) storage.set(KEYS.strengthStart, strengthStart); }, [strengthStart]);
       useEffect(() => { storage.set(KEYS.races, races); }, [races]);
       useEffect(() => { storage.set(KEYS.planOverrides, planOverrides); }, [planOverrides]);
+      useEffect(() => { storage.set(KEYS.sessionTemplates, sessionTemplates); }, [sessionTemplates]);
 
       // Handlers
       function handleCheckinSubmit(inputs) {
@@ -8816,18 +9923,24 @@
         if (!act) return;
         const dateStr = fmtDate(act.startMs);
         const km = ((act.distanceMeters || 0) / 1000).toFixed(1);
-        if (confirm(`Supprimer l'activité du ${dateStr} (${km} km) ?\nCette action est définitive.`)) {
-          setActivities(activities.filter(a => a.id !== id));
-        }
+        const prev = activities;
+        setActivities(activities.filter(a => a.id !== id));
+        toast.push(`Activité du ${dateStr} (${km} km) supprimée.`, {
+          kind: 'info',
+          undo: () => setActivities(prev),
+        });
       }
 
       function handleAddRace(race) { setRaces([...races, race].sort((a, b) => new Date(a.date) - new Date(b.date))); }
       function handleRemoveRace(id) {
         const race = races.find(r => r.id === id);
         if (!race) return;
-        if (confirm(`Supprimer la course "${race.name}" du ${fmtDate(new Date(race.date))} ?`)) {
-          setRaces(races.filter(r => r.id !== id));
-        }
+        const prev = races;
+        setRaces(races.filter(r => r.id !== id));
+        toast.push(`Course "${race.name}" supprimée.`, {
+          kind: 'info',
+          undo: () => setRaces(prev),
+        });
       }
 
       function handleStrengthStart(arg) {
@@ -8842,6 +9955,50 @@
       }
       function handleStrengthComplete(session) {
         setStrengthSessions([session, ...strengthSessions]);
+      }
+
+      // ========== Session Templates handlers ==========
+      function handleSaveTemplate(day, customName) {
+        if (!day || day.type === 'rest') {
+          toast.push('Impossible de sauver une journée de repos comme template.', { kind: 'warn' });
+          return null;
+        }
+        const tpl = dayToTemplate(day, customName);
+        // Avoid name collisions
+        const baseName = tpl.name;
+        let finalName = baseName;
+        let i = 2;
+        while (sessionTemplates.some(t => t.name === finalName)) {
+          finalName = `${baseName} (${i})`;
+          i++;
+        }
+        tpl.name = finalName;
+        setSessionTemplates([tpl, ...sessionTemplates]);
+        toast.push(`Template "${finalName}" sauvegardé.`, { kind: 'success' });
+        return tpl;
+      }
+
+      function handleDeleteTemplate(id) {
+        const tpl = sessionTemplates.find(t => t.id === id);
+        if (!tpl) return;
+        const prev = sessionTemplates;
+        setSessionTemplates(sessionTemplates.filter(t => t.id !== id));
+        toast.push(`Template "${tpl.name}" supprimé.`, {
+          kind: 'info',
+          undo: () => setSessionTemplates(prev),
+        });
+      }
+
+      function handleApplyTemplate(tpl) {
+        // Track usage; called from WeekEditorModal which writes into the day directly
+        setSessionTemplates(sessionTemplates.map(t =>
+          t.id === tpl.id ? { ...t, lastUsed: Date.now(), useCount: (t.useCount || 0) + 1 } : t
+        ));
+      }
+
+      function handleRenameTemplate(id, newName) {
+        if (!newName || !newName.trim()) return;
+        setSessionTemplates(sessionTemplates.map(t => t.id === id ? { ...t, name: newName.trim() } : t));
       }
 
       // Force scroll to top on view change
@@ -8937,10 +10094,18 @@
                 activities={activities}
                 strengthSessions={strengthSessions}
                 planOverrides={planOverrides}
+                sessionTemplates={sessionTemplates}
+                onSaveTemplate={handleSaveTemplate}
+                onApplyTemplate={handleApplyTemplate}
                 onSavePlanWeek={(wsKey, week) => {
                   if (week === null) {
+                    const prev = planOverrides;
                     const np = {...planOverrides}; delete np[wsKey];
                     setPlanOverrides(np);
+                    toast.push(`Semaine du ${fmtDate(new Date(wsKey + 'T00:00:00'))} supprimée.`, {
+                      kind: 'info',
+                      undo: () => setPlanOverrides(prev),
+                    });
                   } else {
                     setPlanOverrides({ ...planOverrides, [wsKey]: week });
                   }
@@ -8986,13 +10151,23 @@
                   setProfile(newProfile);
                   if (oldCP && newCP && oldCP !== newCP) {
                     const overridesCount = Object.keys(planOverrides).length;
-                    if (overridesCount > 0) {
+                    const tplCount = sessionTemplates.length;
+                    if (overridesCount > 0 || tplCount > 0) {
                       const ratio = newCP / oldCP;
                       const pct = Math.round((ratio - 1) * 100);
-                      const msg = `Tu as modifié ta CP de ${oldCP}W → ${newCP}W (${pct >= 0 ? '+' : ''}${pct}%).\n\nVeux-tu recalibrer ton plan d'entraînement automatiquement ?\n\nTous les watts cibles de tes ${overridesCount} semaines planifiées seront ajustés proportionnellement.`;
+                      const parts = [];
+                      if (overridesCount > 0) parts.push(`tes ${overridesCount} semaine${overridesCount > 1 ? 's' : ''} planifiée${overridesCount > 1 ? 's' : ''}`);
+                      if (tplCount > 0) parts.push(`tes ${tplCount} template${tplCount > 1 ? 's' : ''} de séance`);
+                      const what = parts.join(' et ');
+                      const msg = `Tu as modifié ta CP de ${oldCP}W → ${newCP}W (${pct >= 0 ? '+' : ''}${pct}%).\n\nVeux-tu recalibrer ${what} automatiquement ?\n\nTous les watts cibles seront ajustés proportionnellement.`;
                       if (confirm(msg)) {
-                        const newOverrides = recalibratePlanForCP(planOverrides, oldCP, newCP);
-                        setPlanOverrides(newOverrides);
+                        if (overridesCount > 0) {
+                          const newOverrides = recalibratePlanForCP(planOverrides, oldCP, newCP);
+                          setPlanOverrides(newOverrides);
+                        }
+                        if (tplCount > 0) {
+                          setSessionTemplates(sessionTemplates.map(t => rescaleTemplateForCP(t, oldCP, newCP)));
+                        }
                       }
                     }
                   }
@@ -9001,11 +10176,11 @@
                 planOverrides={planOverrides}
               />
             )}
-            {view === 'analytics' && <AnalyticsView activities={activities} profile={profile} checkins={checkins} planOverrides={planOverrides} />}
-            {view === 'library' && <LibraryView />}
+            {view === 'analytics' && <AnalyticsView activities={activities} profile={profile} checkins={checkins} planOverrides={planOverrides} races={races} />}
+            {view === 'library' && <LibraryView sessionTemplates={sessionTemplates} onDeleteTemplate={handleDeleteTemplate} onRenameTemplate={handleRenameTemplate} profile={profile} />}
           </main>
 
-          {activityModal && <ActivityDetailModal activity={activityModal} cp={profile.cp} onClose={() => setActivityModal(null)} profile={profile} allActivities={activities} />}
+          {activityModal && <ActivityDetailModal activity={activityModal} cp={profile.cp} onClose={() => setActivityModal(null)} profile={profile} allActivities={activities} onNavigate={(a) => setActivityModal(a)} />}
           {pendingDateActivity && <DateConfirmModal activity={pendingDateActivity} onConfirm={handleConfirmDate} onCancel={() => setPendingDateActivity(null)} />}
           {manualEntry && <ManualActivityModal onSave={(activity) => { doImport(activity); setManualEntry(false); }} onCancel={() => setManualEntry(false)} />}
         </div>
@@ -9016,7 +10191,11 @@
     // RENDER
     // ========================================================================
     const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(<App />);
+    root.render(
+      <ToastProvider>
+        <App />
+      </ToastProvider>
+    );
   </script>
 </body>
 </html>
