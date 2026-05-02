@@ -986,6 +986,274 @@
       return { timeSec, runningEconomy, calibrated };
     }
 
+    // ========================================================================
+    // V2 PREDICTION SYSTEM
+    // Goal: more precise race time predictions by using actual power-curve data
+    // and per-distance running economy calibration.
+    // ========================================================================
+
+    // Parse a PR string like "39:45" or "1:32:10" into seconds. Standalone helper.
+    function parsePRSec(str) {
+      if (!str) return null;
+      const parts = String(str).split(':').map(Number);
+      if (parts.length === 2 && !parts.some(isNaN)) return parts[0] * 60 + parts[1];
+      if (parts.length === 3 && !parts.some(isNaN)) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+      return null;
+    }
+
+    // Estimate BOTH CP and W' from best efforts using a 2-parameter linear fit.
+    // Model: P(t) = CP + W' / t  =>  P × t = CP × t + W'
+    // Linear regression on (t, P×t) gives slope=CP, intercept=W'.
+    // Uses durations 180s-1800s which is the validated CP-domain window for runners.
+    // Returns null if fewer than 2 valid points or values are physiologically implausible.
+    function estimateCPandWprime(bestEfforts) {
+      if (!bestEfforts) return null;
+      const points = Object.entries(bestEfforts)
+        .map(([d, p]) => ({ t: parseInt(d), p: Number(p) }))
+        .filter(({ t, p }) => t >= 180 && t <= 1800 && Number.isFinite(p) && p > 0);
+      if (points.length < 2) return null;
+
+      const n = points.length;
+      let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+      for (const { t, p } of points) {
+        const x = t, y = p * t;
+        sumX += x; sumY += y; sumXY += x * y; sumX2 += x * x;
+      }
+      const denom = n * sumX2 - sumX * sumX;
+      if (Math.abs(denom) < 1e-6) return null;
+      const cp = (n * sumXY - sumX * sumY) / denom;
+      const wprime = (sumY - cp * sumX) / n;
+
+      if (cp < 100 || cp > 500) return null;
+      if (wprime < 1000 || wprime > 50000) return null;
+      return { cp: Math.round(cp), wprime: Math.round(wprime), sampleCount: n };
+    }
+
+    // Find sustainable race power for a given race duration.
+    // Strategy by confidence level:
+    //   3★ (measured)     — best effort within ±20% of duration exists
+    //   2★ (CP+W' model)  — extrapolated via Monod hyperbolic for short races (≤30min)
+    //   1★ (long-decay)   — empirical decay below CP for races > 30min
+    //   0★ (fallback)     — fixed IF when no CP available
+    // Returns { power, source, confidence }
+    function sustainableRacePower(cp, wprime, durSec, bestEfforts) {
+      // 1. Try direct measurement from power curve
+      if (bestEfforts) {
+        const buckets = [60, 180, 300, 600, 1200, 1800];
+        // Pick the bucket closest to target duration, if within 25%
+        let bestMatch = null, bestRel = Infinity;
+        for (const b of buckets) {
+          if (!bestEfforts[b]) continue;
+          const rel = Math.abs(b - durSec) / durSec;
+          if (rel < bestRel) { bestRel = rel; bestMatch = b; }
+        }
+        if (bestMatch !== null && bestRel < 0.25) {
+          return { power: Number(bestEfforts[bestMatch]), source: 'measured', confidence: 3, matchedBucket: bestMatch };
+        }
+      }
+      // 2. CP+W'/t for short race durations (≤ 30min): the Monod/Skiba domain
+      if (cp && wprime && durSec <= 1800) {
+        return { power: Math.round(cp + wprime / durSec), source: 'cpwp', confidence: 2 };
+      }
+      // 3. Long-duration empirical decay below CP
+      // Reference: Péronnet & Thibault model — sustainable %CP decreases with log(time)
+      // Calibrated so 90 min ≈ 92% CP, 180 min ≈ 87% CP, 240 min ≈ 84% CP
+      if (cp && durSec > 1800) {
+        const factor = 1 - 0.025 * Math.log2(durSec / 1800);
+        const power = Math.round(cp * Math.max(0.78, factor));
+        return { power, source: 'long-decay', confidence: 1 };
+      }
+      // 4. Fallback to fixed IF (Coggan defaults)
+      if (cp) {
+        // Match duration to canonical race distance
+        let factor = 0.92;
+        if (durSec <= 1500) factor = 1.06;       // 5K
+        else if (durSec <= 3000) factor = 0.97;  // 10K
+        else if (durSec <= 6500) factor = 0.92;  // semi
+        else factor = 0.85;                       // marathon
+        return { power: Math.round(cp * factor), source: 'fallback', confidence: 1 };
+      }
+      return { power: 0, source: 'none', confidence: 0 };
+    }
+
+    // Calibrate Running Economy per distance from user's PRs.
+    // Returns { perDist: { '5k': re, '10k': re, ... }, default: meanRE | 1.04 }
+    // Per-distance RE accounts for the fact that economy varies between
+    // sprint-like efforts (5K — slightly higher cost) and steady-state (marathon).
+    function calibrateREPerDistance(prs, weightKg, cp, wprime, bestEfforts) {
+      const out = { perDist: {}, default: 1.04 };
+      if (!prs || !weightKg || !cp) return out;
+      const distMap = { '5k': 5, '10k': 10, semi: 21.1, marathon: 42.2 };
+      for (const [key, distKm] of Object.entries(distMap)) {
+        const prSec = parsePRSec(prs[key]);
+        if (!prSec) continue;
+        // Get sustainable power that matches this race duration
+        const { power } = sustainableRacePower(cp, wprime, prSec, bestEfforts);
+        if (!power) continue;
+        const speedMs = (distKm * 1000) / prSec;
+        const re = power / (weightKg * speedMs);
+        // Plausibility: RE for runners is typically 0.95-1.15 W/kg/(m/s)
+        if (re > 0.85 && re < 1.30) out.perDist[key] = re;
+      }
+      const reVals = Object.values(out.perDist);
+      if (reVals.length) {
+        out.default = reVals.reduce((a, b) => a + b, 0) / reVals.length;
+      }
+      return out;
+    }
+
+    // V2: predict race time using best-effort lookup, CP+W' extrapolation,
+    // per-distance RE calibration, and optional TSB-bonus for race-day freshness.
+    // Returns { timeSec, racePower, runningEconomy, calibrated, confidence, source, tsbBonus }
+    function predictRaceTimeV2(cp, wprime, weightKg, distanceKm, prs, bestEfforts, tsb) {
+      if (!cp || !weightKg || !distanceKm) return null;
+
+      // Per-distance RE calibration once
+      const reCalib = calibrateREPerDistance(prs, weightKg, cp, wprime, bestEfforts);
+      // Match distance to a key, fall back to default RE
+      let distKey = null;
+      if (distanceKm <= 7) distKey = '5k';
+      else if (distanceKm <= 15) distKey = '10k';
+      else if (distanceKm <= 30) distKey = 'semi';
+      else distKey = 'marathon';
+      const re = reCalib.perDist[distKey] || reCalib.default;
+      const calibrated = !!reCalib.perDist[distKey];
+
+      // TSB bonus: well-documented effect of tapering. Caps at ~2% gain.
+      let tsbBonus = 0;
+      if (Number.isFinite(tsb)) {
+        if (tsb >= 20) tsbBonus = 0.020;
+        else if (tsb >= 10) tsbBonus = 0.010;
+        else if (tsb >= 5) tsbBonus = 0.005;
+        else if (tsb < -15) tsbBonus = -0.015; // accumulated fatigue penalty
+      }
+
+      // Bootstrap duration from a rough IF (used only to pick the right power-bucket)
+      const bootstrapIF = distanceKm <= 7 ? 1.05 : distanceKm <= 15 ? 0.97 : distanceKm <= 30 ? 0.92 : 0.85;
+      let durSec = (distanceKm * 1000) / ((cp * bootstrapIF) / (weightKg * re));
+
+      // Iterate to stabilize (power depends on duration, duration depends on power)
+      let powerInfo;
+      for (let iter = 0; iter < 3; iter++) {
+        powerInfo = sustainableRacePower(cp, wprime, durSec, bestEfforts);
+        if (!powerInfo.power) return null;
+        const adjusted = powerInfo.power * (1 + tsbBonus);
+        const speedMs = adjusted / (weightKg * re);
+        const newDur = (distanceKm * 1000) / speedMs;
+        // Converged if change < 1%
+        if (Math.abs(newDur - durSec) / durSec < 0.01) { durSec = newDur; break; }
+        durSec = newDur;
+      }
+
+      return {
+        timeSec: Math.round(durSec),
+        racePower: Math.round(powerInfo.power * (1 + tsbBonus)),
+        runningEconomy: re,
+        calibrated,
+        confidence: powerInfo.confidence,
+        source: powerInfo.source,
+        tsbBonus,
+        matchedBucket: powerInfo.matchedBucket || null,
+      };
+    }
+
+    // ========================================================================
+    // CP PROGRESSION DETECTION
+    // Watches the user's recent power curve evolution and suggests an updated
+    // CP when consistent improvement appears. This is the only honest way to
+    // make predictions evolve with training: not from TSS volume alone, but
+    // from actual measured power gains in real workouts.
+    // ========================================================================
+
+    // Build merged best efforts within a date window (going back N days from refMs).
+    function bestEffortsInWindow(activities, refMs, windowDays) {
+      const cutoff = refMs - windowDays * 86400000;
+      const merged = {};
+      for (const a of activities) {
+        if (!a || a.startMs == null) continue;
+        if (a.startMs < cutoff || a.startMs > refMs) continue;
+        if (!a.bestEfforts) continue;
+        for (const [d, p] of Object.entries(a.bestEfforts)) {
+          const pNum = Number(p);
+          if (!Number.isFinite(pNum) || pNum <= 0) continue;
+          if (!merged[d] || pNum > merged[d]) merged[d] = pNum;
+        }
+      }
+      return merged;
+    }
+
+    // Compare two CP estimates from two different time windows.
+    // Returns { suggestedCP, currentCP, deltaCP, deltaPct, evidence, confidence, sampleCount }
+    // - suggestedCP: the new CP to propose (null if no suggestion)
+    // - evidence: array of { duration, oldPower, newPower, delta } for explanation
+    // - confidence: 'high' | 'medium' | 'low' — based on number of confirming buckets
+    //
+    // Decision rules (deliberately conservative):
+    //  - At least 3 power-curve buckets must show improvement
+    //  - Average gain across buckets must be ≥ 2% of currentCP
+    //  - The fitted CP from recent window must be ≥ 4W above current
+    //  - We never suggest a DOWNGRADE automatically (detraining requires user judgment)
+    function detectCPProgression(activities, currentCP, refDate = new Date()) {
+      if (!Array.isArray(activities) || activities.length < 5) return null;
+      if (!currentCP || currentCP <= 0) return null;
+
+      const refMs = refDate.getTime();
+      // Recent window: last 5 weeks (covers a typical training mesocycle)
+      const recentBests = bestEffortsInWindow(activities, refMs, 35);
+      // Reference window: prior 8 weeks (35-91 days ago) — what your CP USED TO support
+      const priorBests = bestEffortsInWindow(activities, refMs - 35 * 86400000, 56);
+
+      const buckets = [180, 300, 600, 1200, 1800];
+      const evidence = [];
+      let improvements = 0, totalGainPct = 0, totalGainW = 0;
+
+      for (const b of buckets) {
+        const newP = recentBests[b];
+        const oldP = priorBests[b];
+        if (!newP || !oldP) continue;
+        const delta = newP - oldP;
+        if (delta > 0) {
+          improvements++;
+          totalGainW += delta;
+          totalGainPct += delta / oldP;
+        }
+        evidence.push({ duration: b, oldPower: Math.round(oldP), newPower: Math.round(newP), delta: Math.round(delta) });
+      }
+
+      if (evidence.length < 2) return null;
+      if (improvements < 2) return null; // not enough buckets showed gain
+
+      const avgGainPct = totalGainPct / Math.max(1, improvements);
+      if (avgGainPct < 0.015) return null; // need at least ~1.5% average improvement
+
+      // Fit a CP from recent window
+      const recentFit = estimateCPandWprime(recentBests);
+      if (!recentFit) return null;
+      const suggestedCP = recentFit.cp;
+      const deltaCP = suggestedCP - currentCP;
+
+      // Require ≥4W absolute increase AND ≥2% increase to suggest
+      if (deltaCP < 4) return null;
+      if (deltaCP / currentCP < 0.015) return null;
+
+      // Confidence: high = ≥4 buckets improved, medium = 3, low = 2
+      const confidence = improvements >= 4 ? 'high' : improvements >= 3 ? 'medium' : 'low';
+
+      return {
+        suggestedCP,
+        currentCP,
+        deltaCP: Math.round(deltaCP),
+        deltaPct: deltaCP / currentCP,
+        evidence,
+        confidence,
+        improvements,
+        sampleCount: evidence.length,
+        recentWindow: 35,
+        priorWindow: 56,
+        wprime: recentFit.wprime,
+      };
+    }
+
     // Recalibrate all plan overrides watt targets when CP changes.
     // Walks through every day's blocks AND detail string, and rescales
     // each watt value by the ratio (newCP / oldCP).
@@ -2750,7 +3018,7 @@
 
           {/* Races timeline (graphic) */}
           <div className="mt-8">
-            <RaceTimeline races={races} profile={profile} predictRaceTime={predictRaceTime} />
+            <RaceTimeline races={races} profile={profile} activities={activities} />
           </div>
 
           {/* Races */}
@@ -6517,27 +6785,87 @@
     }
 
     // ========================================================================
-    // FUTURE PACE PROJECTION — projects predicted race times forward based on
-    // planned training load. Models CP gain from CTL gain using a conservative
-    // linear coefficient (k W per CTL point) capped to a realistic ceiling.
+    // PACE TIMELINE — unified past + future visualization of predicted paces.
+    //
+    // Past portion: derived from CP history (each cpHistory entry produces
+    //   predictions at that point in time) — drawn in solid lines.
+    // Future portion: derived from CTL projection driven by the planned
+    //   sessions — drawn in dashed lines to signal "not yet happened".
+    // A vertical "AUJOURD'HUI" line separates the two halves.
+    //
+    // Features:
+    //   - Y axis = pace (min/km), inverted (faster = higher)
+    //   - Toggleable distances via legend
+    //   - Tooltip shows pace + total time + CP + (future only) projected TSB
+    //   - Race markers with target objective comparison
+    //   - Confidence stars in the legend per distance
+    //
+    // This card replaces both the old FuturePaceProjectionCard and the old
+    // RaceTimeProjectionCard. Past+future is more cohesive and clearer.
     // ========================================================================
-    function FuturePaceProjectionCard({ activities, profile, planOverrides, races }) {
+    function PaceTimelineCard({ activities, profile, planOverrides, races }) {
       const [hoverIdx, setHoverIdx] = useState(null);
+      const [hidden, setHidden] = useState(() => new Set());
       const svgRef = useRef(null);
 
-      const projection = useMemo(() => {
+      // Build merged best efforts + W' fit (used everywhere for V2 prediction)
+      const cpWp = useMemo(() => {
+        if (!activities || !activities.length) return { merged: null, fit: null };
+        const merged = {};
+        activities.forEach(a => {
+          if (!a.bestEfforts) return;
+          Object.entries(a.bestEfforts).forEach(([d, p]) => {
+            const pNum = Number(p);
+            if (!Number.isFinite(pNum) || pNum <= 0) return;
+            if (!merged[d] || pNum > merged[d]) merged[d] = pNum;
+          });
+        });
+        return { merged, fit: estimateCPandWprime(merged) };
+      }, [activities]);
+
+      const series = useMemo(() => {
         if (!profile.cp || !profile.weightKg) return null;
-        const powerPaceTable = buildPowerPaceTable(activities || []);
+
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         const todayMs = today.getTime();
+        const dayMs = 86400000;
+        const wprime = cpWp.fit ? cpWp.fit.wprime : 15000;
+        const distMap = { '5k': 5, '10k': 10, semi: 21.1, marathon: 42.2 };
+
+        // ---- PAST PORTION: from cpHistory ----
+        const cpHistory = (profile.cpHistory || []).filter(h => h.value).map(h => ({
+          ms: new Date(h.date).getTime(),
+          cp: h.value,
+        })).sort((a, b) => a.ms - b.ms);
+        // Always include current cp as today's marker
+        const todayCpEntry = { ms: todayMs, cp: profile.cp };
+        // Only keep history entries STRICTLY before today, then add today
+        const pastEntries = cpHistory.filter(h => h.ms < todayMs);
+        pastEntries.push(todayCpEntry);
+
+        const pastSeries = pastEntries.map(e => {
+          const date = new Date(e.ms);
+          const times = {}, paces = {}, conf = {};
+          Object.entries(distMap).forEach(([k, km]) => {
+            const pred = predictRaceTimeV2(e.cp, wprime, profile.weightKg, km, profile.prs, cpWp.merged, null);
+            if (pred) {
+              times[k] = pred.timeSec;
+              paces[k] = pred.timeSec / km;
+              conf[k] = pred.confidence;
+            }
+          });
+          return { ms: e.ms, date, cp: e.cp, isFuture: false, isToday: e.ms === todayMs, tsb: null, times, paces, conf };
+        });
+
+        // ---- FUTURE PORTION: from planned CTL projection ----
         const ctlAlpha = 1 - Math.exp(-1/42);
         const atlAlpha = 1 - Math.exp(-1/7);
-
-        // Current CTL/ATL
+        const powerPaceTable = buildPowerPaceTable(activities || []);
         const activitiesWithTss = activities.map(a => ({ ...a, tss: computeTSS(a, profile.cp) }));
         const fitnessNow = computeFitness(activitiesWithTss);
         const ctlBaseline = fitnessNow.ctl;
+        const baseCp = profile.cp;
 
         // Find last planned session
         const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
@@ -6549,140 +6877,145 @@
           dayKeys.forEach((dk, i) => {
             const d = week[dk];
             if (!d || d.type === 'rest') return;
-            const dayMs = wsDate.getTime() + i * 86400000;
-            if (dayMs >= todayMs && dayMs > lastPlannedMs) lastPlannedMs = dayMs;
+            const dms = wsDate.getTime() + i * dayMs;
+            if (dms >= todayMs && dms > lastPlannedMs) lastPlannedMs = dms;
           });
         });
+        const horizonMs = Math.max(lastPlannedMs + 7 * dayMs, todayMs + 14 * dayMs);
+        const totalDays = Math.round((horizonMs - todayMs) / dayMs);
 
-        // Need at least 14 days of horizon to make this meaningful
-        const horizonMs = Math.max(lastPlannedMs + 7 * 86400000, todayMs + 14 * 86400000);
-        const totalDays = Math.round((horizonMs - todayMs) / 86400000);
-        if (totalDays < 14) return null;
+        // Project CTL forward from planned TSS (sample every 3 days for performance)
+        const futureSeries = [];
+        if (totalDays >= 7) {
+          let ctl = ctlBaseline, atl = fitnessNow.atl;
+          const cpCeil = baseCp * 1.05, cpFloor = baseCp * 0.95;
+          const K = 0.4;
+          for (let d = 1; d <= totalDays; d++) {
+            const date = new Date(todayMs + d * dayMs);
+            const wsDate = getWeekStart(date);
+            const wsKey = toLocalDateKey(wsDate);
+            const dayIdx = (date.getDay() + 6) % 7;
+            const dayKey = dayKeys[dayIdx];
+            const planned = planOverrides[wsKey] && planOverrides[wsKey][dayKey];
+            let tss = 0;
+            if (planned && planned.type !== 'rest') {
+              const hasExplicitMin = Number.isFinite(planned.plannedMin) && planned.plannedMin > 0;
+              const hasExplicitKm = Number.isFinite(planned.plannedKm) && planned.plannedKm > 0;
+              const estimatedDur = estimateSessionDuration(planned.detail, planned.type);
+              const dur = hasExplicitMin
+                ? planned.plannedMin
+                : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(planned.type, baseCp, profile.weightKg, planned.plannedKm, powerPaceTable) : 0));
+              if (dur > 0) tss = estimateSessionTSS(planned.type, baseCp, dur);
+            }
+            ctl = ctl + ctlAlpha * (tss - ctl);
+            atl = atl + atlAlpha * (tss - atl);
+            // Sample at every 3rd day (or last day, or race days)
+            const isLast = d === totalDays;
+            const sampleEvery = 3;
+            if (!isLast && d % sampleEvery !== 0) continue;
 
-        // Project CTL forward day-by-day from planned TSS
-        let ctl = ctlBaseline, atl = fitnessNow.atl;
-        const projection = [];
-        // Day 0 is today
-        projection.push({ d: 0, date: today, ctl: ctlBaseline, isToday: true });
-
-        for (let d = 1; d <= totalDays; d++) {
-          const date = new Date(todayMs + d * 86400000);
-          const wsDate = getWeekStart(date);
-          const wsKey = toLocalDateKey(wsDate);
-          const dayIdx = (date.getDay() + 6) % 7;
-          const dayKey = dayKeys[dayIdx];
-          const planned = planOverrides[wsKey] && planOverrides[wsKey][dayKey];
-
-          let tss = 0;
-          if (planned && planned.type !== 'rest') {
-            const hasExplicitMin = Number.isFinite(planned.plannedMin) && planned.plannedMin > 0;
-            const hasExplicitKm = Number.isFinite(planned.plannedKm) && planned.plannedKm > 0;
-            const estimatedDur = estimateSessionDuration(planned.detail, planned.type);
-            const dur = hasExplicitMin
-              ? planned.plannedMin
-              : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(planned.type, profile.cp, profile.weightKg, planned.plannedKm, powerPaceTable) : 0));
-            if (dur > 0) tss = estimateSessionTSS(planned.type, profile.cp, dur);
+            const ctlDelta = ctl - ctlBaseline;
+            let projCp = baseCp + ctlDelta * K;
+            projCp = Math.max(cpFloor, Math.min(cpCeil, projCp));
+            const tsb = ctl - atl;
+            const times = {}, paces = {}, conf = {};
+            Object.entries(distMap).forEach(([k, km]) => {
+              const pred = predictRaceTimeV2(Math.round(projCp), wprime, profile.weightKg, km, profile.prs, cpWp.merged, tsb);
+              if (pred) {
+                times[k] = pred.timeSec;
+                paces[k] = pred.timeSec / km;
+                conf[k] = pred.confidence;
+              }
+            });
+            futureSeries.push({ ms: date.getTime(), date, cp: Math.round(projCp), isFuture: true, isToday: false, tsb, times, paces, conf });
           }
-          ctl = ctl + ctlAlpha * (tss - ctl);
-          atl = atl + atlAlpha * (tss - atl);
-          projection.push({ d, date, ctl, isToday: false });
         }
 
-        // Derive projected CP from CTL gain
-        // Empirical coefficient: ~0.4 W gained per CTL point above baseline
-        // for a trained intermediate runner. Cap absolute gain at ±5% of current CP
-        // over the projection window — honest about model uncertainty.
-        const K = 0.4;
-        const cpCeil = profile.cp * 1.05;  // +5% absolute ceiling
-        const cpFloor = profile.cp * 0.95; // -5% (detraining)
+        // Combined series, sorted
+        const combined = [...pastSeries, ...futureSeries].sort((a, b) => a.ms - b.ms);
+        return { series: combined, todayMs, todayIdx: combined.findIndex(s => s.isToday), futureDays: totalDays, baseCp, cpWpFit: cpWp.fit, wprime };
+      }, [activities, profile.cp, profile.weightKg, profile.prs, profile.cpHistory, planOverrides, cpWp]);
 
-        const distMap = { '5k': 5, '10k': 10, semi: 21.1, marathon: 42.2 };
-
-        const series = projection.map(p => {
-          const ctlDelta = p.ctl - ctlBaseline;
-          let projCp = profile.cp + ctlDelta * K;
-          // Apply taper bonus: if TSB ≥ +10, +1% effective CP for race-day freshness
-          // (kept simple — actual TSB isn't projected here, but day-of-race detection):
-          projCp = Math.max(cpFloor, Math.min(cpCeil, projCp));
-          const times = {};
-          Object.entries(distMap).forEach(([k, km]) => {
-            const pred = predictRaceTime(projCp, profile.weightKg, km, profile.prs);
-            if (pred) times[k] = pred.timeSec;
-          });
-          return { ...p, projCp: Math.round(projCp), times };
-        });
-
-        // Find first day each race target is met (if any)
-        const targets = {};
-        const upcomingRaces = (races || []).filter(r => new Date(r.date) >= today);
-        upcomingRaces.forEach(r => {
-          // Map race distance to predictor key (case-insensitive)
-          const distMatch = { '5k': '5k', '10k': '10k', 'semi': 'semi', 'semi-marathon': 'semi', 'marathon': 'marathon' };
-          const k = distMatch[(r.distance || '').toLowerCase().trim()];
-          if (!k) return;
-          // Parse objective (eg "sub-40:00" or "39:30")
-          const objStr = (r.objective || '').replace(/sub-?/i, '').trim();
-          const parts = objStr.split(':').map(Number);
-          let targetSec = null;
-          if (parts.length === 2 && !parts.some(isNaN)) targetSec = parts[0] * 60 + parts[1];
-          else if (parts.length === 3 && !parts.some(isNaN)) targetSec = parts[0] * 3600 + parts[1] * 60 + parts[2];
-          if (!targetSec) return;
-          const raceMs = new Date(r.date).getTime();
-          const raceDayPoint = series.find(s => Math.abs(s.date.getTime() - raceMs) < 86400000 / 2);
-          targets[r.id] = {
-            race: r,
-            distKey: k,
-            targetSec,
-            projectedSec: raceDayPoint ? raceDayPoint.times[k] : null,
-            projectedDate: raceDayPoint ? raceDayPoint.date : null,
-            firstAchievedDate: (() => {
-              const hit = series.find(s => s.times[k] && s.times[k] <= targetSec);
-              return hit ? hit.date : null;
-            })(),
-          };
-        });
-
-        const finalCp = series[series.length - 1].projCp;
-        const cpDelta = finalCp - profile.cp;
-        const finalTimes = series[series.length - 1].times;
-        const todayTimes = series[0].times;
-
-        return { series, ctlBaseline, finalCp, cpDelta, finalTimes, todayTimes, targets, futureDays: totalDays };
-      }, [activities, profile.cp, profile.weightKg, profile.prs, planOverrides, races]);
-
-      if (!projection) {
+      if (!series || !series.series || series.series.length < 2) {
         return (
           <Card className="p-6 flex flex-col items-center justify-center text-center" style={{ minHeight: 200 }}>
             <IconTrending size={28} style={{ color: 'var(--text-faint)' }} className="mb-3" />
-            <div className="font-display text-base font-bold mb-1">Projection des allures</div>
+            <div className="font-display text-base font-bold mb-1">Timeline des allures</div>
             <div className="text-xs max-w-xs" style={{ color: 'var(--text-dim)' }}>
-              Planifie au moins 2 semaines de séances dans <span style={{ color: 'var(--compass)' }}>Plan</span> et renseigne ta CP + ton poids dans Profil pour voir comment tes allures vont évoluer.
+              Renseigne ta CP + ton poids dans Profil. Pour la projection future, planifie au moins 2 semaines de séances dans <span style={{ color: 'var(--compass)' }}>Plan</span>. Pour l'historique, ajoute ou modifie ta CP au fil du temps.
             </div>
           </Card>
         );
       }
 
-      const { series, finalCp, cpDelta, finalTimes, todayTimes, targets, futureDays } = projection;
+      const { series: pts, todayIdx, futureDays, baseCp, cpWpFit } = series;
 
-      // SVG layout
-      const W = 800, H = 280;
-      const padL = 56, padR = 90, padT = 24, padB = 32;
+      // Race targets
+      const targets = useMemo(() => {
+        const today = new Date(); today.setHours(0,0,0,0);
+        const out = {};
+        const distMatch = { '5k': '5k', '10k': '10k', 'semi': 'semi', 'semi-marathon': 'semi', 'marathon': 'marathon' };
+        const distKm = { '5k': 5, '10k': 10, semi: 21.1, marathon: 42.2 };
+        (races || []).filter(r => new Date(r.date) >= today).forEach(r => {
+          const k = distMatch[(r.distance || '').toLowerCase().trim()];
+          if (!k) return;
+          const targetSec = parsePRSec((r.objective || '').replace(/sub-?/i, '').trim());
+          if (!targetSec) return;
+          const raceMs = new Date(r.date).getTime();
+          // Find closest projected day
+          let closest = null, minDist = Infinity;
+          pts.forEach(p => {
+            const d = Math.abs(p.ms - raceMs);
+            if (d < minDist) { minDist = d; closest = p; }
+          });
+          out[r.id] = {
+            race: r,
+            distKey: k,
+            distKm: distKm[k],
+            targetSec,
+            projectedSec: closest ? closest.times[k] : null,
+            projectedConf: closest ? closest.conf[k] : null,
+            projectedTSB: closest ? closest.tsb : null,
+            raceMs,
+          };
+        });
+        return out;
+      }, [races, pts]);
+
+      // Layout
+      const W = 900, H = 320;
+      const padL = 60, padR = 100, padT = 28, padB = 40;
       const cw = W - padL - padR, ch = H - padT - padB;
 
-      const x = (i) => padL + (i / Math.max(1, series.length - 1)) * cw;
-      const allTimes = series.flatMap(s => Object.values(s.times)).filter(Boolean);
-      const minT = Math.min(...allTimes) * 0.99;
-      const maxT = Math.max(...allTimes) * 1.01;
-      const y = (sec) => padT + ch - ((sec - minT) / (maxT - minT)) * ch;
+      const firstMs = pts[0].ms;
+      const lastMs = pts[pts.length - 1].ms;
+      const span = Math.max(1, lastMs - firstMs);
+      const x = (ms) => padL + ((ms - firstMs) / span) * cw;
+      const todayX = todayIdx >= 0 ? x(pts[todayIdx].ms) : x(Date.now());
+
+      const allDists = ['5k','10k','semi','marathon'];
+      const visibleDists = allDists.filter(k => !hidden.has(k));
+
+      const visiblePaces = pts.flatMap(p => visibleDists.map(k => p.paces[k]).filter(Boolean));
+      const minPace = visiblePaces.length ? Math.min(...visiblePaces) * 0.99 : 200;
+      const maxPace = visiblePaces.length ? Math.max(...visiblePaces) * 1.01 : 400;
+      const y = (paceSecPerKm) => padT + ((paceSecPerKm - minPace) / (maxPace - minPace)) * ch;
 
       const colors = { '5k': '#D4FF00', '10k': '#4A9EFF', semi: '#FFB020', marathon: '#FF8040' };
       const labels = { '5k': '5K', '10k': '10K', semi: 'Semi', marathon: 'Marathon' };
+      const stars = (n) => '★'.repeat(n || 0) + '☆'.repeat(Math.max(0, 3 - (n || 0)));
 
-      const fmtT = (sec) => {
+      const fmtTime = (sec) => {
         if (!sec) return '—';
         const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = Math.round(sec % 60);
         if (h > 0) return `${h}h${String(m).padStart(2,'0')}'${String(s).padStart(2,'0')}`;
         return `${m}'${String(s).padStart(2,'0')}`;
+      };
+      const fmtPace = (paceSecPerKm) => {
+        if (!paceSecPerKm) return '—';
+        const m = Math.floor(paceSecPerKm / 60);
+        const s = Math.round(paceSecPerKm % 60);
+        return `${m}'${String(s).padStart(2, '0')}"/km`;
       };
 
       function handleMouseMove(e) {
@@ -6690,8 +7023,8 @@
         const rect = svgRef.current.getBoundingClientRect();
         const mouseX = ((e.clientX - rect.left) / rect.width) * W;
         let nearestIdx = 0, minDist = Infinity;
-        series.forEach((p, i) => {
-          const sx = x(i);
+        pts.forEach((p, i) => {
+          const sx = x(p.ms);
           const d = Math.abs(sx - mouseX);
           if (d < minDist) { minDist = d; nearestIdx = i; }
         });
@@ -6700,35 +7033,93 @@
       }
       function handleMouseLeave() { setHoverIdx(null); }
 
-      const hovered = hoverIdx !== null ? series[hoverIdx] : null;
+      function toggleDist(k) {
+        const next = new Set(hidden);
+        if (next.has(k)) next.delete(k); else next.add(k);
+        if (next.size >= allDists.length) return;
+        setHidden(next);
+      }
 
-      // Verdict
+      const hovered = hoverIdx !== null ? pts[hoverIdx] : null;
+
+      // Y ticks
+      const paceTicks = (() => {
+        const range = maxPace - minPace;
+        const step = range > 120 ? 30 : range > 60 ? 15 : range > 30 ? 10 : 5;
+        const startTick = Math.ceil(minPace / step) * step;
+        const ticks = [];
+        for (let v = startTick; v <= maxPace; v += step) ticks.push(v);
+        return ticks;
+      })();
+
+      // Split each distance line into past + future segments for differing strokes
+      const buildSegments = (k) => {
+        const past = [], future = [];
+        pts.forEach(p => {
+          if (!p.paces[k]) return;
+          const point = { x: x(p.ms), y: y(p.paces[k]) };
+          if (p.isFuture) future.push(point);
+          else past.push(point);
+        });
+        // Bridge: last past point should connect to first future point
+        const bridge = past.length && future.length ? [past[past.length - 1], future[0]] : null;
+        return { past, future, bridge };
+      };
+
+      // Final times for legend (last point per distance)
+      const lastPoint = pts[pts.length - 1];
+
+      // Verdict computation
+      const todayPoint = todayIdx >= 0 ? pts[todayIdx] : null;
+      const finalPoint = pts[pts.length - 1];
+      const cpDelta = finalPoint.cp - (todayPoint ? todayPoint.cp : baseCp);
       let verdict, verdictColor, verdictDesc;
-      if (cpDelta > 5) {
+      if (futureDays < 7) {
+        verdict = 'Pas de projection future';
+        verdictColor = 'var(--text-dim)';
+        verdictDesc = `Tu vois uniquement l'historique. Planifie des séances pour activer la projection.`;
+      } else if (cpDelta > 5) {
         verdict = `Progression projetée : +${cpDelta}W`;
         verdictColor = 'var(--go)';
-        verdictDesc = `Ton plan devrait te faire gagner environ ${cpDelta}W (CP ${profile.cp} → ${finalCp}W). Sur 10K, ça représente ${todayTimes['10k'] && finalTimes['10k'] ? `${fmtT(todayTimes['10k'])} → ${fmtT(finalTimes['10k'])}` : '—'}.`;
+        verdictDesc = `Sur ${futureDays} jours de plan, ta CP devrait passer de ${todayPoint?.cp || baseCp}W à ${finalPoint.cp}W.`;
       } else if (cpDelta < -3) {
         verdict = `Recul projeté : ${cpDelta}W`;
         verdictColor = 'var(--warn)';
-        verdictDesc = `Ton plan ne soutient pas le maintien de ta forme actuelle. CP projetée : ${finalCp}W. Augmente le volume ou la fréquence des séances qualité.`;
+        verdictDesc = `Ton plan ne soutient pas le maintien. Augmente le volume ou la fréquence des séances qualité.`;
       } else {
         verdict = 'Maintien projeté';
         verdictColor = 'var(--text)';
-        verdictDesc = `Ton plan stabilise ta forme autour de la CP actuelle (${profile.cp}W). Bien pour consolider, à pousser un peu si tu veux progresser.`;
+        verdictDesc = `Ton plan stabilise ta forme autour de ${baseCp}W. Bien pour consolider, à pousser un peu pour progresser.`;
       }
 
       return (
         <Card className="p-6 md:p-7" accent={verdictColor}>
-          <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
             <div className="flex items-center gap-2">
               <IconTrending size={14} style={{ color: 'var(--accent)' }} />
-              <div className="font-mono text-xs tracking-widest" style={{ color: 'var(--text-dim)' }}>ALLURES PROJETÉES · {futureDays} JOURS</div>
+              <div className="font-mono text-xs tracking-widest" style={{ color: 'var(--text-dim)' }}>TIMELINE DES ALLURES · PASSÉ + FUTUR</div>
             </div>
-            <div className="flex gap-3 font-mono text-[10px] flex-wrap">
-              {['5k','10k','semi','marathon'].map(k => (
-                <div key={k} className="flex items-center gap-1.5"><div className="w-3 h-0.5" style={{ background: colors[k] }}></div><span style={{ color: 'var(--text-dim)' }}>{labels[k]}</span></div>
-              ))}
+            <div className="flex gap-2 font-mono text-[10px] flex-wrap">
+              {allDists.map(k => {
+                const isHidden = hidden.has(k);
+                const lastConf = lastPoint.conf[k] || 0;
+                return (
+                  <button
+                    key={k}
+                    onClick={() => toggleDist(k)}
+                    className="btn flex items-center gap-1.5 px-2 py-1 rounded transition"
+                    style={{
+                      background: isHidden ? 'transparent' : 'var(--bg-elev)',
+                      border: `1px solid ${isHidden ? 'var(--border)' : colors[k] + '60'}`,
+                      opacity: isHidden ? 0.4 : 1,
+                    }}
+                  >
+                    <div className="w-3 h-0.5" style={{ background: isHidden ? 'var(--text-faint)' : colors[k] }}></div>
+                    <span style={{ color: isHidden ? 'var(--text-faint)' : 'var(--text-dim)', textDecoration: isHidden ? 'line-through' : 'none' }}>{labels[k]}</span>
+                    <span style={{ color: isHidden ? 'var(--text-faint)' : 'var(--accent)', fontSize: 9 }}>{stars(lastConf)}</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -6737,78 +7128,104 @@
             <div className="text-sm leading-relaxed mt-1" style={{ color: 'var(--text-dim)' }}>{verdictDesc}</div>
           </div>
 
-          {/* Hover info bar */}
           {hovered ? (
             <div className="mb-3 leading-relaxed">
               <div className="font-mono text-xs">
-                <span style={{ color: hovered.isToday ? 'var(--compass)' : 'var(--accent)' }}>{fmtDate(hovered.date, true)}</span>
-                {' · CP projetée '}<span style={{ color: 'var(--text)' }} className="font-bold">{hovered.projCp}W</span>
+                <span style={{ color: hovered.isToday ? 'var(--compass)' : hovered.isFuture ? 'var(--accent)' : 'var(--text-dim)' }}>
+                  {hovered.isToday ? 'AUJOURD\'HUI' : hovered.isFuture ? 'PROJETÉ' : 'PASSÉ'} · {fmtDate(hovered.date, true)}
+                </span>
+                {' · CP '}<span style={{ color: 'var(--text)' }} className="font-bold">{hovered.cp}W</span>
+                {hovered.isFuture && Number.isFinite(hovered.tsb) && (
+                  <>{' · TSB '}<span style={{ color: hovered.tsb >= 0 ? 'var(--go)' : 'var(--warn)' }} className="font-bold">{hovered.tsb >= 0 ? '+' : ''}{hovered.tsb.toFixed(0)}</span></>
+                )}
               </div>
-              <div className="font-mono text-xs mt-1 flex flex-wrap gap-3">
-                {['5k','10k','semi','marathon'].filter(k => hovered.times[k]).map(k => (
-                  <span key={k}>{labels[k]} : <span style={{ color: colors[k] }} className="font-bold tabular">{fmtT(hovered.times[k])}</span></span>
+              <div className="font-mono text-xs mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                {visibleDists.filter(k => hovered.times[k]).map(k => (
+                  <span key={k}>
+                    <span style={{ color: colors[k] }} className="font-bold">{labels[k]}</span>
+                    {' '}<span className="tabular" style={{ color: 'var(--text)' }}>{fmtPace(hovered.paces[k])}</span>
+                    <span style={{ color: 'var(--text-faint)' }}> ({fmtTime(hovered.times[k])})</span>
+                    <span style={{ color: 'var(--accent)', fontSize: 9 }}> {stars(hovered.conf[k] || 0)}</span>
+                  </span>
                 ))}
               </div>
             </div>
           ) : (
-            <div className="mb-2 font-mono text-xs italic" style={{ color: 'var(--text-faint)' }}>Survole le graphique pour voir les temps prédits jour par jour.</div>
+            <div className="mb-2 font-mono text-xs italic" style={{ color: 'var(--text-faint)' }}>
+              Survole la timeline · ligne pleine = passé · ligne pointillée = projeté · clique sur les puces pour masquer une distance
+            </div>
           )}
 
           <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet" onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave} style={{ cursor: 'crosshair' }}>
-            {/* Y grid */}
-            {[0, 0.25, 0.5, 0.75, 1].map((p, i) => {
-              const yy = padT + ch - p * ch;
-              const v = minT + p * (maxT - minT);
+            {/* Y axis ticks (pace) */}
+            {paceTicks.map((v, i) => {
+              const yy = y(v);
+              if (yy < padT - 2 || yy > padT + ch + 2) return null;
               return (
                 <g key={i}>
                   <line x1={padL} y1={yy} x2={W - padR} y2={yy} stroke="#1F1F1F" strokeWidth="0.5" strokeDasharray="2,3" />
-                  <text x={padL - 6} y={yy + 3} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{fmtT(v)}</text>
+                  <text x={padL - 6} y={yy + 3} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{fmtPace(v)}</text>
                 </g>
               );
             })}
 
-            {/* Race markers — vertical lines at race dates */}
-            {Object.values(targets).map((t, idx) => {
-              const raceMs = new Date(t.race.date).getTime();
-              const todayMs = series[0].date.getTime();
-              const dayIdx = Math.round((raceMs - todayMs) / 86400000);
-              if (dayIdx < 0 || dayIdx >= series.length) return null;
-              const xx = x(dayIdx);
+            <text x={padL - 6} y={padT - 8} textAnchor="end" fontFamily="JetBrains Mono" fontSize="8" fill="#8FE86A">↑ vite</text>
+            <text x={padL - 6} y={padT + ch + 12} textAnchor="end" fontFamily="JetBrains Mono" fontSize="8" fill="#FFB020">↓ lent</text>
+
+            {/* Future zone subtle bg fill */}
+            {todayIdx >= 0 && todayX < W - padR && (
+              <rect x={todayX} y={padT} width={W - padR - todayX} height={ch} fill="#4A9EFF" opacity="0.03" />
+            )}
+
+            {/* Today vertical line */}
+            <line x1={todayX} y1={padT} x2={todayX} y2={padT + ch} stroke="var(--compass)" strokeWidth="1.5" strokeDasharray="0" opacity="0.7" />
+            <text x={todayX} y={padT - 8} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="9" fill="var(--compass)" fontWeight="bold">AUJOURD'HUI</text>
+
+            {/* Race markers */}
+            {Object.values(targets).map((t) => {
+              if (t.raceMs < firstMs || t.raceMs > lastMs) return null;
+              const xx = x(t.raceMs);
               return (
                 <g key={t.race.id}>
-                  <line x1={xx} y1={padT} x2={xx} y2={padT + ch} stroke="var(--accent)" strokeWidth="1" strokeDasharray="2,3" opacity="0.5" />
-                  <text x={xx} y={padT - 6} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="9" fill="var(--accent)">{t.race.name.length > 14 ? t.race.name.slice(0, 12) + '…' : t.race.name}</text>
+                  <line x1={xx} y1={padT + 12} x2={xx} y2={padT + ch} stroke="var(--accent)" strokeWidth="1" strokeDasharray="2,3" opacity="0.5" />
+                  <text x={xx} y={padT + 8} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="9" fill="var(--accent)">{t.race.name.length > 14 ? t.race.name.slice(0, 12) + '…' : t.race.name}</text>
                 </g>
               );
             })}
 
             {/* Hover crosshair */}
             {hovered && (
-              <line x1={x(hoverIdx)} y1={padT} x2={x(hoverIdx)} y2={padT + ch} stroke="#8A8A8A" strokeWidth="0.8" strokeDasharray="3,3" opacity="0.6" />
+              <line x1={x(hovered.ms)} y1={padT} x2={x(hovered.ms)} y2={padT + ch} stroke="#8A8A8A" strokeWidth="0.8" strokeDasharray="3,3" opacity="0.6" />
             )}
 
-            {/* Lines per distance */}
-            {['5k','10k','semi','marathon'].map(k => {
-              const pts = series.filter(s => s.times[k]).map((s, i) => ({ x: x(series.indexOf(s)), y: y(s.times[k]), t: s.times[k] }));
-              if (pts.length < 2) return null;
-              const path = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
-              const last = pts[pts.length - 1];
+            {/* Lines per visible distance: past (solid) + future (dashed) */}
+            {visibleDists.map(k => {
+              const segs = buildSegments(k);
+              const pathPast = segs.past.length >= 2 ? segs.past.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ') : null;
+              const pathFuture = segs.future.length >= 2 ? segs.future.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ') : null;
+              const pathBridge = segs.bridge ? `M ${segs.bridge[0].x.toFixed(1)} ${segs.bridge[0].y.toFixed(1)} L ${segs.bridge[1].x.toFixed(1)} ${segs.bridge[1].y.toFixed(1)}` : null;
+              const last = (segs.future.length ? segs.future[segs.future.length - 1] : segs.past.length ? segs.past[segs.past.length - 1] : null);
+              const lastP = last && pts[pts.length - 1].paces[k];
               return (
                 <g key={k}>
-                  <path d={path} fill="none" stroke={colors[k]} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-                  <text x={last.x + 6} y={last.y + 3} fontFamily="JetBrains Mono" fontSize="9" fill={colors[k]}>{fmtT(last.t)}</text>
+                  {pathPast && <path d={pathPast} fill="none" stroke={colors[k]} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />}
+                  {pathBridge && <path d={pathBridge} fill="none" stroke={colors[k]} strokeWidth="1.5" strokeDasharray="4,3" strokeLinejoin="round" strokeLinecap="round" opacity="0.7" />}
+                  {pathFuture && <path d={pathFuture} fill="none" stroke={colors[k]} strokeWidth="2" strokeDasharray="5,4" strokeLinejoin="round" strokeLinecap="round" opacity="0.85" />}
+                  {/* Past data points */}
+                  {segs.past.map((p, i) => <circle key={`pp-${i}`} cx={p.x} cy={p.y} r="2.5" fill={colors[k]} stroke="#0A0A0A" strokeWidth="1" />)}
+                  {last && lastP && <text x={last.x + 6} y={last.y + 3} fontFamily="JetBrains Mono" fontSize="9" fill={colors[k]}>{fmtPace(lastP)}</text>}
                 </g>
               );
             })}
 
             {/* Hover dots */}
-            {hovered && ['5k','10k','semi','marathon'].filter(k => hovered.times[k]).map(k => (
-              <circle key={k} cx={x(hoverIdx)} cy={y(hovered.times[k])} r="4" fill={colors[k]} stroke="#0A0A0A" strokeWidth="1.5" />
+            {hovered && visibleDists.filter(k => hovered.paces[k]).map(k => (
+              <circle key={k} cx={x(hovered.ms)} cy={y(hovered.paces[k])} r="4" fill={colors[k]} stroke="#0A0A0A" strokeWidth="1.5" />
             ))}
 
-            {/* X axis */}
-            <text x={padL} y={H - 8} textAnchor="start" fontFamily="JetBrains Mono" fontSize="9" fill="#555">aujourd'hui</text>
-            <text x={W - padR} y={H - 8} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{fmtDate(series[series.length - 1].date)}</text>
+            {/* X axis labels */}
+            <text x={padL} y={H - 10} textAnchor="start" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{fmtDate(pts[0].date)}</text>
+            <text x={W - padR} y={H - 10} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{fmtDate(pts[pts.length - 1].date)}</text>
           </svg>
 
           {/* Race target box */}
@@ -6819,24 +7236,27 @@
                 const c = colors[t.distKey] || 'var(--compass)';
                 const onTrack = t.projectedSec && t.projectedSec <= t.targetSec;
                 const gap = t.projectedSec ? t.projectedSec - t.targetSec : null;
+                const projPace = t.projectedSec ? t.projectedSec / t.distKm : null;
                 return (
                   <div key={t.race.id} className="rounded-lg p-3 flex items-center gap-3 flex-wrap" style={{ background: 'var(--bg-elev)', border: `1px solid ${onTrack ? 'rgba(143, 232, 106, 0.3)' : 'rgba(138, 138, 138, 0.2)'}` }}>
                     <div className="flex-1 min-w-[140px]">
-                      <div className="font-display font-bold text-sm" style={{ color: c }}>{t.race.name}</div>
-                      <div className="font-mono text-[11px]" style={{ color: 'var(--text-dim)' }}>{fmtDate(new Date(t.race.date))} · {t.race.distance} · objectif <span style={{ color: 'var(--text)' }}>{fmtT(t.targetSec)}</span></div>
+                      <div className="font-display font-bold text-sm flex items-center gap-2" style={{ color: c }}>
+                        {t.race.name}
+                        {t.projectedConf && <span className="font-mono text-[10px]" style={{ color: 'var(--accent)' }} title={`Confiance ${t.projectedConf}/3`}>{stars(t.projectedConf)}</span>}
+                      </div>
+                      <div className="font-mono text-[11px]" style={{ color: 'var(--text-dim)' }}>
+                        {fmtDate(new Date(t.race.date))} · {t.race.distance} · objectif <span style={{ color: 'var(--text)' }}>{fmtTime(t.targetSec)}</span>
+                        {Number.isFinite(t.projectedTSB) && <span> · TSB jour J <span style={{ color: t.projectedTSB >= 5 ? 'var(--go)' : t.projectedTSB <= -10 ? 'var(--warn)' : 'var(--text-dim)' }}>{t.projectedTSB >= 0 ? '+' : ''}{t.projectedTSB.toFixed(0)}</span></span>}
+                      </div>
                     </div>
                     <div className="font-mono text-xs flex flex-col items-end">
                       <div>
-                        Projeté : <span className="font-bold tabular" style={{ color: c }}>{fmtT(t.projectedSec)}</span>
+                        Projeté : <span className="font-bold tabular" style={{ color: c }}>{fmtTime(t.projectedSec)}</span>
+                        {projPace && <span className="ml-1" style={{ color: 'var(--text-faint)' }}>({fmtPace(projPace)})</span>}
                       </div>
                       {gap !== null && (
                         <div className="font-mono text-[10px] mt-0.5" style={{ color: onTrack ? 'var(--go)' : 'var(--warn)' }}>
                           {onTrack ? '✓ DANS LE BUDGET' : `${gap > 0 ? '+' : ''}${Math.round(gap)}s vs objectif`}
-                        </div>
-                      )}
-                      {t.firstAchievedDate && !onTrack && (
-                        <div className="font-mono text-[10px] mt-0.5" style={{ color: 'var(--text-faint)' }}>
-                          Atteint dans le plan le {fmtDate(t.firstAchievedDate)}
                         </div>
                       )}
                     </div>
@@ -6847,7 +7267,7 @@
           )}
 
           <div className="mt-4 p-3 rounded-lg font-mono text-[10px] leading-relaxed" style={{ background: 'rgba(74, 158, 255, 0.04)', color: 'var(--text-faint)', border: '1px solid var(--border)' }}>
-            <span style={{ color: 'var(--compass)' }}>Modèle :</span> CP projetée = CP actuelle + (CTL projetée − CTL actuelle) × 0.4 W/CTL, plafonnée à ±5% sur la fenêtre. Les temps sont dérivés via le modèle Coût Énergétique (Running Economy) calibré sur tes records personnels. <span style={{ color: 'var(--text-dim)' }}>C'est une projection optimiste qui suppose que tu fais effectivement les séances planifiées et que tu récupères correctement.</span>
+            <span style={{ color: 'var(--compass)' }}>Lecture :</span> ligne pleine = allures historiques (à chaque modification de CP). Ligne pointillée = projection basée sur tes séances planifiées (CP projetée = CP + 0.4×ΔCTL, ±5% max). Les races prises en compte intègrent le bonus TSB du jour J. {cpWpFit && <><br /><span style={{ color: 'var(--compass)' }}>Ton fit CP+W' :</span> CP {cpWpFit.cp}W, W' {(cpWpFit.wprime/1000).toFixed(1)}kJ ({cpWpFit.sampleCount} points).</>}
           </div>
         </Card>
       );
@@ -6879,7 +7299,7 @@
       );
     }
 
-    function AnalyticsView({ activities, profile, checkins, planOverrides, races }) {
+    function AnalyticsView({ activities, profile, checkins, planOverrides, races, onSaveProfile }) {
       const [tab, setTab] = useState('forme'); // forme | tendances | performance
 
       const activitiesWithTss = useMemo(() =>
@@ -6934,7 +7354,45 @@
         return activities.length > 0 ? withTss / activities.length : 0;
       }, [activitiesWithTss, activities]);
 
-      // Race predictions — pass PRs for RE calibration
+      // Merged best efforts (used by V2 prediction for measured power lookup)
+      const mergedBestEfforts = useMemo(() => {
+        const merged = {};
+        activities.forEach(a => {
+          if (!a.bestEfforts) return;
+          Object.entries(a.bestEfforts).forEach(([d, p]) => {
+            const pNum = Number(p);
+            if (!Number.isFinite(pNum) || pNum <= 0) return;
+            if (!merged[d] || pNum > merged[d]) merged[d] = pNum;
+          });
+        });
+        return merged;
+      }, [activities]);
+
+      const cpWpFit = useMemo(() => estimateCPandWprime(mergedBestEfforts), [mergedBestEfforts]);
+
+      // Detect CP progression from recent power-curve evolution
+      const cpProgression = useMemo(
+        () => detectCPProgression(activities, profile.cp),
+        [activities, profile.cp]
+      );
+
+      function handleAcceptCPSuggestion(newCP) {
+        if (!onSaveProfile) return;
+        const today = new Date().toISOString().slice(0, 10);
+        const cpHistory = Array.isArray(profile.cpHistory) ? [...profile.cpHistory] : [];
+        // Avoid duplicating today's entry
+        const existing = cpHistory.findIndex(h => h.date === today);
+        if (existing >= 0) cpHistory[existing] = { date: today, value: newCP };
+        else cpHistory.push({ date: today, value: newCP });
+        cpHistory.sort((a, b) => new Date(a.date) - new Date(b.date));
+        onSaveProfile({ ...profile, cp: newCP, cpHistory });
+      }
+
+      // Race predictions V2 — uses real power curve + per-distance RE + (optional) TSB bonus
+      // We compute TWO predictions per distance:
+      //   - "neutral" (baseline, TSB=0): your fitness right now if perfectly rested
+      //   - "today" (TSB=current): your fitness adjusted for today's freshness/fatigue
+      // Showing both lets you see what the fatigue/freshness gap actually costs/gives.
       const predictions = useMemo(() => {
         const distances = [
           { name: '5 km', km: 5, currentKey: '5k' },
@@ -6942,11 +7400,25 @@
           { name: 'Semi', km: 21.1, currentKey: 'semi' },
           { name: 'Marathon', km: 42.2, currentKey: 'marathon' },
         ];
+        const wprime = cpWpFit ? cpWpFit.wprime : 15000;
         return distances.map(d => {
-          const pred = predictRaceTime(profile.cp, profile.weightKg, d.km, profile.prs);
-          return { ...d, current: profile.prs?.[d.currentKey], predictedSec: pred?.timeSec, runningEconomy: pred?.runningEconomy, calibrated: pred?.calibrated };
+          const neutral = predictRaceTimeV2(profile.cp, wprime, profile.weightKg, d.km, profile.prs, mergedBestEfforts, 0);
+          const today = predictRaceTimeV2(profile.cp, wprime, profile.weightKg, d.km, profile.prs, mergedBestEfforts, fitness.tsb);
+          return {
+            ...d,
+            current: profile.prs?.[d.currentKey],
+            predictedSec: neutral?.timeSec,
+            todaySec: today?.timeSec,
+            runningEconomy: neutral?.runningEconomy,
+            calibrated: neutral?.calibrated,
+            confidence: neutral?.confidence,
+            source: neutral?.source,
+            tsbBonus: today?.tsbBonus,
+            racePower: neutral?.racePower,
+            todayPower: today?.racePower,
+          };
         });
-      }, [profile.cp, profile.weightKg, profile.prs]);
+      }, [profile.cp, profile.weightKg, profile.prs, mergedBestEfforts, cpWpFit, fitness.tsb]);
 
       // Header always shows
       const header = (
@@ -7058,9 +7530,9 @@
           {/* Tab content: Performance */}
           {tab === 'performance' && (
             <>
-              <div className="mb-4"><RacePredictorCard predictions={predictions} cp={profile.cp} /></div>
-              <div className="mb-4"><FuturePaceProjectionCard activities={activities} profile={profile} planOverrides={planOverrides} races={races} /></div>
-              <div className="mb-4"><RaceTimeProjectionCard profile={profile} /></div>
+              <CPProgressionBanner progression={cpProgression} profile={profile} onAcceptCP={handleAcceptCPSuggestion} />
+              <div className="mb-4"><RacePredictorCard predictions={predictions} cp={profile.cp} tsb={fitness.tsb} /></div>
+              <div className="mb-4"><PaceTimelineCard activities={activities} profile={profile} planOverrides={planOverrides} races={races} /></div>
               <div className="mb-4"><VirtualCompetitionCard activities={activities} profile={profile} /></div>
             </>
           )}
@@ -7854,160 +8326,78 @@
       );
     }
 
-    function RaceTimeProjectionCard({ profile }) {
-      const [hoverIdx, setHoverIdx] = useState(null);
-      const svgRef = useRef(null);
+    // ========================================================================
+    // CP PROGRESSION BANNER — non-destructive suggestion when power curve has
+    // measurably improved. User can accept (updates profile.cp + history) or
+    // dismiss (silent, won't show again until next window).
+    // ========================================================================
+    function CPProgressionBanner({ progression, profile, onAcceptCP }) {
+      const [dismissed, setDismissed] = useState(false);
+      const [expanded, setExpanded] = useState(false);
+      if (!progression || dismissed) return null;
 
-      // Build history from cpHistory + always include current profile.cp at today's date
-      const today = new Date().toISOString().slice(0, 10);
-      const histRaw = (profile.cpHistory || []).filter(h => h.value);
-      const histMap = new Map();
-      histRaw.forEach(h => histMap.set(h.date, h.value));
-      if (profile.cp) histMap.set(today, profile.cp);
-      const history = Array.from(histMap.entries())
-        .map(([date, value]) => ({ date, value }))
-        .sort((a, b) => new Date(a.date) - new Date(b.date));
+      const { suggestedCP, currentCP, deltaCP, deltaPct, evidence, confidence, improvements, sampleCount } = progression;
+      const confLabel = { high: 'forte', medium: 'modérée', low: 'faible' }[confidence] || 'faible';
+      const confColor = confidence === 'high' ? 'var(--go)' : confidence === 'medium' ? 'var(--accent)' : 'var(--warn)';
 
-      if (history.length < 2) {
-        return (
-          <Card className="p-6 flex flex-col items-center justify-center text-center" style={{ minHeight: 200 }}>
-            <IconTrending size={28} style={{ color: 'var(--text-faint)' }} className="mb-3" />
-            <div className="font-display text-base font-bold mb-1">Évolution des temps prédits</div>
-            <div className="text-xs max-w-xs" style={{ color: 'var(--text-dim)' }}>Dès que ta CP évolue (changement dans Profil ou via test), Compass trace ta progression sur 5K, 10K, Semi, Marathon.</div>
-          </Card>
-        );
+      function handleAccept() {
+        if (onAcceptCP) onAcceptCP(suggestedCP);
+        setDismissed(true);
       }
-
-      // For each CP history point, compute predicted time on 4 distances
-      const series = history.map(h => {
-        const dists = { '5k': 5, '10k': 10, 'semi': 21.1, marathon: 42.2 };
-        const times = {};
-        Object.entries(dists).forEach(([k, km]) => {
-          const p = predictRaceTime(h.value, profile.weightKg || 70, km, profile.prs);
-          if (p) times[k] = p.timeSec;
-        });
-        return { date: h.date, cp: h.value, times };
-      });
-
-      const W = 800; const H = 280;
-      const padL = 48; const padR = 80; const padT = 20; const padB = 36;
-      const cw = W - padL - padR; const ch = H - padT - padB;
-
-      const firstMs = new Date(series[0].date).getTime();
-      const lastMs = new Date(series[series.length - 1].date).getTime();
-      const span = Math.max(1, lastMs - firstMs);
-      const x = (dateStr) => padL + ((new Date(dateStr).getTime() - firstMs) / span) * cw;
-
-      const allTimes = series.flatMap(s => Object.values(s.times));
-      const minT = Math.min(...allTimes) * 0.98;
-      const maxT = Math.max(...allTimes) * 1.02;
-      const y = (sec) => padT + ch - ((sec - minT) / (maxT - minT)) * ch;
-
-      const colors = { '5k': '#D4FF00', '10k': '#4A9EFF', 'semi': '#FFB020', marathon: '#FF8040' };
-      const labels = { '5k': '5K', '10k': '10K', 'semi': 'Semi', marathon: 'Marathon' };
-
-      const fmtT = (sec) => {
-        const h = Math.floor(sec / 3600); const m = Math.floor((sec % 3600) / 60); const s = Math.round(sec % 60);
-        if (h > 0) return `${h}h${String(m).padStart(2,'0')}'${String(s).padStart(2,'0')}`;
-        return `${m}'${String(s).padStart(2,'0')}`;
-      };
-
-      // Mouse handler: find nearest series point by x distance
-      function handleMouseMove(e) {
-        if (!svgRef.current) return;
-        const rect = svgRef.current.getBoundingClientRect();
-        const mouseX = ((e.clientX - rect.left) / rect.width) * W;
-        let nearestIdx = 0, minDist = Infinity;
-        series.forEach((s, i) => {
-          const sx = x(s.date);
-          const d = Math.abs(sx - mouseX);
-          if (d < minDist) { minDist = d; nearestIdx = i; }
-        });
-        if (minDist < 50) setHoverIdx(nearestIdx);
-        else setHoverIdx(null);
-      }
-      function handleMouseLeave() { setHoverIdx(null); }
-
-      const hovered = hoverIdx !== null ? series[hoverIdx] : null;
 
       return (
-        <Card className="p-6 md:p-7">
-          <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-            <div className="flex items-center gap-2">
-              <IconTrending size={14} style={{ color: 'var(--accent)' }} />
-              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>ÉVOLUTION DES TEMPS PRÉDITS</div>
+        <Card className="p-5 md:p-6 mb-4" accent="var(--go)">
+          <div className="flex items-start gap-3 flex-wrap">
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(143, 232, 106, 0.15)' }}>
+              <IconTrending size={20} style={{ color: 'var(--go)' }} />
             </div>
-            <div className="flex gap-3 font-mono text-[10px] flex-wrap">
-              {['5k','10k','semi','marathon'].map(k => (
-                <div key={k} className="flex items-center gap-1.5"><div className="w-3 h-0.5" style={{ background: colors[k] }}></div><span style={{ color: 'var(--text-dim)' }}>{labels[k]}</span></div>
-              ))}
+            <div className="flex-1 min-w-[240px]">
+              <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--go)' }}>PROGRESSION DÉTECTÉE · CONFIANCE {confLabel.toUpperCase()}</div>
+              <div className="font-display text-lg md:text-xl font-bold mb-1">
+                Ta puissance a progressé. CP suggérée : <span style={{ color: 'var(--go)' }}>{suggestedCP}W</span> <span className="font-mono text-sm" style={{ color: 'var(--text-dim)' }}>(+{deltaCP}W, +{(deltaPct * 100).toFixed(1)}%)</span>
+              </div>
+              <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+                Sur les 5 dernières semaines, ta puissance soutenue s'est améliorée sur <span style={{ color: 'var(--text)' }}>{improvements} des {sampleCount} durées</span> que je surveille (3min, 5min, 10min, 20min, 30min). Ta CP actuelle de <span style={{ color: 'var(--text)' }}>{currentCP}W</span> est probablement sous-estimée — accepter ajustera tes prédictions de course et tes zones d'entraînement.
+              </div>
+              {expanded && (
+                <div className="mt-3 p-3 rounded-lg fade-in" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
+                  <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--text-faint)' }}>EVIDENCE PAR DURÉE (avant → maintenant)</div>
+                  <div className="space-y-1">
+                    {evidence.map(e => {
+                      const durLabel = e.duration === 1800 ? '30 min' : e.duration === 1200 ? '20 min' : e.duration === 600 ? '10 min' : e.duration === 300 ? '5 min' : '3 min';
+                      const c = e.delta > 0 ? 'var(--go)' : e.delta < 0 ? 'var(--warn)' : 'var(--text-dim)';
+                      return (
+                        <div key={e.duration} className="font-mono text-xs flex items-center gap-3">
+                          <span style={{ color: 'var(--text-dim)', minWidth: 60 }}>{durLabel}</span>
+                          <span className="tabular" style={{ color: 'var(--text)' }}>{e.oldPower}W → {e.newPower}W</span>
+                          <span className="tabular" style={{ color: c }}>{e.delta > 0 ? '+' : ''}{e.delta}W</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-3 font-mono text-[10px] italic" style={{ color: 'var(--text-faint)' }}>
+                    Méthodo : compare best efforts sur 5 dernières semaines vs 8 semaines précédentes. Suggère uniquement si ≥3 durées s'améliorent en moyenne d'au moins 1.5%, et si gain absolu ≥ 4W. Ne baisse jamais la CP automatiquement (un détraînement nécessite ton jugement).
+                  </div>
+                </div>
+              )}
             </div>
           </div>
-
-          {/* Hover info bar */}
-          {hovered ? (
-            <div className="mb-2 leading-relaxed" style={{ color: 'var(--text-faint)' }}>
-              <div className="font-mono text-xs">
-                <span style={{ color: 'var(--accent)' }}>{fmtDate(hovered.date, true)}</span>
-                {' · CP '}<span style={{ color: 'var(--text)' }}>{hovered.cp}W</span>
-              </div>
-              <div className="font-mono text-xs mt-1 flex flex-wrap gap-3">
-                {['5k','10k','semi','marathon'].filter(k => hovered.times[k]).map(k => (
-                  <span key={k}>{labels[k]} : <span style={{ color: colors[k] }} className="font-bold tabular">{fmtT(hovered.times[k])}</span></span>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="mb-2 font-mono text-xs italic" style={{ color: 'var(--text-faint)' }}>Survole le graphique pour voir les temps prédits à chaque date</div>
-          )}
-
-          <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet" onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave} style={{ cursor: 'crosshair' }}>
-            {/* Y-axis ticks */}
-            {[0, 0.25, 0.5, 0.75, 1].map((p, i) => {
-              const yy = padT + ch - p * ch;
-              const v = minT + p * (maxT - minT);
-              return (
-                <g key={i}>
-                  <line x1={padL} y1={yy} x2={W - padR} y2={yy} stroke="#1F1F1F" strokeWidth="0.5" strokeDasharray="2,3" />
-                  <text x={padL - 6} y={yy + 3} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{fmtT(v)}</text>
-                </g>
-              );
-            })}
-            {/* X-axis */}
-            <text x={padL} y={H - 10} textAnchor="start" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{fmtDate(series[0].date)}</text>
-            <text x={W - padR} y={H - 10} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{fmtDate(series[series.length - 1].date)}</text>
-
-            {/* Vertical hover line */}
-            {hovered && (
-              <line x1={x(hovered.date)} y1={padT} x2={x(hovered.date)} y2={padT + ch} stroke="#8A8A8A" strokeWidth="0.8" strokeDasharray="3,3" opacity="0.6" />
-            )}
-
-            {/* Lines per distance */}
-            {['5k','10k','semi','marathon'].map(k => {
-              const pts = series.filter(s => s.times[k]).map(s => ({ x: x(s.date), y: y(s.times[k]), t: s.times[k], date: s.date }));
-              if (pts.length < 2) return null;
-              const path = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
-              const last = pts[pts.length - 1];
-              return (
-                <g key={k}>
-                  <path d={path} fill="none" stroke={colors[k]} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-                  {pts.map((p, i) => {
-                    const isHovered = hovered && p.date === hovered.date;
-                    return <circle key={i} cx={p.x} cy={p.y} r={isHovered ? "5" : "3"} fill={colors[k]} stroke="#0A0A0A" strokeWidth="1.5" style={{ transition: 'r 0.15s' }} />;
-                  })}
-                  <text x={last.x + 6} y={last.y + 3} fontFamily="JetBrains Mono" fontSize="9" fill={colors[k]}>{fmtT(last.t)}</text>
-                </g>
-              );
-            })}
-          </svg>
-          <div className="mt-3 text-xs" style={{ color: 'var(--text-dim)' }}>
-            Évolution de ta CP ({series[0].cp}W → {series[series.length - 1].cp}W) projetée sur 5K, 10K, Semi, Marathon. Survole le graphique pour les détails.
+          <div className="flex gap-2 mt-4 flex-wrap">
+            <button onClick={handleAccept} className="btn lift flex items-center gap-2 px-4 py-2 rounded-lg font-mono text-[11px] tracking-widest" style={{ background: 'var(--go)', color: '#000' }}>
+              <IconCheck size={13} /> ACCEPTER · CP → {suggestedCP}W
+            </button>
+            <button onClick={() => setExpanded(!expanded)} className="btn px-4 py-2 rounded-lg font-mono text-[11px] tracking-widest" style={{ background: 'var(--bg-elev)', color: 'var(--text-dim)' }}>
+              {expanded ? 'MASQUER' : 'VOIR'} EVIDENCE
+            </button>
+            <button onClick={() => setDismissed(true)} className="btn px-4 py-2 rounded-lg font-mono text-[11px] tracking-widest" style={{ background: 'transparent', color: 'var(--text-faint)' }}>
+              IGNORER
+            </button>
           </div>
         </Card>
       );
     }
 
-    function RacePredictorCard({ predictions, cp }) {
+    function RacePredictorCard({ predictions, cp, tsb }) {
       function fmtTime(sec) {
         if (!sec) return '—';
         const h = Math.floor(sec / 3600);
@@ -8023,54 +8413,105 @@
         if (parts.length === 3 && !parts.some(isNaN)) return parts[0] * 3600 + parts[1] * 60 + parts[2];
         return null;
       }
+      const stars = (n) => '★'.repeat(n || 0) + '☆'.repeat(Math.max(0, 3 - (n || 0)));
+      const sourceLabels = {
+        measured: 'mesuré sur ta courbe',
+        cpwp: 'extrapolé via CP+W\'',
+        'long-decay': 'extrapolé (longue durée)',
+        fallback: 'défaut Coggan',
+      };
+
+      // Freshness state — what's TSB telling us today?
+      const tsbVal = Number.isFinite(tsb) ? tsb : 0;
+      let freshnessLabel = 'NEUTRE', freshnessColor = 'var(--text-dim)', freshnessDesc = '';
+      if (tsbVal >= 15) { freshnessLabel = 'TRÈS FRAIS'; freshnessColor = 'var(--go)'; freshnessDesc = 'forme de course optimale'; }
+      else if (tsbVal >= 5) { freshnessLabel = 'FRAIS'; freshnessColor = 'var(--go)'; freshnessDesc = 'bonne forme'; }
+      else if (tsbVal >= -5) { freshnessLabel = 'NEUTRE'; freshnessColor = 'var(--text-dim)'; freshnessDesc = 'équilibre charge/fraîcheur'; }
+      else if (tsbVal >= -15) { freshnessLabel = 'CHARGÉ'; freshnessColor = 'var(--warn)'; freshnessDesc = 'fatigue accumulée'; }
+      else { freshnessLabel = 'TRÈS CHARGÉ'; freshnessColor = 'var(--alert)'; freshnessDesc = 'fatigue importante'; }
+
       return (
-        <Card className="p-6 md:p-7 mt-4">
-          <div className="flex items-center justify-between mb-5 flex-wrap gap-2">
+        <Card className="p-6 md:p-7">
+          <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
             <div className="flex items-center gap-2">
               <IconTarget size={14} style={{ color: 'var(--accent)' }} />
-              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>PRÉDICTIONS DE COURSE · BASÉ SUR CP {cp}W</div>
+              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>PRÉDICTIONS DE COURSE · CP {cp}W</div>
             </div>
+            <div className="font-mono text-[10px] tracking-widest px-2 py-1 rounded flex items-center gap-1.5" style={{ background: 'var(--bg-elev)', border: `1px solid ${freshnessColor}40` }}>
+              <span style={{ color: 'var(--text-faint)' }}>TSB</span>
+              <span className="tabular" style={{ color: freshnessColor }}>{tsbVal >= 0 ? '+' : ''}{tsbVal.toFixed(0)}</span>
+              <span style={{ color: freshnessColor }}>· {freshnessLabel}</span>
+            </div>
+          </div>
+          <div className="text-xs mb-4" style={{ color: 'var(--text-dim)' }}>
+            La colonne <span style={{ color: 'var(--accent)' }}>RÉFÉRENCE</span> est ta forme à TSB neutre (frais et reposé). La colonne <span style={{ color: freshnessColor }}>AUJOURD'HUI</span> intègre {freshnessDesc} pour donner ta vraie performance attendue maintenant.
           </div>
           <div className="overflow-x-auto -mx-6 md:-mx-7">
             <table className="w-full" style={{ borderCollapse: 'collapse' }}>
               <thead>
                 <tr className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>
                   <th className="text-left pb-3 px-6 md:px-7">DISTANCE</th>
-                  <th className="text-right pb-3 px-2">TEMPS PRÉDIT</th>
+                  <th className="text-right pb-3 px-2"><span style={{ color: 'var(--accent)' }}>RÉFÉRENCE</span></th>
+                  <th className="text-right pb-3 px-2"><span style={{ color: freshnessColor }}>AUJOURD'HUI</span></th>
+                  <th className="text-center pb-3 px-2 hidden md:table-cell">CONFIANCE</th>
                   <th className="text-right pb-3 px-2">TON PR</th>
-                  <th className="text-right pb-3 px-2">DELTA</th>
-                  <th className="text-right pb-3 px-6 md:px-7 hidden md:table-cell">ALLURE</th>
+                  <th className="text-right pb-3 px-6 md:px-7 hidden md:table-cell">DELTA PR</th>
                 </tr>
               </thead>
               <tbody>
                 {predictions.map((p, i) => {
                   const prSec = parsePR(p.current);
-                  const delta = prSec && p.predictedSec ? prSec - p.predictedSec : null;
-                  const deltaColor = delta === null ? 'var(--text-faint)' : delta > 5 ? 'var(--go)' : delta < -5 ? 'var(--warn)' : 'var(--text-dim)';
-                  const paceMin = p.predictedSec ? (p.predictedSec / 60) / p.km : null;
+                  const refDelta = prSec && p.predictedSec ? prSec - p.predictedSec : null;
+                  const refDeltaColor = refDelta === null ? 'var(--text-faint)' : refDelta > 5 ? 'var(--go)' : refDelta < -5 ? 'var(--warn)' : 'var(--text-dim)';
+                  const conf = p.confidence || 0;
+                  const confColor = conf >= 3 ? 'var(--go)' : conf >= 2 ? 'var(--accent)' : conf >= 1 ? 'var(--warn)' : 'var(--text-faint)';
+                  // Today vs reference: how much faster/slower are we today?
+                  const todayDelta = p.todaySec && p.predictedSec ? p.todaySec - p.predictedSec : null;
+                  const todayPace = p.todaySec ? (p.todaySec / 60) / p.km : null;
                   return (
                     <tr key={i} className="border-t" style={{ borderColor: 'var(--border)' }}>
                       <td className="py-4 px-6 md:px-7">
                         <div className="font-display font-bold text-base">{p.name}</div>
-                        <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>{p.km} km</div>
+                        <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
+                          {p.km} km
+                          {p.calibrated && <span className="ml-1.5" style={{ color: 'var(--go)' }} title="RE calibrée depuis ton PR">· RE✓</span>}
+                        </div>
                       </td>
+                      {/* Reference (TSB neutral) */}
                       <td className="py-4 text-right px-2">
-                        <div className="font-display font-bold text-lg tabular" style={{ color: 'var(--accent)' }}>{fmtTime(p.predictedSec)}</div>
+                        <div className="font-display font-bold text-base tabular" style={{ color: 'var(--accent)' }}>{fmtTime(p.predictedSec)}</div>
+                        {p.racePower && <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>{p.racePower}W</div>}
+                      </td>
+                      {/* Today (TSB-adjusted) */}
+                      <td className="py-4 text-right px-2">
+                        <div className="font-display font-bold text-base tabular" style={{ color: freshnessColor }}>{fmtTime(p.todaySec)}</div>
+                        <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
+                          {todayPace && (
+                            <span>{Math.floor(todayPace)}:{String(Math.round((todayPace % 1) * 60)).padStart(2, '0')}/km</span>
+                          )}
+                          {todayDelta !== null && Math.abs(todayDelta) >= 1 && (
+                            <span className="ml-1.5" style={{ color: todayDelta < 0 ? 'var(--go)' : 'var(--warn)' }}>
+                              {todayDelta < 0 ? '−' : '+'}{Math.abs(Math.round(todayDelta))}s
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-4 text-center px-2 hidden md:table-cell">
+                        <div className="font-mono text-sm" style={{ color: confColor }} title={`${conf}/3 · ${sourceLabels[p.source] || p.source}`}>
+                          {stars(conf)}
+                        </div>
                       </td>
                       <td className="py-4 text-right px-2">
                         <div className="font-mono text-sm tabular" style={{ color: p.current ? 'var(--text)' : 'var(--text-faint)' }}>{p.current || '—'}</div>
                       </td>
-                      <td className="py-4 text-right px-2">
-                        {delta !== null ? (
-                          <div className="font-mono text-sm tabular font-bold" style={{ color: deltaColor }}>
-                            {delta > 0 ? '−' : delta < 0 ? '+' : ''}{fmtTime(Math.abs(delta))}
+                      <td className="py-4 text-right px-6 md:px-7 hidden md:table-cell">
+                        {refDelta !== null ? (
+                          <div className="font-mono text-sm tabular font-bold" style={{ color: refDeltaColor }}>
+                            {refDelta > 0 ? '−' : refDelta < 0 ? '+' : ''}{fmtTime(Math.abs(refDelta))}
                           </div>
                         ) : (
                           <div className="font-mono text-sm" style={{ color: 'var(--text-faint)' }}>—</div>
                         )}
-                      </td>
-                      <td className="py-4 text-right px-6 md:px-7 hidden md:table-cell">
-                        <div className="font-mono text-sm tabular" style={{ color: 'var(--text-dim)' }}>{paceMin ? `${Math.floor(paceMin)}:${String(Math.round((paceMin % 1) * 60)).padStart(2, '0')}/km` : '—'}</div>
                       </td>
                     </tr>
                   );
@@ -8079,17 +8520,18 @@
             </table>
           </div>
           <div className="mt-5 text-xs leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-            {predictions[0]?.calibrated ? (
-              <>
-                <span style={{ color: 'var(--go)' }}>Modèle calibré automatiquement</span> depuis tes PRs. Running Economy = <span className="font-mono tabular" style={{ color: 'var(--text)' }}>{predictions[0].runningEconomy.toFixed(3)} W/kg/(m/s)</span>. Tes prédictions sont personnalisées.
-              </>
-            ) : (
-              <>
-                Modèle non calibré (RE par défaut = 1.04). Ajoute tes PRs dans ton Profil pour calibrer les prédictions individuellement.
-              </>
-            )}
-            <div className="mt-2">
-              Facteurs d'intensité Stryd : 5K à 1.06×CP · 10K à 0.97×CP · semi à 0.92×CP · marathon à 0.85×CP. Delta vs PR : <span style={{ color: 'var(--go)' }}>vert = potentiel à débloquer</span> · <span style={{ color: 'var(--warn)' }}>orange = PR supérieur à la prédiction (CP potentiellement sous-estimée)</span>.
+            <div className="mb-2">
+              <span style={{ color: 'var(--accent)' }}>Confiance :</span>
+              <span className="ml-2"><span style={{ color: 'var(--go)' }}>★★★</span> mesuré sur ta courbe</span>
+              <span className="ml-2">· <span style={{ color: 'var(--accent)' }}>★★</span> CP+W'/t (Monod)</span>
+              <span className="ml-2">· <span style={{ color: 'var(--warn)' }}>★</span> longue durée (Péronnet)</span>
+            </div>
+            <div>
+              {predictions.some(p => p.calibrated) ? (
+                <><span style={{ color: 'var(--go)' }}>RE calibrée par distance</span> sur tes PRs. Ajoute tous tes PRs dans Profil pour maximiser la précision.</>
+              ) : (
+                <>RE par défaut = 1.04 W/kg/(m/s). Ajoute tes PRs dans Profil pour calibrer individuellement chaque distance.</>
+              )}
             </div>
           </div>
         </Card>
@@ -8211,7 +8653,22 @@
     // ========================================================================
     // RACE TIMELINE — upcoming races on a horizontal timeline
     // ========================================================================
-    function RaceTimeline({ races, profile, predictRaceTime }) {
+    function RaceTimeline({ races, profile, activities }) {
+      // Build best efforts + W' fit for V2 prediction
+      const cpWp = useMemo(() => {
+        if (!activities || !activities.length) return { merged: null, fit: null };
+        const merged = {};
+        activities.forEach(a => {
+          if (!a.bestEfforts) return;
+          Object.entries(a.bestEfforts).forEach(([d, p]) => {
+            const pNum = Number(p);
+            if (!Number.isFinite(pNum) || pNum <= 0) return;
+            if (!merged[d] || pNum > merged[d]) merged[d] = pNum;
+          });
+        });
+        return { merged, fit: estimateCPandWprime(merged) };
+      }, [activities]);
+      const wprime = cpWp.fit ? cpWp.fit.wprime : 15000;
       const now = new Date();
       const upcoming = [...races].filter(r => new Date(r.date) >= now).sort((a, b) => new Date(a.date) - new Date(b.date));
       if (!upcoming.length) return null;
@@ -8266,7 +8723,7 @@
                 {upcoming.map(r => {
                   const km = distToKm(r.distance);
                   if (!km) return null;
-                  const pred = predictRaceTime(profile.cp, profile.weightKg, km, profile.prs);
+                  const pred = predictRaceTimeV2(profile.cp, wprime, profile.weightKg, km, profile.prs, cpWp.merged, null);
                   if (!pred) return null;
                   const paceMinKm = (pred.timeSec / 60) / km;
                   const paceMin = Math.floor(paceMinKm);
@@ -10176,7 +10633,7 @@
                 planOverrides={planOverrides}
               />
             )}
-            {view === 'analytics' && <AnalyticsView activities={activities} profile={profile} checkins={checkins} planOverrides={planOverrides} races={races} />}
+            {view === 'analytics' && <AnalyticsView activities={activities} profile={profile} checkins={checkins} planOverrides={planOverrides} races={races} onSaveProfile={(np) => setProfile(np)} />}
             {view === 'library' && <LibraryView sessionTemplates={sessionTemplates} onDeleteTemplate={handleDeleteTemplate} onRenameTemplate={handleRenameTemplate} profile={profile} />}
           </main>
 
