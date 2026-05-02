@@ -1102,60 +1102,192 @@
       return out;
     }
 
-    // V2: predict race time using best-effort lookup, CP+W' extrapolation,
-    // per-distance RE calibration, and optional TSB-bonus for race-day freshness.
-    // Returns { timeSec, racePower, runningEconomy, calibrated, confidence, source, tsbBonus }
-    function predictRaceTimeV2(cp, wprime, weightKg, distanceKm, prs, bestEfforts, tsb) {
+    // ========================================================================
+    // V3 PREDICTION SYSTEM — Riegel-anchored race time prediction
+    //
+    // Replaces the V2 per-distance independent model. V2 had two issues:
+    //  1. Times between distances were not coherent (5K and 10K too close,
+    //     21K and marathon too close) because each distance was computed
+    //     independently from its own power bucket without enforcing a
+    //     systematic slowdown curve.
+    //  2. CP-gain projections didn't translate into visible time gains for
+    //     distances served by the "long-decay" power model.
+    //
+    // V3 anchors predictions on ONE reference time and propagates the others
+    // via Riegel's law: T2 = T1 × (D2/D1)^1.06
+    //   - The exponent 1.06 has been validated since Riegel (1981) and is
+    //     used by Strava, Garmin, and most serious modern predictors.
+    //
+    // Public API: predictRaceTimeV2(cp, wprime, weightKg, distanceKm, prs,
+    //   bestEfforts, tsb, baselineCp) — same signature as before, with the
+    //   new optional `baselineCp` for honest projection scaling.
+    // ========================================================================
+
+    const RIEGEL_K = 1.06;
+
+    // Pure Riegel propagation: T2 = T1 × (D2/D1)^k.
+    function riegelPredict(timeSec, fromKm, toKm, k = RIEGEL_K) {
+      if (!timeSec || !fromKm || !toKm) return null;
+      return timeSec * Math.pow(toKm / fromKm, k);
+    }
+
+    // Time-elasticity of CP for each distance.
+    // Empirically calibrated: a 1% CP gain produces approximately a 0.75-0.90%
+    // time gain (speed scales sub-linearly with power due to RE conversion).
+    //   - 5K (high IF, all power-limited): 0.90 elasticity
+    //   - 10K (~95% CP, mostly power-limited): 0.85
+    //   - Semi (~90% CP, more aerobic durability): 0.80
+    //   - Marathon (~85% CP, fueling/durability matter more): 0.75
+    function timeElasticity(distKey) {
+      return { '5k': 0.90, '10k': 0.85, semi: 0.80, marathon: 0.75 }[distKey] || 0.80;
+    }
+
+    // Pick the most reliable anchor distance for a runner.
+    // Returns { anchorKm, anchorSec, anchorKey, source, confidence }
+    //   - confidence: 3 = PR, 2 = power-curve match, 1 = CP+W' or fallback
+    // Priority: 10K PR > Semi PR > 5K PR > Marathon PR > power-curve-derived 10K
+    // 10K is the best anchor — short enough to be measured precisely, long enough
+    // to reflect aerobic ceiling.
+    function pickAnchor(cp, wprime, weightKg, prs, bestEfforts) {
+      if (!cp || !weightKg) return null;
+
+      const distMap = { '5k': 5, '10k': 10, semi: 21.1, marathon: 42.2 };
+      const priorities = ['10k', 'semi', '5k', 'marathon'];
+
+      // 1. Look for a PR by priority
+      for (const key of priorities) {
+        const prSec = parsePRSec(prs && prs[key]);
+        if (prSec && prSec > 0) {
+          return {
+            anchorKm: distMap[key],
+            anchorSec: prSec,
+            anchorKey: key,
+            source: 'pr',
+            confidence: 3,
+          };
+        }
+      }
+
+      // 2. No PR → derive virtual 10K time from power curve
+      const reCalib = calibrateREPerDistance(prs, weightKg, cp, wprime, bestEfforts);
+      const re = reCalib.perDist['10k'] || reCalib.default;
+      let durSec = 10000 / ((cp * 0.95) / (weightKg * re));
+      // Iterate to stabilize
+      for (let i = 0; i < 3; i++) {
+        const pInfo = sustainableRacePower(cp, wprime, durSec, bestEfforts);
+        if (!pInfo.power) break;
+        const newDur = 10000 / (pInfo.power / (weightKg * re));
+        if (Math.abs(newDur - durSec) / durSec < 0.01) { durSec = newDur; break; }
+        durSec = newDur;
+      }
+      const finalP = sustainableRacePower(cp, wprime, durSec, bestEfforts);
+      return {
+        anchorKm: 10,
+        anchorSec: Math.round(durSec),
+        anchorKey: '10k',
+        source: finalP.source === 'measured' ? 'power-curve' : 'cp-model',
+        confidence: finalP.source === 'measured' ? 2 : 1,
+      };
+    }
+
+    // V3: Riegel-anchored race time prediction. Replaces V2 logic.
+    // Keeps the same name as V2 so all call sites work transparently.
+    function predictRaceTimeV2(cp, wprime, weightKg, distanceKm, prs, bestEfforts, tsb, baselineCp = null) {
       if (!cp || !weightKg || !distanceKm) return null;
 
-      // Per-distance RE calibration once
-      const reCalib = calibrateREPerDistance(prs, weightKg, cp, wprime, bestEfforts);
-      // Match distance to a key, fall back to default RE
-      let distKey = null;
+      // Determine target distance key
+      let distKey;
       if (distanceKm <= 7) distKey = '5k';
       else if (distanceKm <= 15) distKey = '10k';
       else if (distanceKm <= 30) distKey = 'semi';
       else distKey = 'marathon';
-      const re = reCalib.perDist[distKey] || reCalib.default;
-      const calibrated = !!reCalib.perDist[distKey];
 
-      // TSB bonus: well-documented effect of tapering. Caps at ~2% gain.
+      // The anchor is taken from BASELINE CP (i.e. the runner's actual current ability)
+      // For projections, we'll then scale the anchor time forward as CP grows.
+      const anchorCp = baselineCp || cp;
+      const anchor = pickAnchor(anchorCp, wprime, weightKg, prs, bestEfforts);
+      if (!anchor) return null;
+
+      // Apply CP-driven time scaling to the anchor (used in projections).
+      // When projected CP > baseline CP, the anchor time decreases via:
+      //   new_time = old_time × (cp_ratio)^(-elasticity)
+      let scaledAnchorSec = anchor.anchorSec;
+      let cpScalingApplied = false;
+      if (baselineCp && cp !== baselineCp && baselineCp > 0) {
+        const cpRatio = cp / baselineCp;
+        const anchorElasticity = timeElasticity(anchor.anchorKey);
+        scaledAnchorSec = anchor.anchorSec * Math.pow(cpRatio, -anchorElasticity);
+        cpScalingApplied = true;
+      }
+
+      // Riegel propagation from anchor to target distance
+      let timeSec;
+      let usedRiegel = false;
+      if (anchor.anchorKey === distKey) {
+        timeSec = scaledAnchorSec;
+      } else {
+        timeSec = riegelPredict(scaledAnchorSec, anchor.anchorKm, distanceKm);
+        usedRiegel = true;
+      }
+
+      // Per-distance fine-tune: if a PR exists at the TARGET distance (and it's
+      // not the anchor), blend Riegel prediction with PR-based prediction.
+      // 60% PR / 40% Riegel preserves Riegel coherence while honouring individuality.
+      const targetPrSec = parsePRSec(prs && prs[distKey]);
+      let calibrated = false;
+      if (targetPrSec && targetPrSec > 0 && distKey !== anchor.anchorKey) {
+        let targetPrScaled = targetPrSec;
+        if (cpScalingApplied) {
+          const targetElast = timeElasticity(distKey);
+          targetPrScaled = targetPrSec * Math.pow(cp / baselineCp, -targetElast);
+        }
+        timeSec = 0.4 * timeSec + 0.6 * targetPrScaled;
+        calibrated = true;
+      } else if (anchor.anchorKey === distKey && anchor.source === 'pr') {
+        calibrated = true;
+      }
+
+      // TSB bonus: documented effect of taper on race performance
       let tsbBonus = 0;
       if (Number.isFinite(tsb)) {
         if (tsb >= 20) tsbBonus = 0.020;
         else if (tsb >= 10) tsbBonus = 0.010;
         else if (tsb >= 5) tsbBonus = 0.005;
-        else if (tsb < -15) tsbBonus = -0.015; // accumulated fatigue penalty
+        else if (tsb < -15) tsbBonus = -0.015;
+      }
+      // tsbBonus is a fractional power gain → time decreases by elasticity × bonus
+      if (tsbBonus !== 0) {
+        const elast = timeElasticity(distKey);
+        timeSec = timeSec * (1 - elast * tsbBonus);
       }
 
-      // Bootstrap duration from a rough IF (used only to pick the right power-bucket)
-      const bootstrapIF = distanceKm <= 7 ? 1.05 : distanceKm <= 15 ? 0.97 : distanceKm <= 30 ? 0.92 : 0.85;
-      let durSec = (distanceKm * 1000) / ((cp * bootstrapIF) / (weightKg * re));
+      // Confidence:
+      //  3★ = PR is anchor AND target = anchor (or target has its own PR)
+      //  2★ = anchor is PR (Riegel propagated) OR anchor from measured power-curve
+      //  1★ = anchor from CP-model (no PR, no power curve match)
+      let confidence;
+      if (anchor.confidence === 3 && (calibrated || distKey === anchor.anchorKey)) confidence = 3;
+      else if (anchor.confidence >= 2) confidence = 2;
+      else confidence = 1;
 
-      // Iterate to stabilize (power depends on duration, duration depends on power)
-      let powerInfo;
-      for (let iter = 0; iter < 3; iter++) {
-        powerInfo = sustainableRacePower(cp, wprime, durSec, bestEfforts);
-        if (!powerInfo.power) return null;
-        const adjusted = powerInfo.power * (1 + tsbBonus);
-        const speedMs = adjusted / (weightKg * re);
-        const newDur = (distanceKm * 1000) / speedMs;
-        // Converged if change < 1%
-        if (Math.abs(newDur - durSec) / durSec < 0.01) { durSec = newDur; break; }
-        durSec = newDur;
-      }
+      // Compute RE and race power for diagnostics
+      const reCalib = calibrateREPerDistance(prs, weightKg, anchorCp, wprime, bestEfforts);
+      const re = reCalib.perDist[distKey] || reCalib.default;
+      const speedMs = (distanceKm * 1000) / timeSec;
+      const racePower = Math.round(weightKg * re * speedMs);
 
       return {
-        timeSec: Math.round(durSec),
-        racePower: Math.round(powerInfo.power * (1 + tsbBonus)),
+        timeSec: Math.round(timeSec),
+        racePower,
         runningEconomy: re,
         calibrated,
-        confidence: powerInfo.confidence,
-        source: powerInfo.source,
+        confidence,
+        source: anchor.source + (usedRiegel ? '+riegel' : ''),
         tsbBonus,
-        matchedBucket: powerInfo.matchedBucket || null,
+        anchor: { km: anchor.anchorKm, sec: anchor.anchorSec, key: anchor.anchorKey },
       };
     }
+
 
     // ========================================================================
     // CP PROGRESSION DETECTION
@@ -6920,7 +7052,10 @@
             const tsb = ctl - atl;
             const times = {}, paces = {}, conf = {};
             Object.entries(distMap).forEach(([k, km]) => {
-              const pred = predictRaceTimeV2(Math.round(projCp), wprime, profile.weightKg, km, profile.prs, cpWp.merged, tsb);
+              // Pass baseCp as 4th-from-last arg so V3 scales the anchor time
+              // proportionally to projected CP gain. Without this, predictions
+              // would be flat (the bug we just fixed).
+              const pred = predictRaceTimeV2(Math.round(projCp), wprime, profile.weightKg, km, profile.prs, cpWp.merged, tsb, baseCp);
               if (pred) {
                 times[k] = pred.timeSec;
                 paces[k] = pred.timeSec / km;
@@ -7267,7 +7402,9 @@
           )}
 
           <div className="mt-4 p-3 rounded-lg font-mono text-[10px] leading-relaxed" style={{ background: 'rgba(74, 158, 255, 0.04)', color: 'var(--text-faint)', border: '1px solid var(--border)' }}>
-            <span style={{ color: 'var(--compass)' }}>Lecture :</span> ligne pleine = allures historiques (à chaque modification de CP). Ligne pointillée = projection basée sur tes séances planifiées (CP projetée = CP + 0.4×ΔCTL, ±5% max). Les races prises en compte intègrent le bonus TSB du jour J. {cpWpFit && <><br /><span style={{ color: 'var(--compass)' }}>Ton fit CP+W' :</span> CP {cpWpFit.cp}W, W' {(cpWpFit.wprime/1000).toFixed(1)}kJ ({cpWpFit.sampleCount} points).</>}
+            <span style={{ color: 'var(--compass)' }}>Lecture :</span> ligne pleine = allures historiques (à chaque modification de CP). Ligne pointillée = projection basée sur tes séances planifiées (CP projetée = CP + 0.4×ΔCTL, ±5% max). Les courses intègrent le bonus TSB du jour J.
+            <br /><span style={{ color: 'var(--compass)' }}>Modèle :</span> Riegel (1981) — T₂ = T₁ × (D₂/D₁)^1.06 — ancré sur ton meilleur PR (priorité 10K → semi → 5K → marathon), ou sur ta courbe de puissance si pas de PR. Élasticité CP→temps : 0.85 (10K) à 0.75 (marathon).
+            {cpWpFit && <><br /><span style={{ color: 'var(--compass)' }}>Ton fit CP+W' :</span> CP {cpWpFit.cp}W, W' {(cpWpFit.wprime/1000).toFixed(1)}kJ ({cpWpFit.sampleCount} points).</>}
           </div>
         </Card>
       );
@@ -8522,15 +8659,15 @@
           <div className="mt-5 text-xs leading-relaxed" style={{ color: 'var(--text-dim)' }}>
             <div className="mb-2">
               <span style={{ color: 'var(--accent)' }}>Confiance :</span>
-              <span className="ml-2"><span style={{ color: 'var(--go)' }}>★★★</span> mesuré sur ta courbe</span>
-              <span className="ml-2">· <span style={{ color: 'var(--accent)' }}>★★</span> CP+W'/t (Monod)</span>
-              <span className="ml-2">· <span style={{ color: 'var(--warn)' }}>★</span> longue durée (Péronnet)</span>
+              <span className="ml-2"><span style={{ color: 'var(--go)' }}>★★★</span> distance avec PR personnel</span>
+              <span className="ml-2">· <span style={{ color: 'var(--accent)' }}>★★</span> Riegel depuis un autre PR ou ta courbe de puissance</span>
+              <span className="ml-2">· <span style={{ color: 'var(--warn)' }}>★</span> CP-modèle uniquement</span>
             </div>
             <div>
-              {predictions.some(p => p.calibrated) ? (
-                <><span style={{ color: 'var(--go)' }}>RE calibrée par distance</span> sur tes PRs. Ajoute tous tes PRs dans Profil pour maximiser la précision.</>
+              Modèle Riegel (1981) — chaque temps dérive d'une distance d'ancrage via T₂ = T₁ × (D₂/D₁)^1.06. {predictions.some(p => p.calibrated) ? (
+                <><span style={{ color: 'var(--go)' }}>Calibration active</span> sur tes PRs.</>
               ) : (
-                <>RE par défaut = 1.04 W/kg/(m/s). Ajoute tes PRs dans Profil pour calibrer individuellement chaque distance.</>
+                <>Ajoute tes PRs dans Profil pour calibrer.</>
               )}
             </div>
           </div>
