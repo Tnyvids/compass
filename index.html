@@ -944,14 +944,22 @@
     // CTL (chronic): over 42 days
     // TSB = CTL - ATL (form)
     function computeFitness(activitiesWithTss, refDate = new Date()) {
-      const now = refDate.getTime();
+      // Normalize refDate to start-of-day so activities done earlier today
+      // (and yesterday) don't shift their day bucket.
+      const refDay = new Date(refDate); refDay.setHours(0, 0, 0, 0);
+      const now = refDay.getTime();
       const days = 90;
       const dayMs = 86400000;
       // Build daily TSS map (rolling back from today)
+      // dailyTss[0] = today (00:00 to 23:59)
+      // dailyTss[1] = yesterday
+      // etc.
       const dailyTss = new Array(days).fill(0);
       activitiesWithTss.forEach(a => {
         if (!a.tss) return;
-        const dayDiff = Math.floor((now - a.startMs) / dayMs);
+        // Normalize activity to start-of-day too, then bucket by day diff
+        const aDay = new Date(a.startMs); aDay.setHours(0, 0, 0, 0);
+        const dayDiff = Math.round((now - aDay.getTime()) / dayMs);
         if (dayDiff >= 0 && dayDiff < days) dailyTss[dayDiff] += a.tss;
       });
       // EWMA (oldest to today)
@@ -975,7 +983,8 @@
 
     // ACWR (Acute:Chronic Workload Ratio) — 7d / (28d / 4)
     function computeACWR(activitiesWithTss, refDate = new Date()) {
-      const now = refDate.getTime();
+      const refDay = new Date(refDate); refDay.setHours(0, 0, 0, 0);
+      const now = refDay.getTime();
       const dayMs = 86400000;
       let acute = 0, chronic = 0;
       let acuteCount = 0, chronicCount = 0;
@@ -984,7 +993,8 @@
       activitiesWithTss.forEach(a => {
         if (a.startMs < earliestMs) earliestMs = a.startMs;
         if (!a.tss) return;
-        const dayDiff = (now - a.startMs) / dayMs;
+        const aDay = new Date(a.startMs); aDay.setHours(0, 0, 0, 0);
+        const dayDiff = (now - aDay.getTime()) / dayMs;
         if (dayDiff >= 0 && dayDiff < 7) { acute += a.tss; acuteCount++; }
         if (dayDiff >= 0 && dayDiff < 28) { chronic += a.tss; chronicCount++; }
       });
@@ -2198,32 +2208,79 @@
 
           {/* FITNESS STRIP — 3 inline numbers, compact, clinical
               Replaces the big FormCard 3-up boxes. One glance = all you need. */}
-          {fitnessSummary && (
-            <Card variant="elevated" className="p-4 md:p-5 mb-3">
-              <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-                <div className="t-meta">FORME · FATIGUE · FRAÎCHEUR</div>
-                <button onClick={() => onNav('analytics')} className="t-meta-dim hover:text-text transition flex items-center gap-1" style={{ color: 'var(--text-dim)' }}>
-                  Détails dans Analytics <IconArrowRight size={11} />
-                </button>
-              </div>
-              <div className="grid grid-cols-3 gap-3 md:gap-6">
-                <div title={TERMS.ctl.tooltip}>
-                  <div className="t-meta-dim mb-1.5">FORME DE FOND</div>
-                  <div className="t-numeric-l tabular" style={{ color: 'var(--compass)' }}>{fitnessSummary.ctl.toFixed(0)}</div>
+          {/* FITNESS NARRATIVE — translates forme/fatigue/fraîcheur into a sentence
+              instead of bare numbers. The numbers are kept small as reference below. */}
+          {fitnessSummary && (() => {
+            // Compose the narrative phrase
+            const ctl = fitnessSummary.ctl;
+            const atl = fitnessSummary.atl;
+            const tsb = fitnessSummary.tsb;
+            // CTL trend over last 14 days vs current — positive = building, negative = detraining
+            // Use the series; index 0 in series is oldest, last is today
+            // We approximate: if CTL > 30, decent base; if < 15, low base
+            let baseDesc;
+            if (ctl >= 50) baseDesc = "ta forme de fond est solide";
+            else if (ctl >= 30) baseDesc = "ta forme de fond est en construction";
+            else if (ctl >= 15) baseDesc = "ta forme de fond est encore légère";
+            else baseDesc = "ta forme de fond est faible (peu d'activités récentes)";
+
+            // Freshness narrative
+            let freshDesc, action, freshTone;
+            if (tsb >= 15) {
+              freshDesc = "tu es très frais";
+              action = "moment idéal pour viser un record ou tester ton seuil";
+              freshTone = 'positive';
+            } else if (tsb >= 5) {
+              freshDesc = "tu es bien reposé";
+              action = "bon état pour une séance qualité ou une course";
+              freshTone = 'positive';
+            } else if (tsb >= -5) {
+              freshDesc = "tu es en équilibre";
+              action = "maintien possible, séance normale OK";
+              freshTone = 'neutral';
+            } else if (tsb >= -15) {
+              freshDesc = "tu accumules de la fatigue";
+              action = "phase de charge, surveille les signaux corporels";
+              freshTone = 'caution';
+            } else {
+              freshDesc = "tu es très fatigué";
+              action = "il faudrait alléger l'intensité quelques jours";
+              freshTone = 'negative';
+            }
+
+            const toneColor = { positive: 'var(--positive)', caution: 'var(--caution)', negative: 'var(--negative)', neutral: 'var(--text)' }[freshTone];
+
+            return (
+              <Card variant="highlighted" accent={freshTone === 'neutral' ? 'compass' : freshTone} className="p-4 md:p-5 mb-3">
+                <div className="flex items-start justify-between mb-2 flex-wrap gap-2">
+                  <div className="t-meta" style={{ color: toneColor }}>FORME · FATIGUE · FRAÎCHEUR</div>
+                  <button onClick={() => onNav('analytics')} className="t-meta-dim hover:text-text transition flex items-center gap-1" style={{ color: 'var(--text-dim)' }}>
+                    Détails dans Analytics <IconArrowRight size={11} />
+                  </button>
                 </div>
-                <div title={TERMS.atl.tooltip}>
-                  <div className="t-meta-dim mb-1.5">FATIGUE</div>
-                  <div className="t-numeric-l tabular" style={{ color: 'var(--caution)' }}>{fitnessSummary.atl.toFixed(0)}</div>
+                <div className="t-body mb-3" style={{ color: 'var(--text)' }}>
+                  Aujourd'hui, {baseDesc} et <span style={{ color: toneColor, fontWeight: 600 }}>{freshDesc}</span>. {action[0].toUpperCase() + action.slice(1)}.
                 </div>
-                <div title={TERMS.tsb.tooltip}>
-                  <div className="t-meta-dim mb-1.5">FRAÎCHEUR</div>
-                  <div className="t-numeric-l tabular" style={{ color: tsbColor }}>
-                    {fitnessSummary.tsb > 0 ? '+' : ''}{fitnessSummary.tsb.toFixed(0)}
+                {/* Numbers as reference, smaller */}
+                <div className="flex items-center gap-4 md:gap-6 pt-3 border-t flex-wrap" style={{ borderColor: 'var(--border)' }}>
+                  <div title={TERMS.ctl.tooltip}>
+                    <span className="t-meta-dim" style={{ color: 'var(--text-faint)' }}>FORME DE FOND</span>{' '}
+                    <span className="t-numeric-s tabular" style={{ color: 'var(--compass)' }}>{ctl.toFixed(0)}</span>
+                  </div>
+                  <div title={TERMS.atl.tooltip}>
+                    <span className="t-meta-dim" style={{ color: 'var(--text-faint)' }}>FATIGUE</span>{' '}
+                    <span className="t-numeric-s tabular" style={{ color: 'var(--caution)' }}>{atl.toFixed(0)}</span>
+                  </div>
+                  <div title={TERMS.tsb.tooltip}>
+                    <span className="t-meta-dim" style={{ color: 'var(--text-faint)' }}>FRAÎCHEUR</span>{' '}
+                    <span className="t-numeric-s tabular" style={{ color: toneColor }}>
+                      {tsb > 0 ? '+' : ''}{tsb.toFixed(0)}
+                    </span>
                   </div>
                 </div>
-              </div>
-            </Card>
-          )}
+              </Card>
+            );
+          })()}
 
           {/* WEEK STRIP — horizontal mini-timeline of the 7 days */}
           <div className="mb-3">
@@ -2603,12 +2660,28 @@
       if (windDisplay >= 30) advices.push(`💨 Vent fort (${Math.round(windDisplay)} km/h) — protège-toi sur le retour, ou choisis un parcours abrité.`);
       if (sessionType === 'intervals' && tDisplay >= 28) advices.push("🌡️ Trop chaud pour des intervalles — décale tôt le matin ou reporte d'un jour.");
 
+      // Build session date label
+      const sessionDateLabel = (() => {
+        if (!sessionDate) return 'CETTE SÉANCE';
+        const today = new Date(); today.setHours(0,0,0,0);
+        const sd = new Date(sessionDate); sd.setHours(0,0,0,0);
+        const diffDays = Math.round((sd.getTime() - today.getTime()) / 86400000);
+        const dn = DAYS_FR_LONG[sd.getDay()];
+        const dd = String(sd.getDate()).padStart(2, '0');
+        const mn = MONTHS_FR[sd.getMonth()];
+        if (diffDays === 0) return `AUJOURD'HUI · ${dn.toUpperCase()} ${dd} ${mn.toUpperCase()}`;
+        if (diffDays === 1) return `DEMAIN · ${dn.toUpperCase()} ${dd} ${mn.toUpperCase()}`;
+        if (diffDays === -1) return `HIER · ${dn.toUpperCase()} ${dd} ${mn.toUpperCase()}`;
+        if (diffDays > 0) return `DANS ${diffDays} J · ${dn.toUpperCase()} ${dd} ${mn.toUpperCase()}`;
+        return `${dn.toUpperCase()} ${dd} ${mn.toUpperCase()}`;
+      })();
+
       return (
         <Card className="p-4 mt-4" accent="var(--compass)">
           <div className="flex items-start gap-3 flex-wrap">
             <div className="text-3xl">{info.e}</div>
             <div className="flex-1 min-w-0">
-              <div className="font-mono text-xs tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>MÉTÉO POUR CETTE SÉANCE</div>
+              <div className="t-meta mb-1">MÉTÉO · {sessionDateLabel}</div>
               <div className="font-display text-base font-bold mb-1">
                 {info.l} · <span style={{ color: 'var(--compass)' }}>{tDisplay}°C</span>
                 <span className="font-mono text-xs ml-2" style={{ color: 'var(--text-dim)' }}>
