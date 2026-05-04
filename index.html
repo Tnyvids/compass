@@ -973,10 +973,20 @@
         atl = atl + atlAlpha * (tss - atl);
         ctlSeries.push(ctl); atlSeries.push(atl); tsbSeries.push(ctl - atl);
       }
+      // Convention: the "current" CTL/ATL/TSB represent the state at the start
+      // of today (= end of yesterday). This matches Stryd PowerCenter / TrainingPeaks.
+      // Without this, an athlete who hasn't yet trained today would see TSB drift
+      // upward as the day passes (because today's bucket=0 is being absorbed into
+      // ATL), giving a misleading "fresh" reading. Use index N-2 (yesterday's
+      // EWMA state, after absorbing yesterday's TSS).
+      const lastIdx = ctlSeries.length - 1;
+      const currentIdx = Math.max(0, lastIdx - 1);
+      const curCtl = ctlSeries[currentIdx];
+      const curAtl = atlSeries[currentIdx];
       return {
-        ctl: Math.round(ctl * 10) / 10,
-        atl: Math.round(atl * 10) / 10,
-        tsb: Math.round((ctl - atl) * 10) / 10,
+        ctl: Math.round(curCtl * 10) / 10,
+        atl: Math.round(curAtl * 10) / 10,
+        tsb: Math.round((curCtl - curAtl) * 10) / 10,
         series: { ctl: ctlSeries, atl: atlSeries, tsb: tsbSeries, dailyTss: reversed },
       };
     }
@@ -2192,25 +2202,21 @@
                 {!todayCheckin ? <ReadinessEmpty onStart={onCheckinStart} /> : <ReadinessFilled checkin={todayCheckin} advice={advice} onView={onCheckinView} onRedo={onCheckinStart} />}
               </div>
               <div className="lg:col-span-2">
-                <PlannedSessionCard session={nextPlannedInfo?.session} sessionDate={nextPlannedInfo?.date} daysAhead={nextPlannedInfo?.daysAhead} advice={advice} profile={profile} onStrengthStart={onStrengthStart} activities={activities} checkins={checkins} />
-                <WeatherCard sessionDate={nextPlannedInfo?.date} sessionType={nextPlannedInfo?.session?.type} />
+                <PlannedSessionCard session={nextPlannedInfo?.session} sessionDate={nextPlannedInfo?.date} daysAhead={nextPlannedInfo?.daysAhead} advice={advice} profile={profile} onStrengthStart={onStrengthStart} activities={activities} checkins={checkins} showWeather />
               </div>
             </div>
           ) : (
             <div className="mb-3">
-              <PlannedSessionCard session={nextPlannedInfo?.session} sessionDate={nextPlannedInfo?.date} daysAhead={nextPlannedInfo?.daysAhead} advice={advice} profile={profile} onStrengthStart={onStrengthStart} activities={activities} checkins={checkins} />
-              <WeatherCard sessionDate={nextPlannedInfo?.date} sessionType={nextPlannedInfo?.session?.type} />
+              <PlannedSessionCard session={nextPlannedInfo?.session} sessionDate={nextPlannedInfo?.date} daysAhead={nextPlannedInfo?.daysAhead} advice={advice} profile={profile} onStrengthStart={onStrengthStart} activities={activities} checkins={checkins} showWeather />
             </div>
           )}
 
-          {/* COACH VERDICT — if any, narrative form */}
+          {/* COACH VERDICT — if any, narrative form (actionable, contextual) */}
           {coachVerdict && <div className="mb-3"><CoachCard verdict={coachVerdict} compact onMore={() => onNav('analytics')} /></div>}
 
-          {/* FITNESS STRIP — 3 inline numbers, compact, clinical
-              Replaces the big FormCard 3-up boxes. One glance = all you need. */}
-          {/* FITNESS NARRATIVE — translates forme/fatigue/fraîcheur into a sentence
-              instead of bare numbers. The numbers are kept small as reference below. */}
-          {fitnessSummary && (() => {
+          {/* FITNESS NARRATIVE — fallback when no coach verdict (would be redundant).
+              Translates forme/fatigue/fraîcheur into a sentence instead of bare numbers. */}
+          {!coachVerdict && fitnessSummary && (() => {
             // Compose the narrative phrase
             const ctl = fitnessSummary.ctl;
             const atl = fitnessSummary.atl;
@@ -2423,7 +2429,7 @@
       );
     }
 
-    function PlannedSessionCard({ session, sessionDate, daysAhead, advice, profile, onStrengthStart, activities, checkins }) {
+    function PlannedSessionCard({ session, sessionDate, daysAhead, advice, profile, onStrengthStart, activities, checkins, showWeather = false }) {
       if (!session) {
         return (
           <Card className="p-7 h-full min-h-[280px] flex flex-col justify-center items-center text-center">
@@ -2555,7 +2561,100 @@
               <ZoneReference cp={profile.cp} type={session.type} />
             </div>
           )}
+          {/* Embedded weather block — uses same sessionDate as the card */}
+          {showWeather && sessionDate && (
+            <div className="mt-4 pt-4 border-t" style={{ borderColor: 'var(--border)' }}>
+              <EmbeddedWeather sessionDate={sessionDate} sessionType={session.type} />
+            </div>
+          )}
         </Card>
+      );
+    }
+
+    // ========================================================================
+    // EMBEDDED WEATHER — slimmer version of WeatherCard, used inside other
+    // cards (no Card wrapper, just the weather row).
+    // ========================================================================
+    function EmbeddedWeather({ sessionDate, sessionType }) {
+      const [weather, setWeather] = useState(null);
+      const [error, setError] = useState(null);
+      const lat = 47.328, lng = -2.428;
+
+      useEffect(() => {
+        if (!sessionDate) return;
+        const daysAhead = (sessionDate.getTime() - Date.now()) / 86400000;
+        if (daysAhead < -1 || daysAhead > 7) { setWeather(null); return; }
+        const dateStr = `${sessionDate.getFullYear()}-${String(sessionDate.getMonth()+1).padStart(2,'0')}-${String(sessionDate.getDate()).padStart(2,'0')}`;
+        const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max,weather_code&hourly=temperature_2m,precipitation_probability,weather_code,wind_speed_10m&start_date=${dateStr}&end_date=${dateStr}&timezone=auto`;
+        fetch(url)
+          .then(r => r.ok ? r.json() : Promise.reject('http ' + r.status))
+          .then(d => {
+            if (!d.daily) { setError('no data'); return; }
+            const tMax = d.daily.temperature_2m_max?.[0];
+            const tMin = d.daily.temperature_2m_min?.[0];
+            const precip = d.daily.precipitation_probability_max?.[0];
+            const wind = d.daily.wind_speed_10m_max?.[0];
+            const code = d.daily.weather_code?.[0];
+            let tMorn = null, precipMorn = null, codeMorn = null, windMorn = null;
+            if (d.hourly?.time) {
+              const morningIdx = d.hourly.time.findIndex(t => t.endsWith('T08:00'));
+              if (morningIdx >= 0) {
+                tMorn = d.hourly.temperature_2m[morningIdx];
+                precipMorn = d.hourly.precipitation_probability[morningIdx];
+                codeMorn = d.hourly.weather_code[morningIdx];
+                windMorn = d.hourly.wind_speed_10m[morningIdx];
+              }
+            }
+            setWeather({ tMin, tMax, precip, wind, code, tMorn, precipMorn, codeMorn, windMorn });
+          })
+          .catch(err => setError(String(err)));
+      }, [sessionDate]);
+
+      if (!weather) return null;
+      const codeToInfo = (c) => {
+        if (c == null) return { e: '❓', l: '—' };
+        if (c <= 1) return { e: '☀️', l: 'Ensoleillé' };
+        if (c <= 3) return { e: '⛅', l: 'Variable' };
+        if (c <= 48) return { e: '🌫️', l: 'Brouillard' };
+        if (c <= 57) return { e: '🌦️', l: 'Bruine' };
+        if (c <= 67) return { e: '🌧️', l: 'Pluie' };
+        if (c <= 77) return { e: '🌨️', l: 'Neige' };
+        if (c <= 82) return { e: '🌧️', l: 'Averses' };
+        if (c <= 99) return { e: '⛈️', l: 'Orage' };
+        return { e: '❓', l: '—' };
+      };
+      const info = codeToInfo(weather.codeMorn ?? weather.code);
+      const tDisplay = weather.tMorn != null ? Math.round(weather.tMorn) : Math.round((weather.tMin + weather.tMax) / 2);
+      const precipDisplay = weather.precipMorn ?? weather.precip ?? 0;
+      const windDisplay = weather.windMorn ?? weather.wind ?? 0;
+      const advices = [];
+      if (tDisplay >= 26) advices.push('🥵 Chaleur — vise le bas de la fourchette puissance, prévois 500ml par heure.');
+      else if (tDisplay >= 20) advices.push('☀️ Conditions chaudes — hydrate-toi avant.');
+      else if (tDisplay <= 5) advices.push('🥶 Froid — bonnet et gants, échauffement plus long.');
+      if (precipDisplay >= 60) advices.push('☔ Pluie probable — tenue imperméable.');
+      if (windDisplay >= 30) advices.push(`💨 Vent fort (${Math.round(windDisplay)} km/h) — parcours abrité conseillé.`);
+      if (sessionType === 'intervals' && tDisplay >= 28) advices.push("🌡️ Trop chaud pour des intervalles — décale tôt le matin.");
+
+      return (
+        <div className="flex items-start gap-3">
+          <div className="text-2xl flex-shrink-0">{info.e}</div>
+          <div className="flex-1 min-w-0">
+            <div className="t-meta mb-1" style={{ color: 'var(--text-faint)' }}>MÉTÉO PRÉVUE</div>
+            <div className="t-body" style={{ color: 'var(--text)' }}>
+              {info.l} · <span className="font-mono tabular" style={{ color: 'var(--compass)' }}>{tDisplay}°C</span>
+              <span className="t-meta-dim ml-2" style={{ display: 'inline' }}>
+                {Math.round(weather.tMin)}°/{Math.round(weather.tMax)}° · {Math.round(precipDisplay)}% pluie · {Math.round(windDisplay)}km/h
+              </span>
+            </div>
+            {advices.length > 0 && (
+              <div className="mt-2 space-y-1">
+                {advices.map((a, i) => (
+                  <div key={i} className="text-sm leading-snug" style={{ color: 'var(--text-dim)' }}>{a}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       );
     }
 
@@ -4506,9 +4605,10 @@
     }
 
     // ========================================================================
-    // DAY EDIT SUB-MODAL — centered modal that opens above WeekEditorModal.
-    // Holds local state so changes are only applied on Save.
-    // Reuses the existing SessionBlocksEditor for structured block editing.
+    // DAY EDIT SUB-MODAL (v3 clinical) — Centered modal that opens above any
+    // parent (Plan inline editing or WeekEditorModal). Holds local state.
+    // Design: clear sections separated by hairlines, type picker as chips,
+    // library collapsed by default, sticky footer.
     // ========================================================================
     function DayEditModal({ dayKey, dayLabel, dayDate, day, wsKey, weekContext, sessionTemplates, onSaveTemplate, onApplyTemplate, onImportActivity, linkedActivity, onViewActivity, typeOptions, onSaveDay, onClose }) {
       const [localDay, setLocalDay] = useState(() => ({
@@ -4520,6 +4620,8 @@
         plannedKm: day.plannedKm ?? null,
         plannedMin: day.plannedMin ?? null,
       }));
+      const [showLibrary, setShowLibrary] = useState(false);
+      const [showZones, setShowZones] = useState(false);
 
       const typeMap = typeOptions.reduce((m, t) => { m[t.v] = t; return m; }, {});
       const t = typeMap[localDay.type] || typeMap.rest;
@@ -4530,232 +4632,264 @@
         { v: 'B', l: 'Renfo B — Hanches & Fessiers' },
       ];
 
-      function setField(field, value) {
-        setLocalDay(prev => ({ ...prev, [field]: value }));
-      }
-      function setMulti(patch) {
-        setLocalDay(prev => ({ ...prev, ...patch }));
-      }
+      function setField(field, value) { setLocalDay(prev => ({ ...prev, [field]: value })); }
+      function setMulti(patch) { setLocalDay(prev => ({ ...prev, ...patch })); }
       function handleSave() { onSaveDay(localDay); }
 
       const dateLabel = `${dayDate.getDate()}/${dayDate.getMonth() + 1}`;
+      const isRest = localDay.type === 'rest';
+      const fileRef = useRef(null);
 
       return (
         <div
           onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
           style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(0, 0, 0, 0.55)',
-            backdropFilter: 'blur(2px)',
-            WebkitBackdropFilter: 'blur(2px)',
-            zIndex: 200,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '20px',
-            overflowY: 'auto',
+            position: 'fixed', inset: 0, background: 'rgba(0, 0, 0, 0.6)',
+            backdropFilter: 'blur(3px)', WebkitBackdropFilter: 'blur(3px)',
+            zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: '16px', overflowY: 'auto',
           }}
         >
           <div
             onClick={(e) => e.stopPropagation()}
+            className="scale-in"
             style={{
-              background: 'var(--bg)',
-              border: '1px solid var(--border)',
-              borderRadius: 16,
-              width: '100%',
-              maxWidth: 720,
-              maxHeight: 'calc(100vh - 40px)',
-              display: 'flex',
-              flexDirection: 'column',
+              background: 'var(--bg)', border: '1px solid var(--border-bright)',
+              borderRadius: 16, width: '100%', maxWidth: 640,
+              maxHeight: 'calc(100vh - 32px)', display: 'flex', flexDirection: 'column',
               boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+              borderLeft: !isRest ? `3px solid ${t.color}` : '1px solid var(--border-bright)',
             }}
           >
             {/* Header */}
-            <div className="px-5 md:px-6 py-4 border-b flex items-center justify-between gap-3" style={{ borderColor: 'var(--border)' }}>
-              <div>
-                <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>{dayLabel.toUpperCase()} · {dateLabel}</div>
-                <div className="font-display text-xl font-bold flex items-center gap-2" style={{ color: t.color }}>
-                  <span>{t.emoji}</span>
-                  <span>{localDay.type === 'rest' ? 'Repos' : (localDay.label || t.l)}</span>
+            <div className="px-6 py-5 flex items-start justify-between gap-3" style={{ borderBottom: '1px solid var(--border)' }}>
+              <div className="min-w-0 flex-1">
+                <div className="t-meta mb-1" style={{ color: 'var(--text-dim)' }}>{dayLabel.toUpperCase()} · {dateLabel}</div>
+                <div className="flex items-baseline gap-2 flex-wrap">
+                  <span className="t-h2" style={{ color: 'var(--text)' }}>
+                    {isRest ? 'Repos' : (localDay.label || t.l)}
+                  </span>
+                  {!isRest && <span className="t-meta" style={{ color: t.color }}>{t.l.toUpperCase()}</span>}
                 </div>
               </div>
-              <button onClick={onClose} className="btn w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'var(--bg-elev)' }}>
-                <IconX size={13} />
-              </button>
+              <Button variant="ghost" size="sm" onClick={onClose} aria-label="Fermer" style={{ minWidth: 32, padding: '0.4rem' }}>
+                <IconX size={14} />
+              </Button>
             </div>
 
             {/* Body */}
-            <div className="flex-1 overflow-y-auto p-5 md:p-6 space-y-4">
-              {/* Type picker */}
-              <div>
-                <div className="font-mono text-[9px] tracking-widest mb-2" style={{ color: 'var(--text-faint)' }}>TYPE DE SÉANCE</div>
-                <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
-                  {typeOptions.map(opt => (
-                    <button
-                      key={opt.v}
-                      onClick={() => {
-                        if (opt.v === 'rest') setMulti({ type: 'rest', label: 'Repos', detail: '', plannedKm: null, plannedMin: null, blocks: null });
-                        else setMulti({ type: opt.v, label: localDay.label || opt.l });
-                      }}
-                      className="btn px-2 py-2.5 rounded-lg flex flex-col items-center gap-1 transition"
-                      style={{
-                        background: localDay.type === opt.v ? `${opt.color}20` : 'var(--bg-elev)',
-                        border: `1px solid ${localDay.type === opt.v ? opt.color : 'var(--border)'}`,
-                        color: localDay.type === opt.v ? opt.color : 'var(--text-dim)',
-                      }}
-                    >
-                      <span className="text-base">{opt.emoji}</span>
-                      <span className="font-mono text-[9px] tracking-widest text-center leading-tight">{opt.l}</span>
-                    </button>
-                  ))}
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+              {/* SECTION 1 — Type picker as horizontal chips */}
+              <section>
+                <div className="t-meta mb-3" style={{ color: 'var(--text-faint)' }}>TYPE</div>
+                <div className="flex flex-wrap gap-2">
+                  {typeOptions.map(opt => {
+                    const active = localDay.type === opt.v;
+                    return (
+                      <button
+                        key={opt.v}
+                        onClick={() => {
+                          if (opt.v === 'rest') setMulti({ type: 'rest', label: 'Repos', detail: '', plannedKm: null, plannedMin: null, blocks: null });
+                          else setMulti({ type: opt.v, label: localDay.label || opt.l });
+                        }}
+                        className="btn-base"
+                        style={{
+                          minHeight: 36, padding: '0.5rem 0.875rem', fontSize: 13,
+                          background: active ? `${opt.color}18` : 'var(--bg-elev)',
+                          border: `1px solid ${active ? opt.color : 'var(--border-bright)'}`,
+                          color: active ? opt.color : 'var(--text-dim)',
+                          fontWeight: active ? 600 : 500,
+                        }}
+                      >
+                        <span style={{ fontSize: 14 }}>{opt.emoji}</span>
+                        {opt.l}
+                      </button>
+                    );
+                  })}
                 </div>
-              </div>
+              </section>
 
-              {localDay.type !== 'rest' && (
-                <>
-                  {/* Library row */}
-                  <div className="rounded-lg p-3 flex items-center gap-2 flex-wrap" style={{ background: 'rgba(212, 255, 0, 0.04)', border: '1px solid rgba(212, 255, 0, 0.18)' }}>
-                    <IconBookmark size={13} style={{ color: 'var(--accent)' }} />
-                    <span className="font-mono tracking-widest" style={{ color: 'var(--accent)', fontSize: 10 }}>BIBLIOTHÈQUE</span>
-                    <TemplatePicker
-                      templates={sessionTemplates}
-                      currentType={localDay.type}
-                      onApply={(tpl) => {
-                        const dayPatch = templateToDay(tpl);
-                        setMulti(dayPatch);
-                        if (onApplyTemplate) onApplyTemplate(tpl);
-                      }}
-                    />
-                    <button
-                      onClick={() => {
-                        const defaultName = localDay.label && localDay.label.trim().length > 0 ? localDay.label : `Séance ${localDay.type}`;
-                        const name = prompt('Nom du template :', defaultName);
-                        if (name && name.trim() && onSaveTemplate) onSaveTemplate(localDay, name.trim());
-                      }}
-                      className="btn flex items-center gap-1 px-2 py-1 rounded font-mono tracking-widest"
-                      style={{ background: 'var(--bg)', color: 'var(--accent)', border: '1px solid rgba(212, 255, 0, 0.3)', fontSize: 10 }}
-                      title="Sauvegarder cette séance comme template réutilisable"
-                    >
-                      <IconSave size={10} /> SAUVER
-                    </button>
-                    {onImportActivity && (
-                      <ImportFromPlanButton
-                        wsKey={wsKey}
-                        dayKey={dayKey}
-                        dayLabel={dayLabel}
-                        sessionType={localDay.type}
-                        sessionLabel={localDay.label}
-                        sessionDetail={localDay.detail}
-                        alreadyImported={!!linkedActivity}
-                        onImport={(activity, forcedLink) => onImportActivity(activity, forcedLink)}
-                        onView={() => { if (linkedActivity) onViewActivity(linkedActivity); }}
-                      />
-                    )}
+              {/* SECTION 2 — Linked activity (if any) — promoted to top when present */}
+              {linkedActivity && (
+                <button
+                  onClick={() => onViewActivity(linkedActivity)}
+                  className="w-full flex items-center gap-3 text-left rounded-xl p-3"
+                  style={{ background: 'var(--positive-dim)', border: '1px solid rgba(143, 232, 106, 0.3)' }}
+                >
+                  <IconCheck size={16} style={{ color: 'var(--positive)', flexShrink: 0 }} />
+                  <div className="flex-1 min-w-0">
+                    <div className="t-meta" style={{ color: 'var(--positive)' }}>ACTIVITÉ RÉALISÉE — CLIQUE POUR VOIR</div>
+                    <div className="text-sm" style={{ color: 'var(--text)' }}>
+                      {(linkedActivity.distanceMeters / 1000).toFixed(2)} km · {Math.floor(linkedActivity.durationSec / 60)} min
+                      {linkedActivity.normalizedPower ? ` · ${linkedActivity.normalizedPower}W` : ''}
+                    </div>
                   </div>
+                  <IconArrowRight size={14} style={{ color: 'var(--positive)' }} />
+                </button>
+              )}
 
-                  {/* Linked activity preview */}
-                  {linkedActivity && (
-                    <button onClick={() => onViewActivity(linkedActivity)} className="btn w-full p-3 rounded-lg flex items-center gap-3 text-left" style={{ background: 'rgba(143, 232, 106, 0.08)', border: '1px solid rgba(143, 232, 106, 0.3)' }}>
-                      <IconCheck size={16} style={{ color: 'var(--go)' }} />
-                      <div className="flex-1 min-w-0">
-                        <div className="font-display font-bold text-sm" style={{ color: 'var(--go)' }}>Activité réalisée</div>
-                        <div className="font-mono text-[10px]" style={{ color: 'var(--text-dim)' }}>
-                          {(linkedActivity.distanceMeters / 1000).toFixed(2)} km · {Math.floor(linkedActivity.durationSec / 60)} min{linkedActivity.normalizedPower ? ` · ${linkedActivity.normalizedPower}W` : ''}
+              {!isRest && (
+                <>
+                  {/* SECTION 3 — Identity (name + planned dur/dist) */}
+                  <section>
+                    <div className="t-meta mb-3" style={{ color: 'var(--text-faint)' }}>SÉANCE</div>
+                    <div className="space-y-3">
+                      <input
+                        type="text"
+                        value={localDay.label || ''}
+                        onChange={(e) => setField('label', e.target.value)}
+                        placeholder="Nom de la séance (ex: 6×800m, Tempo 30min)"
+                        className="input"
+                      />
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="t-meta-dim mb-1 block" style={{ color: 'var(--text-faint)' }}>DURÉE (MIN)</label>
+                          <input
+                            type="number"
+                            value={localDay.plannedMin || ''}
+                            onChange={(e) => setField('plannedMin', e.target.value ? parseInt(e.target.value) : null)}
+                            placeholder="60"
+                            className="input"
+                          />
+                        </div>
+                        <div>
+                          <label className="t-meta-dim mb-1 block" style={{ color: 'var(--text-faint)' }}>DISTANCE (KM)</label>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={localDay.plannedKm || ''}
+                            onChange={(e) => setField('plannedKm', e.target.value ? parseFloat(e.target.value) : null)}
+                            placeholder="10"
+                            className="input"
+                          />
                         </div>
                       </div>
-                      <span className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--go)' }}>VOIR →</span>
-                    </button>
-                  )}
+                    </div>
+                  </section>
 
-                  {/* Name + duration + distance */}
-                  <div>
-                    <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>NOM DE LA SÉANCE</div>
-                    <input
-                      type="text"
-                      value={localDay.label || ''}
-                      onChange={(e) => setField('label', e.target.value)}
-                      placeholder="Ex: 6×800m, Tempo 30min, etc."
-                      className="input w-full"
+                  {/* SECTION 4 — Library + import — collapsible row of small actions */}
+                  <section>
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="t-meta" style={{ color: 'var(--text-faint)' }}>BIBLIOTHÈQUE & IMPORT</div>
+                      <button onClick={() => setShowLibrary(v => !v)} className="t-meta-dim flex items-center gap-1" style={{ color: 'var(--text-dim)' }}>
+                        {showLibrary ? 'MASQUER' : 'AFFICHER'} <IconChevronDown size={11} style={{ transform: showLibrary ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s' }} />
+                      </button>
+                    </div>
+                    {showLibrary && (
+                      <div className="rounded-lg p-3 flex items-center gap-2 flex-wrap" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
+                        <TemplatePicker
+                          templates={sessionTemplates}
+                          currentType={localDay.type}
+                          onApply={(tpl) => {
+                            const dayPatch = templateToDay(tpl);
+                            setMulti(dayPatch);
+                            if (onApplyTemplate) onApplyTemplate(tpl);
+                          }}
+                        />
+                        <Button
+                          variant="secondary" size="sm" icon={IconSave}
+                          onClick={() => {
+                            const defaultName = localDay.label && localDay.label.trim().length > 0 ? localDay.label : `Séance ${localDay.type}`;
+                            const name = prompt('Nom du template :', defaultName);
+                            if (name && name.trim() && onSaveTemplate) onSaveTemplate(localDay, name.trim());
+                          }}
+                          title="Sauvegarder cette séance comme template"
+                        >Sauvegarder</Button>
+                        {onImportActivity && (
+                          <ImportFromPlanButton
+                            wsKey={wsKey}
+                            dayKey={dayKey}
+                            dayLabel={dayLabel}
+                            sessionType={localDay.type}
+                            sessionLabel={localDay.label}
+                            sessionDetail={localDay.detail}
+                            alreadyImported={!!linkedActivity}
+                            onImport={(activity, forcedLink) => onImportActivity(activity, forcedLink)}
+                            onView={() => { if (linkedActivity) onViewActivity(linkedActivity); }}
+                          />
+                        )}
+                      </div>
+                    )}
+                  </section>
+
+                  {/* SECTION 5 — Structured blocks editor */}
+                  <section>
+                    <div className="t-meta mb-3" style={{ color: 'var(--text-faint)' }}>BLOCS DE LA SÉANCE</div>
+                    <SessionBlocksEditor
+                      day={localDay}
+                      onChange={(patch) => setMulti(patch)}
+                      ctx={weekContext || {}}
                     />
-                  </div>
+                  </section>
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>DURÉE (MIN)</div>
-                      <input
-                        type="number"
-                        value={localDay.plannedMin || ''}
-                        onChange={(e) => setField('plannedMin', e.target.value ? parseInt(e.target.value) : null)}
-                        placeholder="60"
-                        className="input w-full"
-                      />
-                    </div>
-                    <div>
-                      <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>DISTANCE (KM)</div>
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={localDay.plannedKm || ''}
-                        onChange={(e) => setField('plannedKm', e.target.value ? parseFloat(e.target.value) : null)}
-                        placeholder="10"
-                        className="input w-full"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Structured blocks editor — the rich editor we had before */}
-                  <SessionBlocksEditor
-                    day={localDay}
-                    onChange={(patch) => setMulti(patch)}
-                    ctx={weekContext || {}}
-                  />
-
-                  {/* Free-text detail (notes, commentaires) */}
-                  <div>
-                    <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>NOTES (OPTIONNEL)</div>
+                  {/* SECTION 6 — Free-text notes */}
+                  <section>
+                    <div className="t-meta mb-2" style={{ color: 'var(--text-faint)' }}>NOTES</div>
                     <textarea
                       value={localDay.detail || ''}
                       onChange={(e) => setField('detail', e.target.value)}
-                      placeholder="Notes libres : conditions météo, sensations à observer, ajustements éventuels..."
-                      className="input w-full"
+                      placeholder="Conditions météo, sensations, ajustements éventuels..."
+                      className="input"
                       rows={2}
-                      style={{ resize: 'vertical', fontSize: 12 }}
+                      style={{ resize: 'vertical', fontSize: 13 }}
                     />
-                  </div>
+                  </section>
 
+                  {/* SECTION 7 — Zones reference, collapsible */}
                   {weekContext && weekContext.cp && (
-                    <ZoneReference cp={weekContext.cp} type={localDay.type} />
+                    <section>
+                      <button onClick={() => setShowZones(v => !v)} className="w-full flex items-center justify-between">
+                        <span className="t-meta" style={{ color: 'var(--text-faint)' }}>ZONES D'ENTRAÎNEMENT</span>
+                        <span className="t-meta-dim flex items-center gap-1" style={{ color: 'var(--text-dim)' }}>
+                          {showZones ? 'MASQUER' : 'AFFICHER'} <IconChevronDown size={11} style={{ transform: showZones ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s' }} />
+                        </span>
+                      </button>
+                      {showZones && (
+                        <div className="mt-3">
+                          <ZoneReference cp={weekContext.cp} type={localDay.type} />
+                        </div>
+                      )}
+                    </section>
                   )}
                 </>
               )}
 
-              {/* Strength */}
-              <div>
-                <div className="font-mono text-[9px] tracking-widest mb-2" style={{ color: 'var(--text-faint)' }}>RENFO</div>
-                <div className="space-y-1.5">
-                  {strengthOptions.map(s => (
-                    <button
-                      key={s.v || 'none'}
-                      onClick={() => setField('strengthToday', s.v)}
-                      className="btn w-full px-3 py-2 rounded-lg text-left flex items-center gap-2 transition"
-                      style={{
-                        background: localDay.strengthToday === s.v ? 'rgba(212, 255, 0, 0.1)' : 'var(--bg-elev)',
-                        border: `1px solid ${localDay.strengthToday === s.v ? 'var(--accent)' : 'var(--border)'}`,
-                      }}
-                    >
-                      <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: localDay.strengthToday === s.v ? 'var(--accent)' : 'transparent', border: `1.5px solid ${localDay.strengthToday === s.v ? 'var(--accent)' : 'var(--text-faint)'}` }}></div>
-                      <span className="text-sm" style={{ color: localDay.strengthToday === s.v ? 'var(--accent)' : 'var(--text-dim)' }}>{s.l}</span>
-                    </button>
-                  ))}
+              {/* SECTION 8 — Strength */}
+              <section>
+                <div className="t-meta mb-3" style={{ color: 'var(--text-faint)' }}>RENFO</div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  {strengthOptions.map(s => {
+                    const active = localDay.strengthToday === s.v;
+                    return (
+                      <button
+                        key={s.v || 'none'}
+                        onClick={() => setField('strengthToday', s.v)}
+                        className="btn-base"
+                        style={{
+                          justifyContent: 'flex-start',
+                          padding: '0.625rem 0.875rem', minHeight: 40, fontSize: 13,
+                          background: active ? 'var(--signal-dim)' : 'var(--bg-elev)',
+                          border: `1px solid ${active ? 'var(--signal)' : 'var(--border-bright)'}`,
+                          color: active ? 'var(--signal)' : 'var(--text-dim)',
+                          fontWeight: active ? 600 : 500,
+                        }}
+                      >
+                        <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{
+                          background: active ? 'var(--signal)' : 'transparent',
+                          border: `1.5px solid ${active ? 'var(--signal)' : 'var(--text-faint)'}`,
+                        }}></span>
+                        <span className="truncate">{s.l}</span>
+                      </button>
+                    );
+                  })}
                 </div>
-              </div>
+              </section>
             </div>
 
-            {/* Footer */}
-            <div className="px-5 md:px-6 py-3 border-t flex items-center justify-end gap-2" style={{ borderColor: 'var(--border)' }}>
-              <button onClick={onClose} className="btn-base btn-secondary">Annuler</button>
-              <button onClick={handleSave} className="btn-base btn-primary">Valider</button>
+            {/* Sticky footer */}
+            <div className="px-6 py-4 flex items-center justify-end gap-2" style={{ borderTop: '1px solid var(--border)' }}>
+              <Button variant="ghost" onClick={onClose}>Annuler</Button>
+              <Button variant="primary" onClick={handleSave}>Valider</Button>
             </div>
           </div>
         </div>
