@@ -89,21 +89,45 @@
     @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,400;9..144,500;9..144,600;9..144,700;9..144,800&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
     :root {
+      /* Surfaces — clinical hierarchy: bg < bg-elev < bg-elev-2 < bg-elev-3 */
       --bg: #0A0A0A;
       --bg-elev: #111111;
       --bg-elev-2: #161616;
+      --bg-elev-3: #1C1C1C;
       --border: #1F1F1F;
       --border-bright: #2A2A2A;
+      --border-strong: #3A3A3A;
+
+      /* Text scale */
       --text: #F0F0F0;
       --text-dim: #8A8A8A;
       --text-faint: #555;
+
+      /* Brand: ONE primary accent for actions, used sparingly */
       --compass: #4A9EFF;
       --compass-dim: rgba(74, 158, 255, 0.15);
-      --go: #8FE86A;
-      --warn: #FFB020;
-      --alert: #FF8040;
-      --danger: #FF5B5B;
-      --accent: #D4FF00;
+
+      /* Semantic states — used for STATUS, not for actions */
+      --positive: #8FE86A;        /* good, on-track, gain */
+      --positive-dim: rgba(143, 232, 106, 0.12);
+      --neutral: #8A8A8A;
+      --caution: #FFB020;         /* watch out, accumulating */
+      --caution-dim: rgba(255, 176, 32, 0.12);
+      --negative: #FF8040;        /* problem, fatigue, miss */
+      --negative-dim: rgba(255, 128, 64, 0.12);
+      --critical: #FF5B5B;        /* danger, stop */
+      --critical-dim: rgba(255, 91, 91, 0.12);
+
+      /* Reserved for "PR-worthy" / record / target — used ONLY in those contexts */
+      --signal: #D4FF00;
+      --signal-dim: rgba(212, 255, 0, 0.12);
+
+      /* Aliases kept for backward compat — DO NOT USE IN NEW CODE */
+      --go: var(--positive);
+      --warn: var(--caution);
+      --alert: var(--negative);
+      --danger: var(--critical);
+      --accent: var(--signal);
     }
 
     html, body { margin: 0; padding: 0; background: var(--bg); }
@@ -116,28 +140,78 @@
     .font-mono { font-family: 'JetBrains Mono', monospace; font-feature-settings: 'tnum'; }
     .tabular { font-variant-numeric: tabular-nums; }
 
-    /* Background ambience */
-    body::before { content: ''; position: fixed; inset: 0; pointer-events: none; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.04 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); opacity: 0.5; z-index: 100; }
+    /* ==========================================================================
+       TYPOGRAPHY SCALE — clinical hierarchy, 4 levels
+       Use these classes everywhere. Do NOT mix with arbitrary text-Xxl utilities.
+       ========================================================================== */
+    .t-hero { font-family: 'Fraunces', serif; font-size: clamp(2rem, 5vw, 3.25rem); line-height: 1.05; letter-spacing: -0.025em; font-weight: 700; }
+    .t-h1 { font-family: 'Fraunces', serif; font-size: clamp(1.5rem, 3.5vw, 2rem); line-height: 1.15; letter-spacing: -0.02em; font-weight: 700; }
+    .t-h2 { font-family: 'Fraunces', serif; font-size: clamp(1.125rem, 2.5vw, 1.375rem); line-height: 1.25; letter-spacing: -0.015em; font-weight: 600; }
+    .t-body { font-family: 'Inter Tight', sans-serif; font-size: 15px; line-height: 1.55; color: var(--text); }
+    .t-body-dim { font-family: 'Inter Tight', sans-serif; font-size: 14px; line-height: 1.55; color: var(--text-dim); }
+    .t-meta { font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.5; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-faint); }
+    .t-meta-dim { font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.4; color: var(--text-faint); }
 
-    /* Animations */
-    .fade-in { animation: fadeIn 0.4s cubic-bezier(0.22, 1, 0.36, 1); }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-    .scale-in { animation: scaleIn 0.35s cubic-bezier(0.34, 1.56, 0.64, 1); }
-    @keyframes scaleIn { from { opacity: 0; transform: scale(0.94); } to { opacity: 1; transform: scale(1); } }
-    .slide-up { animation: slideUp 0.4s cubic-bezier(0.22, 1, 0.36, 1); }
-    @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+    /* Big numbers (one-glance stats) */
+    .t-numeric-hero { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; font-size: clamp(2.5rem, 6vw, 4rem); line-height: 1; font-weight: 600; letter-spacing: -0.02em; }
+    .t-numeric-l { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; font-size: clamp(1.5rem, 3vw, 2rem); line-height: 1; font-weight: 600; }
+    .t-numeric-m { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; font-size: 1.25rem; line-height: 1; font-weight: 500; }
+    .t-numeric-s { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; font-size: 0.875rem; line-height: 1; font-weight: 500; }
 
+    /* Background ambience — kept very subtle for clinical feel */
+    body::before { content: ''; position: fixed; inset: 0; pointer-events: none; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.025 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); opacity: 0.5; z-index: 100; }
+
+    /* Animations — subtle */
+    .fade-in { animation: fadeIn 0.32s cubic-bezier(0.22, 1, 0.36, 1); }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+    .scale-in { animation: scaleIn 0.28s cubic-bezier(0.22, 1, 0.36, 1); }
+    @keyframes scaleIn { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: scale(1); } }
+    .slide-up { animation: slideUp 0.32s cubic-bezier(0.22, 1, 0.36, 1); }
+    @keyframes slideUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* ==========================================================================
+       BUTTON SYSTEM — exactly 3 variants. Always min-height 40px (44 on mobile).
+       Use the .btn-* classes; never inline-style buttons.
+       ========================================================================== */
+    .btn-base {
+      display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+      padding: 0.625rem 1rem; min-height: 40px;
+      border-radius: 0.625rem; border: 1px solid transparent;
+      font-family: 'Inter Tight', sans-serif; font-size: 14px; font-weight: 500;
+      cursor: pointer; transition: background 0.18s, border-color 0.18s, transform 0.1s, opacity 0.18s;
+      user-select: none; -webkit-tap-highlight-color: transparent;
+    }
+    .btn-base:active:not(:disabled) { transform: scale(0.98); }
+    .btn-base:disabled { opacity: 0.4; cursor: not-allowed; }
+    @media (max-width: 768px) { .btn-base { min-height: 44px; padding: 0.75rem 1rem; } }
+
+    .btn-primary { background: var(--compass); color: #000; font-weight: 600; }
+    .btn-primary:hover:not(:disabled) { background: #6BB0FF; }
+
+    .btn-secondary { background: var(--bg-elev-2); color: var(--text); border-color: var(--border-bright); }
+    .btn-secondary:hover:not(:disabled) { background: var(--bg-elev-3); border-color: var(--border-strong); }
+
+    .btn-ghost { background: transparent; color: var(--text-dim); }
+    .btn-ghost:hover:not(:disabled) { background: var(--bg-elev); color: var(--text); }
+
+    .btn-danger { background: transparent; color: var(--critical); border-color: rgba(255, 91, 91, 0.3); }
+    .btn-danger:hover:not(:disabled) { background: var(--critical-dim); border-color: var(--critical); }
+
+    /* Size modifiers */
+    .btn-sm { padding: 0.4rem 0.75rem; min-height: 32px; font-size: 13px; }
+    @media (max-width: 768px) { .btn-sm { min-height: 36px; } }
+    .btn-lg { padding: 0.875rem 1.25rem; min-height: 48px; font-size: 15px; }
+
+    /* Legacy .btn — kept for backward compat with existing inline-styled buttons */
     .btn { transition: transform 0.1s, background 0.2s, border-color 0.2s, opacity 0.2s; }
     .btn:active { transform: scale(0.98); }
     .lift { transition: transform 0.2s, background 0.2s, border-color 0.2s, box-shadow 0.2s; }
     .lift:hover { transform: translateY(-2px); }
 
-    /* Compass ambient orb */
-    .orb { position: absolute; border-radius: 50%; filter: blur(100px); opacity: 0.12; pointer-events: none; z-index: 0; }
-    .orb-blue { background: var(--compass); }
-    .orb-lime { background: var(--accent); }
+    /* Removed: ambient orbs (too maximalist for clinical) */
+    .orb { display: none !important; }
 
-    /* Decorative graduations (instrument feel) */
+    /* Decorative graduations — kept but lighter */
     .graduations { background-image: repeating-linear-gradient(90deg, var(--border) 0, var(--border) 1px, transparent 1px, transparent 8px); }
     .ticks { background-image: repeating-linear-gradient(90deg, var(--text-dim) 0, var(--text-dim) 1px, transparent 1px, transparent 12px); }
 
@@ -152,7 +226,7 @@
     input[type="range"]::-moz-range-thumb { width: 22px; height: 22px; border-radius: 50%; cursor: pointer; border: 2px solid var(--bg); }
 
     /* Form inputs */
-    .input { background: #0A0A0A; border: 1px solid var(--border); color: var(--text); padding: 0.75rem 1rem; border-radius: 0.75rem; font-size: 0.875rem; outline: none; transition: border-color 0.2s; width: 100%; font-family: inherit; }
+    .input { background: var(--bg); border: 1px solid var(--border-bright); color: var(--text); padding: 0.75rem 1rem; border-radius: 0.625rem; font-size: 0.9375rem; outline: none; transition: border-color 0.2s; width: 100%; font-family: inherit; min-height: 44px; }
     .input:focus { border-color: var(--compass); }
     .input-mono { font-family: 'JetBrains Mono', monospace; }
 
@@ -164,24 +238,34 @@
     .pb-nav { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
     @media (min-width: 768px) { .pb-nav { padding-bottom: 0; } }
 
-    /* Global readability overrides: bump tiny font sizes for better legibility.
-       Tailwind text-[9px], text-[10px], text-[11px] are too small for data-dense UI.
-       Override them to a sensible floor. */
-    [class*="text-[9px]"] { font-size: 12px !important; line-height: 1.4 !important; }
-    [class*="text-[10px]"] { font-size: 13px !important; line-height: 1.45 !important; }
-    [class*="text-[11px]"] { font-size: 13.5px !important; line-height: 1.45 !important; }
-    [class*="text-[12px]"] { font-size: 14px !important; line-height: 1.45 !important; }
-    .text-xs { font-size: 13.5px !important; line-height: 1.5 !important; }
-    .text-sm { font-size: 15px !important; line-height: 1.55 !important; }
+    /* Global readability overrides — gentler than before, less aggressive */
+    [class*="text-[9px]"] { font-size: 11px !important; line-height: 1.4 !important; }
+    [class*="text-[10px]"] { font-size: 12px !important; line-height: 1.45 !important; }
+    [class*="text-[11px]"] { font-size: 13px !important; line-height: 1.45 !important; }
+    [class*="text-[12px]"] { font-size: 13.5px !important; line-height: 1.45 !important; }
+    .text-xs { font-size: 13px !important; line-height: 1.5 !important; }
+    .text-sm { font-size: 14.5px !important; line-height: 1.55 !important; }
     .text-base { font-size: 16px !important; line-height: 1.6 !important; }
 
-    /* Subtle glow for active states */
-    .glow-compass { box-shadow: 0 0 24px -8px var(--compass); }
-    .glow-go { box-shadow: 0 0 24px -8px var(--go); }
-    .glow-accent { box-shadow: 0 0 24px -8px var(--accent); }
+    /* Subtle glow for active states — much softer than before */
+    .glow-compass { box-shadow: 0 0 16px -10px var(--compass); }
+    .glow-positive { box-shadow: 0 0 16px -10px var(--positive); }
+    .glow-signal { box-shadow: 0 0 16px -10px var(--signal); }
 
     /* Utility for line-clamp */
     .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+    /* ==========================================================================
+       CARD VARIANTS — Card v2 supports 'flat' | 'elevated' | 'highlighted'
+       The Card React component reads its variant prop; these classes back it.
+       ========================================================================== */
+    .card-flat { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 1rem; }
+    .card-elevated { background: var(--bg-elev-2); border: 1px solid var(--border-bright); border-radius: 1rem; }
+    .card-highlighted { background: var(--bg-elev); border: 1px solid var(--border); border-left: 3px solid var(--compass); border-radius: 1rem; }
+    .card-highlighted-positive { background: var(--bg-elev); border: 1px solid var(--border); border-left: 3px solid var(--positive); border-radius: 1rem; }
+    .card-highlighted-caution { background: var(--bg-elev); border: 1px solid var(--border); border-left: 3px solid var(--caution); border-radius: 1rem; }
+    .card-highlighted-critical { background: var(--bg-elev); border: 1px solid var(--border); border-left: 3px solid var(--critical); border-radius: 1rem; }
+    .card-highlighted-signal { background: var(--bg-elev); border: 1px solid var(--border); border-left: 3px solid var(--signal); border-radius: 1rem; }
   </style>
 </head>
 <body>
@@ -1818,9 +1902,111 @@
     // ========================================================================
     // UI PRIMITIVES
     // ========================================================================
-    function Card({ children, className = '', accent = null, ...rest }) {
-      const style = accent ? { background: '#111', border: `1px solid ${accent}40`, ...rest.style } : { background: '#111', border: '1px solid var(--border)', ...rest.style };
-      return <div className={`rounded-2xl ${className}`} style={style} {...rest}>{children}</div>;
+    // ========================================================================
+    // CARD — 3 variants: 'flat' (default), 'elevated', 'highlighted'
+    // accent (only for 'highlighted'): 'compass' | 'positive' | 'caution' |
+    //   'critical' | 'signal' | custom CSS color string
+    // ========================================================================
+    function Card({ children, className = '', variant = 'flat', accent = null, ...rest }) {
+      let cls;
+      if (variant === 'elevated') cls = 'card-elevated';
+      else if (variant === 'highlighted') {
+        if (accent === 'positive') cls = 'card-highlighted-positive';
+        else if (accent === 'caution') cls = 'card-highlighted-caution';
+        else if (accent === 'critical') cls = 'card-highlighted-critical';
+        else if (accent === 'signal') cls = 'card-highlighted-signal';
+        else cls = 'card-highlighted';
+      } else cls = 'card-flat';
+
+      // Backward compat: if accent is a CSS color (var(...) or #hex), apply inline border-left
+      const compatStyle = (variant !== 'highlighted' && accent && (accent.startsWith('var(') || accent.startsWith('#') || accent.startsWith('rgb')))
+        ? { borderLeft: `3px solid ${accent}`, ...rest.style }
+        : rest.style;
+
+      return <div className={`${cls} ${className}`} style={compatStyle} {...rest}>{children}</div>;
+    }
+
+    // ========================================================================
+    // BUTTON — clinical: 3 variants + danger. Sizes sm/md/lg.
+    // Always pass children as a string or simple node.
+    // ========================================================================
+    function Button({ children, variant = 'secondary', size = 'md', icon: Icon = null, iconRight: IconR = null, fullWidth = false, className = '', ...rest }) {
+      const variantCls = {
+        primary: 'btn-primary',
+        secondary: 'btn-secondary',
+        ghost: 'btn-ghost',
+        danger: 'btn-danger',
+      }[variant] || 'btn-secondary';
+      const sizeCls = size === 'sm' ? 'btn-sm' : size === 'lg' ? 'btn-lg' : '';
+      const widthCls = fullWidth ? 'w-full' : '';
+      const iconSize = size === 'sm' ? 12 : size === 'lg' ? 16 : 14;
+      return (
+        <button className={`btn-base ${variantCls} ${sizeCls} ${widthCls} ${className}`} {...rest}>
+          {Icon && <Icon size={iconSize} />}
+          {children}
+          {IconR && <IconR size={iconSize} />}
+        </button>
+      );
+    }
+
+    // ========================================================================
+    // STAT-HERO — clinical big number. ONE per context, used for headlines.
+    //   value: the big number (string or number)
+    //   unit: small unit (W, bpm, %, /km...)
+    //   label: small uppercase context label above
+    //   trend: optional { delta, direction: 'up'|'down'|'flat', label }
+    //   color: text color of the value (defaults to text)
+    // ========================================================================
+    function StatHero({ value, unit = '', label = '', trend = null, color = 'var(--text)' }) {
+      return (
+        <div>
+          {label && <div className="t-meta mb-2">{label}</div>}
+          <div className="flex items-baseline gap-2 flex-wrap">
+            <span className="t-numeric-hero" style={{ color }}>{value}</span>
+            {unit && <span className="t-numeric-m" style={{ color: 'var(--text-dim)' }}>{unit}</span>}
+            {trend && (
+              <span className="t-meta" style={{ color: trend.direction === 'up' ? 'var(--positive)' : trend.direction === 'down' ? 'var(--negative)' : 'var(--text-dim)' }}>
+                {trend.direction === 'up' ? '↑' : trend.direction === 'down' ? '↓' : '→'} {trend.delta} {trend.label || ''}
+              </span>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================================================
+    // STAT-INLINE — compact stat: label on the side, number on the right.
+    // For "secondary" stats that don't deserve a hero treatment.
+    // ========================================================================
+    function StatInline({ label, value, unit = '', color = 'var(--text)', icon: Icon = null }) {
+      return (
+        <div className="flex items-center justify-between gap-3 py-2">
+          <span className="t-meta-dim flex items-center gap-1.5">{Icon && <Icon size={11} />}{label}</span>
+          <span className="t-numeric-s tabular" style={{ color }}>{value}{unit && <span className="t-meta-dim ml-1" style={{ display: 'inline' }}>{unit}</span>}</span>
+        </div>
+      );
+    }
+
+    // ========================================================================
+    // INSIGHT — narrative card for "what does this mean?" callouts.
+    // Replaces dense stat boxes when prose is more useful than numbers.
+    // ========================================================================
+    function Insight({ tone = 'neutral', label, title, children }) {
+      const colors = {
+        positive: { c: 'var(--positive)', bg: 'var(--positive-dim)' },
+        caution: { c: 'var(--caution)', bg: 'var(--caution-dim)' },
+        critical: { c: 'var(--critical)', bg: 'var(--critical-dim)' },
+        signal: { c: 'var(--signal)', bg: 'var(--signal-dim)' },
+        compass: { c: 'var(--compass)', bg: 'var(--compass-dim)' },
+        neutral: { c: 'var(--text-dim)', bg: 'var(--bg-elev-2)' },
+      }[tone] || { c: 'var(--text-dim)', bg: 'var(--bg-elev-2)' };
+      return (
+        <div className="rounded-2xl p-5" style={{ background: colors.bg, border: `1px solid ${colors.c}30` }}>
+          {label && <div className="t-meta mb-2" style={{ color: colors.c }}>{label}</div>}
+          {title && <div className="t-h2 mb-2" style={{ color: 'var(--text)' }}>{title}</div>}
+          <div className="t-body" style={{ color: 'var(--text-dim)' }}>{children}</div>
+        </div>
+      );
     }
 
     // ========================================================================
@@ -1958,10 +2144,10 @@
           <div className="flex items-end justify-between mb-8 gap-3">
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-3 mb-2 flex-wrap">
-                <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--compass)' }}>AUJOURD'HUI</div>
+                <div className="t-meta" style={{ color: 'var(--compass)' }}>AUJOURD'HUI</div>
                 {nextRace && <Tag color="var(--accent)">J–{daysToRace} · {nextRace.name.toUpperCase()}</Tag>}
               </div>
-              <div className="font-display text-4xl md:text-5xl font-bold leading-tight">{dayLabel} {dateLabel}</div>
+              <h1 className="t-h1">{dayLabel} {dateLabel}</h1>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
               <button onClick={() => onNav('library')} className="md:hidden btn w-10 h-10 rounded-full flex items-center justify-center" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }} aria-label="Bibliothèque">
@@ -2037,7 +2223,7 @@
           <div className="flex items-start justify-between mb-6">
             <div>
               <div className="font-mono text-[10px] tracking-widest mb-3" style={{ color: 'var(--compass)' }}>READINESS · 30 SECONDES</div>
-              <div className="font-display text-4xl md:text-5xl font-bold leading-tight mb-2">Comment tu te sens ?</div>
+              <h1 className="t-h1 mb-2">Comment tu te sens ?</h1>
               <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>5 questions pour décider intelligemment de ta séance du jour.</div>
             </div>
             <IconArrowRight size={22} style={{ color: 'var(--compass)' }} className="group-hover:translate-x-1 transition" />
@@ -3056,8 +3242,8 @@
         <div className="max-w-[1500px] mx-auto px-5 md:px-10 py-6 md:py-10 fade-in pb-nav">
           <div className="flex items-end justify-between mb-8 flex-wrap gap-3">
             <div>
-              <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--compass)' }}>PLAN</div>
-              <div className="font-display text-4xl md:text-5xl font-bold leading-tight">Ta semaine et ta saison</div>
+              <div className="t-meta mb-2" style={{ color: 'var(--compass)' }}>PLAN</div>
+              <h1 className="t-h1">Ta semaine et ta saison</h1>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
               {onImportActivity && (() => {
@@ -3074,29 +3260,28 @@
                     else if (lower.endsWith('.csv')) activity = parseStrydCSV(text, f.name, profile.weightKg);
                   } catch (err) { alert(`Erreur : ${err.message || err}`); return; }
                   if (!activity) { alert('Format non reconnu (.tcx, .gpx, .csv).'); return; }
-                  // Free import — no forced link, auto-detection runs
                   onImportActivity(activity);
                   if (fileRef.current) fileRef.current.value = '';
                 }
                 return (
                   <>
                     <input ref={fileRef} type="file" accept=".tcx,.gpx,.csv" style={{ display: 'none' }} onChange={(e) => handleFile(e.target.files)} />
-                    <button onClick={() => fileRef.current?.click()} className="btn flex items-center gap-2 px-4 py-2.5 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)', color: 'var(--compass)', border: '1px solid rgba(74, 158, 255, 0.3)' }} title="Importer une activité non planifiée">
-                      <IconUpload size={14} /> IMPORT LIBRE
-                    </button>
+                    <Button variant="secondary" icon={IconUpload} onClick={() => fileRef.current?.click()} title="Importer une activité non planifiée">
+                      Import libre
+                    </Button>
                   </>
                 );
               })()}
-              <button onClick={() => setGeneratorOpen(true)} className="btn lift flex items-center gap-2 px-4 py-2.5 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--accent)', color: '#000' }}>
-                <IconZap size={14} /> GÉNÉRER UN PROGRAMME
-              </button>
+              <Button variant="primary" icon={IconZap} onClick={() => setGeneratorOpen(true)}>
+                Générer un programme
+              </Button>
             </div>
           </div>
 
           {/* Empty plan state — show only when nothing is planned anywhere */}
           {Object.keys(planOverrides || {}).length === 0 && (
-            <Card className="p-6 md:p-8 mb-4 text-center" accent="var(--accent)">
-              <IconCalendar size={32} style={{ color: 'var(--accent)' }} className="mx-auto mb-4" />
+            <Card className="p-6 md:p-8 mb-4 text-center" variant="highlighted" accent="compass">
+              <IconCalendar size={32} style={{ color: 'var(--compass)' }} className="mx-auto mb-4" />
               <div className="font-display text-xl md:text-2xl font-bold mb-2">Pas encore de plan</div>
               <div className="text-sm max-w-lg mx-auto mb-5" style={{ color: 'var(--text-dim)' }}>
                 Tu n'as encore rien planifié. Trois options pour démarrer :
@@ -4012,8 +4197,8 @@
                 )}
               </div>
               <div className="flex items-center gap-2">
-                <button onClick={onClose} className="btn px-4 py-2.5 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)' }}>ANNULER</button>
-                <button onClick={handleSave} className="btn lift px-5 py-2.5 rounded-lg font-display font-bold" style={{ background: 'var(--compass)', color: '#000' }}>ENREGISTRER</button>
+                <button onClick={onClose} className="btn-base btn-secondary">Annuler</button>
+                <button onClick={handleSave} className="btn-base btn-primary">Enregistrer</button>
               </div>
             </div>
           </div>
@@ -4291,8 +4476,8 @@
 
             {/* Footer */}
             <div className="px-5 md:px-6 py-3 border-t flex items-center justify-end gap-2" style={{ borderColor: 'var(--border)' }}>
-              <button onClick={onClose} className="btn px-4 py-2 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)' }}>ANNULER</button>
-              <button onClick={handleSave} className="btn lift px-4 py-2 rounded-lg font-display font-bold text-sm" style={{ background: 'var(--compass)', color: '#000' }}>VALIDER</button>
+              <button onClick={onClose} className="btn-base btn-secondary">Annuler</button>
+              <button onClick={handleSave} className="btn-base btn-primary">Valider</button>
             </div>
           </div>
         </div>
@@ -4324,7 +4509,7 @@
                 <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--accent)' }}>STRENGTH</div>
                 {phaseOffset !== 0 && <Tag color={phaseOffset > 0 ? 'var(--go)' : 'var(--alert)'}>{phaseOffset > 0 ? '↑ ACCÉLÉRÉ' : '↓ RALENTI'}</Tag>}
               </div>
-              <div className="font-display text-4xl md:text-5xl font-bold leading-tight">Renfo · 2× / semaine</div>
+              <h1 className="t-h1">Renfo · 2× / semaine</h1>
               <div className="text-sm mt-2" style={{ color: 'var(--text-dim)' }}>15 minutes par séance · adapté à ton tendon rotulien</div>
             </div>
           </div>
@@ -4441,7 +4626,7 @@
             <div className="pt-6 mt-8 border-t flex items-center justify-between flex-wrap gap-3" style={{ borderColor: 'var(--border)' }}>
               <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>DÉMARRÉ LE {fmtDate(strengthStart, true).toUpperCase()}</div>
               <div className="flex gap-2">
-                {!confirmReset ? <button onClick={() => setConfirmReset(true)} className="font-mono text-[10px] tracking-widest opacity-40 hover:opacity-100 transition">REDÉMARRER LA PROGRESSION</button> : (<><button onClick={() => setConfirmReset(false)} className="px-3 py-1.5 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)' }}>ANNULER</button><button onClick={() => { onResetStart(); setConfirmReset(false); }} className="px-3 py-1.5 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'rgba(212, 255, 0, 0.1)', color: 'var(--accent)' }}>CONFIRMER</button></>)}
+                {!confirmReset ? <button onClick={() => setConfirmReset(true)} className="t-meta opacity-40 hover:opacity-100 transition">Redémarrer la progression</button> : (<><button onClick={() => setConfirmReset(false)} className="btn-base btn-secondary btn-sm">Annuler</button><button onClick={() => { onResetStart(); setConfirmReset(false); }} className="btn-base btn-danger btn-sm">Confirmer</button></>)}
               </div>
             </div>
           )}
@@ -4590,7 +4775,7 @@
                 <div className="text-center mb-6">
                   <div className="font-mono text-[10px] tracking-widest mb-3" style={{ color: session.accent }}>{session.name} · EXERCICE {block.exIdx + 1}</div>
                   <div className="flex items-center justify-center gap-3 mb-2">
-                    <div className="font-display text-4xl md:text-5xl font-bold leading-tight">{exerciseData.name}</div>
+                    <h1 className="t-h1">{exerciseData.name}</h1>
                     <button onClick={() => onInfo(exercise.key)} className="btn w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: 'var(--bg-elev)', border: `1px solid ${session.accent}40` }}><IconInfo size={16} style={{ color: session.accent }} /></button>
                   </div>
                   <div className="text-sm" style={{ color: 'var(--text-dim)' }}>{exerciseData.subtitle}</div>
@@ -4812,8 +4997,8 @@
         <div className="max-w-[1500px] mx-auto px-5 md:px-10 py-6 md:py-10 fade-in pb-nav">
           <div className="flex items-end justify-between mb-6 flex-wrap gap-3">
             <div>
-              <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--compass)' }}>JOURNAL</div>
-              <div className="font-display text-4xl md:text-5xl font-bold leading-tight">Tes activités et check-ins</div>
+              <div className="t-meta mb-2" style={{ color: 'var(--compass)' }}>JOURNAL</div>
+              <h1 className="t-h1">Tes activités et check-ins</h1>
             </div>
           </div>
 
@@ -5535,16 +5720,16 @@
         <div className="max-w-[1500px] mx-auto px-5 md:px-10 py-6 md:py-10 fade-in pb-nav">
           <div className="flex items-end justify-between mb-8 flex-wrap gap-3">
             <div>
-              <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--compass)' }}>PROFIL</div>
-              <div className="font-display text-4xl md:text-5xl font-bold leading-tight">{profile.name || 'Nouveau profil'}</div>
+              <div className="t-meta mb-2" style={{ color: 'var(--compass)' }}>PROFIL</div>
+              <h1 className="t-h1">{profile.name || 'Nouveau profil'}</h1>
               <div className="text-sm mt-1" style={{ color: 'var(--text-dim)' }}>{age ? `${age} ans · ` : ''}{profile.location || 'Renseigne ton profil ci-dessous'}</div>
             </div>
             {!editing ? (
               <button onClick={() => { setDraft(profile); setEditing(true); }} className="btn flex items-center gap-2 px-4 py-2.5 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--compass)', color: '#000' }}><IconSettings size={14} /> MODIFIER</button>
             ) : (
               <div className="flex gap-2">
-                <button onClick={cancel} className="btn px-4 py-2.5 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)' }}>ANNULER</button>
-                <button onClick={save} className="btn px-4 py-2.5 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--go)', color: '#000' }}>ENREGISTRER</button>
+                <button onClick={cancel} className="btn-base btn-secondary">Annuler</button>
+                <button onClick={save} className="btn-base btn-primary">Enregistrer</button>
               </div>
             )}
           </div>
@@ -5890,38 +6075,15 @@
     // LIBRARY VIEW — Glossary & training principles
     // ========================================================================
     function LibraryView({ sessionTemplates = [], onDeleteTemplate, onRenameTemplate, profile }) {
-      const [tab, setTab] = useState('sessions');
       return (
         <div className="max-w-[1100px] mx-auto px-5 md:px-10 py-6 md:py-10 fade-in pb-nav">
           <div className="mb-6">
-            <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--compass)' }}>BIBLIOTHÈQUE</div>
-            <div className="font-display text-4xl md:text-5xl font-bold leading-tight">Tes séances et tes définitions</div>
-            <div className="text-sm mt-2" style={{ color: 'var(--text-dim)' }}>Réutilise tes séances types, et explore le vocabulaire de l'entraînement par puissance.</div>
-          </div>
-          {/* Tab nav */}
-          <div className="flex gap-2 mb-5 border-b" style={{ borderColor: 'var(--border)' }}>
-            {[
-              { k: 'sessions', l: 'Mes séances', icon: '🧰', count: sessionTemplates.length },
-              { k: 'glossary', l: 'Glossaire', icon: '📖' },
-            ].map(t => (
-              <button
-                key={t.k}
-                onClick={() => setTab(t.k)}
-                className="px-4 py-2.5 font-mono text-xs tracking-widest transition-all flex items-center gap-2"
-                style={{
-                  color: tab === t.k ? 'var(--compass)' : 'var(--text-dim)',
-                  borderBottom: tab === t.k ? '2px solid var(--compass)' : '2px solid transparent',
-                  marginBottom: '-1px',
-                }}
-              >
-                <span>{t.icon}</span>{t.l.toUpperCase()}
-                {Number.isFinite(t.count) && <span style={{ color: tab === t.k ? 'var(--compass)' : 'var(--text-faint)' }}>· {t.count}</span>}
-              </button>
-            ))}
+            <div className="t-meta mb-2" style={{ color: 'var(--compass)' }}>BIBLIOTHÈQUE</div>
+            <h1 className="t-h1">Tes séances types</h1>
+            <p className="t-body-dim mt-2 max-w-2xl">Sauvegarde tes séances habituelles depuis Plan pour les ré-injecter sur n'importe quel jour en un clic. Les watts cibles sont automatiquement ajustés à ta puissance seuil actuelle.</p>
           </div>
 
-          {tab === 'sessions' && <MySessionsView templates={sessionTemplates} onDelete={onDeleteTemplate} onRename={onRenameTemplate} profile={profile} />}
-          {tab === 'glossary' && <GlossaryView />}
+          <MySessionsView templates={sessionTemplates} onDelete={onDeleteTemplate} onRename={onRenameTemplate} profile={profile} />
         </div>
       );
     }
@@ -6104,55 +6266,6 @@
       );
     }
 
-    function GlossaryView() {
-      const [open, setOpen] = useState(null);
-      const sections = [
-        { id: 'cp', term: 'CP — Critical Power', def: "Puissance maximale que tu peux maintenir théoriquement à l'infini sans accumulation de fatigue. Calculée à partir de tests d'efforts maximaux. C'est ton seuil métabolique exprimé en watts.", more: "Pour Tony : ta CP estimée actuelle est 255W (4.25 W/kg) à recalibrer en frais. Tes zones d'entraînement Stryd dépendent de cette valeur. Une CP qui monte = tu progresses." },
-        { id: 'np', term: 'NP — Normalized Power', def: "Puissance moyenne 'corrigée' qui tient compte des variations d'intensité. Plus représentative du coût physiologique réel d'une séance que la moyenne brute.", more: "Calcul : moyenne glissante 30s, élevée à la puissance 4, racine 4. Une séance d'intervalles aura une NP supérieure à la moyenne brute, car les efforts intenses comptent plus." },
-        { id: 'tss', term: 'TSS — Training Stress Score', def: 'Score qui quantifie le stress physiologique total d\'une séance, en combinant durée et intensité (NP/CP). 100 TSS = 1h à CP exacte.', more: 'Référence : footing easy 30 min ≈ 25 TSS · seuil 1h ≈ 80 TSS · sortie longue 2h ≈ 110 TSS · 10K compétition ≈ 100 TSS.' },
-        { id: 'if', term: 'IF — Intensity Factor', def: 'Ratio NP / CP. Indique combien la séance était intense par rapport à ta CP.', more: 'Repères : <0.75 récup · 0.75-0.85 endurance · 0.85-0.95 seuil · 0.95-1.05 compétition 10K · >1.05 intervalles courts.' },
-        { id: 'ctl', term: 'CTL — Chronic Training Load', def: 'Ta forme à long terme. Moyenne glissante exponentielle du TSS quotidien sur 42 jours. Une CTL qui monte = tu construis ta caisse.', more: "Pour ton objectif sub-40 sur 10K, viser une CTL stable autour de 50-65 dans les semaines de pic d'entraînement." },
-        { id: 'atl', term: 'ATL — Acute Training Load', def: 'Ta fatigue à court terme. Moyenne glissante exponentielle sur 7 jours. Une ATL très haute = tu accumules.', more: "L'ATL doit fluctuer : monter pendant les semaines de charge, descendre pendant les semaines de récup." },
-        { id: 'tsb', term: 'TSB — Training Stress Balance (Forme)', def: 'CTL - ATL. Indicateur de fraîcheur. Positif = frais. Négatif = fatigué.', more: 'Pour une course objectif : viser TSB +10 à +25 le jour J. Trop frais (+30) = peu d\'effet d\'entraînement. Trop fatigué (-20) = contre-performance.' },
-        { id: 'acwr', term: 'ACWR — Acute:Chronic Workload Ratio', def: "Ratio entre ta charge des 7 derniers jours et la moyenne hebdomadaire des 28 derniers. Validé scientifiquement comme prédicteur de blessure.", more: "Zone safe : 0.8-1.3. Zone élevée : 1.3-1.5. Zone à risque : >1.5. Pour toi avec ton historique tendinite, surveiller ce ratio est CRITIQUE." },
-        { id: 'wprime', term: "W' — Réserve anaérobie", def: 'Travail total que tu peux fournir au-dessus de ta CP avant épuisement. Mesuré en kJ.', more: "Tes intervalles courts puisent dans W'. Plus W' est grande, plus tu peux soutenir des accélérations dans une course." },
-        { id: 'dérive', term: 'Dérive cardiaque', def: 'Augmentation de la FC à puissance constante au cours d\'une séance. Indicateur de fatigue, déshydratation, ou manque de fond aérobie.', more: 'Sur une sortie longue à allure constante, une dérive >5% en 2h indique un manque de base aérobie. Objectif : dérive <3% sur tes longs.' },
-      ];
-      return (
-        <>
-          <div className="space-y-2">
-            {sections.map((s) => (
-              <Card key={s.id} className="overflow-hidden">
-                <button onClick={() => setOpen(open === s.id ? null : s.id)} className="w-full text-left p-5 flex items-center justify-between gap-4">
-                  <div className="flex-1">
-                    <div className="font-display text-base font-bold">{s.term}</div>
-                    {open !== s.id && <div className="text-xs mt-1 line-clamp-2" style={{ color: 'var(--text-dim)' }}>{s.def}</div>}
-                  </div>
-                  <IconChevronDown size={16} style={{ color: 'var(--text-dim)', transform: open === s.id ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.3s', flexShrink: 0 }} />
-                </button>
-                {open === s.id && (
-                  <div className="px-5 pb-5 fade-in">
-                    <div className="text-sm leading-relaxed mb-3" style={{ color: 'var(--text)' }}>{s.def}</div>
-                    {s.more && (
-                      <div className="rounded-lg p-3" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
-                        <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--compass)' }}>POUR ALLER PLUS LOIN</div>
-                        <div className="text-xs leading-relaxed" style={{ color: 'var(--text-dim)' }}>{s.more}</div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </Card>
-            ))}
-          </div>
-          <div className="mt-10 p-5 rounded-2xl" style={{ background: 'rgba(74, 158, 255, 0.06)', border: '1px solid rgba(74, 158, 255, 0.2)' }}>
-            <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--compass)' }}>PRINCIPE FONDAMENTAL</div>
-            <div className="font-display text-lg font-bold mb-2 leading-tight">Polarisation de l'entraînement</div>
-            <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>Les coureurs élites passent ~80% de leur volume en zone facile (Z1-Z2) et ~20% en zone difficile (Z4-Z5), en évitant la zone moyenne ("no-man's land" Z3). Le plan Stryd que tu suis applique ce principe. C'est pour ça que tes footings doivent rester FACILES : ils construisent ton moteur aérobie.</div>
-          </div>
-        </>
-      );
-    }
-
     // ========================================================================
     // DATE CONFIRM MODAL — Asks user to confirm activity date when uncertain
     // ========================================================================
@@ -6195,8 +6308,8 @@
               <button onClick={() => preset(3)} className="btn flex-1 px-2 py-1.5 rounded-md font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--border)' }}>J–3</button>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <button onClick={onCancel} className="btn py-3 rounded-lg font-mono text-[11px] tracking-widest" style={{ background: 'var(--bg-elev-2)' }}>ANNULER</button>
-              <button onClick={confirm} className="btn lift py-3 rounded-lg font-display font-bold" style={{ background: 'var(--compass)', color: '#000' }}>CONFIRMER</button>
+              <button onClick={onCancel} className="btn-base btn-secondary">Annuler</button>
+              <button onClick={confirm} className="btn-base btn-primary">Confirmer</button>
             </div>
           </div>
         </div>
@@ -7796,8 +7909,8 @@
       const header = (
         <div className="flex items-end justify-between mb-8 flex-wrap gap-3">
           <div>
-            <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--compass)' }}>ANALYTICS</div>
-            <div className="font-display text-4xl md:text-5xl font-bold leading-tight">Ta forme et ta progression</div>
+            <div className="t-meta mb-2" style={{ color: 'var(--compass)' }}>ANALYTICS</div>
+            <h1 className="t-h1">Ta forme et ta progression</h1>
             <div className="text-sm mt-2" style={{ color: 'var(--text-dim)' }}>{activities.length} activité{activities.length > 1 ? 's' : ''} importée{activities.length > 1 ? 's' : ''} · CP {profile.cp}W · {profile.weightKg}kg</div>
           </div>
         </div>
@@ -9398,8 +9511,8 @@
               </div>
             </div>
             <div className="flex gap-2 mt-6">
-              <button onClick={onCancel} className="btn flex-1 py-3 rounded-lg font-mono text-[11px] tracking-widest" style={{ background: 'var(--bg-elev-2)' }}>ANNULER</button>
-              <button onClick={save} className="btn lift flex-1 py-3 rounded-lg font-display font-bold" style={{ background: 'var(--compass)', color: '#000' }}>ENREGISTRER</button>
+              <button onClick={onCancel} className="btn-base btn-secondary btn-lg flex-1">Annuler</button>
+              <button onClick={save} className="btn-base btn-primary btn-lg flex-1">Enregistrer</button>
             </div>
           </div>
         </div>
@@ -9647,8 +9760,8 @@
                 </div>
                 <input className="input" placeholder="Objectif (ex: sub-40, 39:30, 1:30:00)" value={form.objective} onChange={(e) => setForm({...form, objective: e.target.value})} />
                 <div className="flex gap-2 pt-1">
-                  <button onClick={() => setAdding(false)} className="btn flex-1 py-2.5 rounded-lg font-mono text-[11px] tracking-widest" style={{ background: 'var(--bg-elev)' }}>ANNULER</button>
-                  <button onClick={submitRace} disabled={!form.name || !form.date} className="btn flex-1 py-2.5 rounded-lg font-display font-bold" style={{ background: 'var(--accent)', color: '#000', opacity: (!form.name || !form.date) ? 0.3 : 1 }}>AJOUTER</button>
+                  <button onClick={() => setAdding(false)} className="btn-base btn-secondary flex-1">Annuler</button>
+                  <button onClick={submitRace} disabled={!form.name || !form.date} className="btn-base btn-primary flex-1" style={{ opacity: (!form.name || !form.date) ? 0.3 : 1 }}>Ajouter</button>
                 </div>
               </div>
             </div>
@@ -11018,8 +11131,8 @@
                   </div>
 
                   <div className="flex gap-2 pt-4">
-                    <button onClick={onCancel} className="btn flex-1 py-3 rounded-lg font-mono text-[11px] tracking-widest" style={{ background: 'var(--bg-elev-2)' }}>ANNULER</button>
-                    <button onClick={generatePreview} className="btn lift flex-1 py-3 rounded-lg font-display font-bold flex items-center justify-center gap-2" style={{ background: 'var(--accent)', color: '#000' }}>GÉNÉRER L'APERÇU <IconArrowRight size={14} /></button>
+                    <button onClick={onCancel} className="btn-base btn-secondary btn-lg flex-1">Annuler</button>
+                    <button onClick={generatePreview} className="btn-base btn-primary btn-lg flex-1 flex items-center justify-center gap-2">Générer l'aperçu <IconArrowRight size={14} /></button>
                   </div>
                 </>
               ) : (
@@ -11155,7 +11268,7 @@
           </div>
           <div className="flex gap-2">
             <button onClick={onBack} className="btn flex-1 py-3 rounded-lg font-mono text-[11px] tracking-widest" style={{ background: 'var(--bg-elev-2)' }}>← MODIFIER</button>
-            <button onClick={onConfirm} className="btn lift flex-1 py-3 rounded-lg font-display font-bold" style={{ background: 'var(--accent)', color: '#000' }}>APPLIQUER AU CALENDRIER</button>
+            <button onClick={onConfirm} className="btn-base btn-primary btn-lg flex-1">Appliquer au calendrier</button>
           </div>
         </>
       );
