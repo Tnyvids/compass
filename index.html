@@ -8975,7 +8975,7 @@
         const pastTss = fitnessNow.series.dailyTss;
         const pastDays = pastCtl.length;
     
-        // --- Calcul ACWR glissant ---
+        // ACWR passé glissant
         const pastAcwr = new Array(pastDays).fill(null);
         let rolling7 = 0, rolling28 = 0;
         for (let i = 0; i < pastDays; i++) {
@@ -8992,7 +8992,7 @@
           }
         }
     
-        // Projection future (inchangée)
+        // Projection CTL/ATL et TSS futures
         const seedCtl = pastCtl[pastDays - 1];
         const seedAtl = pastAtl[pastDays - 1];
         const ctlAlpha = 1 - Math.exp(-1/42);
@@ -9013,8 +9013,8 @@
         });
         const futureDays = Math.min(90, Math.max(0, Math.round((lastPlannedMs - todayMs) / dayMs) + 7));
     
-        const futCtl = [], futAtl = [], futTsb = [], futTss = [];
-        let ctl = seedCtl, atl = seedAtl;
+        // TSS planifiée pour chaque jour futur
+        const futureTssPlan = [];
         for (let d = 1; d <= futureDays; d++) {
           const date = new Date(todayMs + d * dayMs);
           const wsDate = getWeekStart(date);
@@ -9032,6 +9032,35 @@
               : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(planned.type, profile.cp, profile.weightKg, planned.plannedKm, powerPaceTable) : 0));
             if (dur > 0) tss = estimateSessionTSS(planned.type, profile.cp, dur);
           }
+          futureTssPlan.push(tss);
+        }
+    
+        // Concaténer TSS passé + futur pour calculer ACWR glissant sur toute la période
+        const allTss = [...pastTss, ...futureTssPlan];
+        const allAcwr = new Array(allTss.length).fill(null);
+        let r7 = 0, r28 = 0;
+        for (let i = 0; i < allTss.length; i++) {
+          r7 += allTss[i];
+          r28 += allTss[i];
+          if (i >= 7) r7 -= allTss[i - 7];
+          if (i >= 28) r28 -= allTss[i - 28];
+          if (i >= 27) {
+            const acute = r7;
+            const chronicAvg = r28 / 4;
+            if (chronicAvg > 0) {
+              allAcwr[i] = acute / chronicAvg;
+            }
+          }
+        }
+    
+        const pastAcwrFull = allAcwr.slice(0, pastDays);
+        const futAcwr = allAcwr.slice(pastDays);
+    
+        // Calcul CTL/ATL futur
+        const futCtl = [], futAtl = [], futTsb = [], futTss = [];
+        let ctl = seedCtl, atl = seedAtl;
+        for (let d = 0; d < futureDays; d++) {
+          const tss = futureTssPlan[d];
           ctl = ctl + ctlAlpha * (tss - ctl);
           atl = atl + atlAlpha * (tss - atl);
           futCtl.push(ctl);
@@ -9043,14 +9072,14 @@
         const allCtl = [...pastCtl, ...futCtl];
         const allAtl = [...pastAtl, ...futAtl];
         const allTsb = [...pastTsb, ...futTsb];
-        const allTss = [...pastTss, ...futTss];
-        const allAcwr = [...pastAcwr, ...new Array(futureDays).fill(null)];
+        const allTssFinal = [...pastTss, ...futTss];
+        const allAcwrFinal = [...pastAcwrFull, ...futAcwr];
         const todayIdx = pastDays - 1;
         const totalDays = pastDays + futureDays;
         const dateAt = (i) => new Date(todayMs - (todayIdx - i) * dayMs);
     
         return {
-          ctl: allCtl, atl: allAtl, tsb: allTsb, tss: allTss, acwr: allAcwr,
+          ctl: allCtl, atl: allAtl, tsb: allTsb, tss: allTssFinal, acwr: allAcwrFinal,
           totalDays, todayIdx, futureDays, pastDays, dateAt,
           totalPastTss: Math.round(pastTss.reduce((s, v) => s + v, 0)),
           totalFutureTss: Math.round(futTss.reduce((s, v) => s + v, 0)),
@@ -9276,6 +9305,7 @@
             {visibleAcwr && (
               <>
                 <path d={acwrPath.past} fill="none" stroke="#D4FF00" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+                {acwrPath.future && <path d={acwrPath.future} fill="none" stroke="#D4FF00" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" strokeDasharray="5,4" opacity="0.85" />}
               </>
             )}
     
@@ -9298,216 +9328,6 @@
             <text x={padL} y={H - 4} textAnchor="start" fontFamily="JetBrains Mono" fontSize="8" fill="#444">← passé</text>
             {futureDays > 0 && <text x={W - padR} y={H - 4} textAnchor="end" fontFamily="JetBrains Mono" fontSize="8" fill="#444">futur →</text>}
             <text x={padL + cw / 2} y={padT - 8} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="8" fill="#444">échelle gauche : charge / forme / fatigue · échelle droite : fraîcheur / ACWR</text>
-          </svg>
-        </Card>
-      );
-    }
-
-    function FitnessChartCard({ series }) {
-      const [hoverIdx, setHoverIdx] = useState(null);
-      const ctl = series.ctl;
-      const atl = series.atl;
-      const days = ctl.length;
-      const allValues = [...ctl, ...atl, 30];
-      const max = Math.ceil(Math.max(...allValues) / 10) * 10;
-
-      const W = 1000; const H = 280;
-      const padL = 38; const padR = 18; const padT = 16; const padB = 28;
-      const cw = W - padL - padR;
-      const ch = H - padT - padB;
-
-      const x = (i) => padL + (i / Math.max(1, days - 1)) * cw;
-      const y = (val) => padT + ch - (val / max) * ch;
-
-      const ctlPath = ctl.map((v, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' ');
-      const atlPath = atl.map((v, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' ');
-      const ctlAreaPath = ctlPath + ` L ${x(days - 1).toFixed(1)} ${y(0).toFixed(1)} L ${x(0).toFixed(1)} ${y(0).toFixed(1)} Z`;
-
-      const today = new Date();
-      const tickIndices = [0, Math.floor(days * 0.25), Math.floor(days * 0.5), Math.floor(days * 0.75), days - 1];
-      const xLabels = tickIndices.map(i => {
-        const d = new Date(today); d.setDate(today.getDate() - (days - 1 - i));
-        return { i, label: `${d.getDate()}/${d.getMonth() + 1}` };
-      });
-      const yTicks = [0, 0.25, 0.5, 0.75, 1].map(p => ({ v: p * max, y: padT + ch - p * ch }));
-      const hoverDate = hoverIdx !== null ? new Date(today.getTime() - (days - 1 - hoverIdx) * 86400000) : null;
-
-      function handleMouseMove(e) {
-        const rect = e.currentTarget.getBoundingClientRect();
-        const svgX = ((e.clientX - rect.left) / rect.width) * W;
-        const idx = Math.round(((svgX - padL) / cw) * Math.max(1, days - 1));
-        setHoverIdx(Math.max(0, Math.min(days - 1, idx)));
-      }
-
-      return (
-        <Card className="p-6 md:p-7">
-          <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-            <div>
-              <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--text-dim)' }}>FORME / FATIGUE — 90 JOURS</div>
-              <div className="font-display text-lg md:text-xl font-bold">Ton entraînement dans le temps</div>
-            </div>
-            <div className="flex gap-4 font-mono text-[10px]">
-              <div className="flex items-center gap-1.5"><div className="w-4 h-0.5" style={{ background: 'var(--compass)' }}></div><span style={{ color: 'var(--text-dim)' }}>Forme de fond <span style={{ opacity: 0.5 }}>CTL</span></span></div>
-              <div className="flex items-center gap-1.5"><div className="w-4 h-0.5" style={{ background: 'var(--warn)' }}></div><span style={{ color: 'var(--text-dim)' }}>Fatigue <span style={{ opacity: 0.5 }}>ATL</span></span></div>
-            </div>
-          </div>
-          {hoverIdx !== null && (
-            <div className="mb-2 font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
-              {fmtDate(hoverDate, true)} · <span style={{ color: 'var(--compass)' }}>Forme {(ctl[hoverIdx] || 0).toFixed(1)}</span> · <span style={{ color: 'var(--warn)' }}>Fatigue {(atl[hoverIdx] || 0).toFixed(1)}</span>
-            </div>
-          )}
-          <svg viewBox={`0 0 ${W} ${H}`} className="w-full cursor-crosshair" style={{ height: 'auto' }} preserveAspectRatio="xMidYMid meet" onMouseMove={handleMouseMove} onMouseLeave={() => setHoverIdx(null)}>
-            <defs>
-              <linearGradient id="ctlGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#4A9EFF" stopOpacity="0.25" />
-                <stop offset="100%" stopColor="#4A9EFF" stopOpacity="0" />
-              </linearGradient>
-            </defs>
-            {yTicks.map((t, i) => (
-              <g key={i}>
-                <line x1={padL} y1={t.y} x2={W - padR} y2={t.y} stroke="#1F1F1F" strokeWidth="0.5" strokeDasharray="2,3" />
-                <text x={padL - 6} y={t.y + 3} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{Math.round(t.v)}</text>
-              </g>
-            ))}
-            <path d={ctlAreaPath} fill="url(#ctlGrad)" />
-            <path d={ctlPath} fill="none" stroke="#4A9EFF" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-            <path d={atlPath} fill="none" stroke="#FFB020" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" strokeDasharray="3,3" />
-            {ctl.map((v, i) => (
-              <circle key={`ctl-${i}`} cx={x(i)} cy={y(v)} r={hoverIdx === i ? "3.5" : "2"} fill="#4A9EFF" opacity={hoverIdx === null || hoverIdx === i ? 1 : 0.6} />
-            ))}
-            {atl.map((v, i) => (
-              <circle key={`atl-${i}`} cx={x(i)} cy={y(v)} r={hoverIdx === i ? "3" : "1.8"} fill="#FFB020" opacity={hoverIdx === null || hoverIdx === i ? 1 : 0.6} />
-            ))}
-            {hoverIdx !== null && (() => {
-              const tooltipW = 96, tooltipH = 24;
-              let tx = x(hoverIdx) + 8;
-              if (tx + tooltipW > W - 4) tx = x(hoverIdx) - tooltipW - 8; // flip to left
-              const ty = Math.max(padT + 4, Math.min(y(ctl[hoverIdx]), y(atl[hoverIdx])) - 28);
-              return (
-                <g>
-                  <line x1={x(hoverIdx)} y1={padT} x2={x(hoverIdx)} y2={padT + ch} stroke="#8A8A8A" strokeWidth="0.8" strokeDasharray="3,3" opacity="0.8" />
-                  <rect x={tx} y={ty} width={tooltipW} height={tooltipH} rx="4" fill="#0A0A0A" stroke="#2A2A2A" />
-                  <text x={tx + 4} y={ty + 16} fontFamily="JetBrains Mono" fontSize="9" fill="#4A9EFF">CTL {(ctl[hoverIdx] || 0).toFixed(1)}</text>
-                  <text x={tx + 48} y={ty + 16} fontFamily="JetBrains Mono" fontSize="9" fill="#FFB020">ATL {(atl[hoverIdx] || 0).toFixed(1)}</text>
-                </g>
-              );
-            })()}
-            <line x1={x(days - 1)} y1={padT} x2={x(days - 1)} y2={padT + ch} stroke="#D4FF00" strokeWidth="1" strokeDasharray="2,2" opacity="0.5" />
-            <text x={x(days - 1) - 4} y={padT + 9} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#D4FF00">AUJ.</text>
-            <circle cx={x(days - 1)} cy={y(ctl[ctl.length - 1])} r="4" fill="#4A9EFF" stroke="#0A0A0A" strokeWidth="2" />
-            <circle cx={x(days - 1)} cy={y(atl[atl.length - 1])} r="3" fill="#FFB020" stroke="#0A0A0A" strokeWidth="2" />
-            {xLabels.map((t, i) => (
-              <text key={i} x={x(t.i)} y={H - 10} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{t.label}</text>
-            ))}
-          </svg>
-        </Card>
-      );
-    }
-
-    function WeeklyTSSCard({ weeks, hasPowerData = true }) {
-      const [hoverIdx, setHoverIdx] = useState(null);
-      const useKm = !hasPowerData;
-      const max = Math.max(useKm ? 10 : 50, ...weeks.map(w => useKm ? w.km : w.tss));
-      const W = 500; const H = 260;
-      const padL = 36; const padR = 12; const padT = 16; const padB = 38;
-      const cw = W - padL - padR;
-      const ch = H - padT - padB;
-      const slot = cw / weeks.length;
-      const barW = slot * 0.65;
-      const offset = slot * 0.175;
-
-      const totalLabel = useKm ? `${Math.round(weeks.reduce((s, w) => s + w.km, 0))} km` : `${weeks.reduce((s, w) => s + w.tss, 0)} TSS`;
-      const headerLabel = useKm ? 'VOLUME HEBDO · 8 SEMAINES (KM)' : 'CHARGE HEBDOMADAIRE · 8 SEMAINES';
-      const hoveredWeek = hoverIdx !== null ? weeks[hoverIdx] : null;
-
-      function handleMouseMove(e) {
-        const rect = e.currentTarget.getBoundingClientRect();
-        const svgX = ((e.clientX - rect.left) / rect.width) * W;
-        const idx = Math.floor((svgX - padL) / slot);
-        setHoverIdx(Math.max(0, Math.min(weeks.length - 1, idx)));
-      }
-
-      return (
-        <Card className="p-6 h-full">
-          <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-            <div className="flex items-center gap-2">
-              <IconBarChart size={14} style={{ color: 'var(--compass)' }} />
-              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>{headerLabel}</div>
-            </div>
-            <div className="font-mono text-[10px] tabular" style={{ color: 'var(--text-dim)' }}>Total : <span style={{ color: 'var(--text)' }}>{totalLabel}</span></div>
-          </div>
-          {hoveredWeek ? (
-            <div className="mb-2 leading-relaxed" style={{ color: 'var(--text-faint)' }}>
-              <div className="font-mono text-xs">
-                <span style={{ color: 'var(--compass)' }}>Semaine du lundi {fmtDate(hoveredWeek.weekStart, true)}</span>
-                {' → dimanche '}{fmtDate(new Date(hoveredWeek.weekStart.getTime() + 6 * 86400000), true)}
-              </div>
-              <div className="font-mono text-xs mt-1">
-                <span style={{ color: 'var(--text)' }}>{hoveredWeek.sessionCount} séance{hoveredWeek.sessionCount > 1 ? 's' : ''}</span>
-                {' · '}
-                <span style={{ color: 'var(--text)' }}>{hoveredWeek.km.toFixed(1)} km</span>
-                {!useKm && <> · <span style={{ color: 'var(--text)' }}>{hoveredWeek.tss} TSS</span></>}
-                {(() => {
-                  // Compare to previous week
-                  if (hoverIdx > 0) {
-                    const prev = weeks[hoverIdx - 1];
-                    const cur = useKm ? hoveredWeek.km : hoveredWeek.tss;
-                    const prv = useKm ? prev.km : prev.tss;
-                    if (prv > 0) {
-                      const pct = Math.round(((cur - prv) / prv) * 100);
-                      const sign = pct > 0 ? '+' : '';
-                      const color = Math.abs(pct) > 30 ? 'var(--warn)' : pct > 0 ? 'var(--go)' : 'var(--text-dim)';
-                      return <> · <span style={{ color }}>{sign}{pct}% vs sem. précédente</span></>;
-                    }
-                  }
-                  return null;
-                })()}
-              </div>
-            </div>
-          ) : (
-            <div className="mb-2 font-mono text-xs italic" style={{ color: 'var(--text-faint)' }}>
-              Survole une barre pour voir le détail de la semaine
-            </div>
-          )}
-          <svg viewBox={`0 0 ${W} ${H}`} className="w-full cursor-crosshair" preserveAspectRatio="xMidYMid meet" onMouseMove={handleMouseMove} onMouseLeave={() => setHoverIdx(null)}>
-            {[0, 0.25, 0.5, 0.75, 1].map((p, i) => {
-              const yy = padT + ch - p * ch;
-              const v = Math.round(p * max);
-              return (
-                <g key={i}>
-                  <line x1={padL} y1={yy} x2={W - padR} y2={yy} stroke="#1F1F1F" strokeWidth="0.5" strokeDasharray="2,3" />
-                  <text x={padL - 6} y={yy + 3} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{v}</text>
-                </g>
-              );
-            })}
-            {weeks.map((w, i) => {
-              const xx = padL + i * slot + offset;
-              const value = useKm ? w.km : w.tss;
-              const h = value > 0 ? Math.max(2, (value / max) * ch) : 0;
-              const yy = padT + ch - h;
-              const isCurrent = i === weeks.length - 1;
-              const isHover = hoverIdx === i;
-              let color = '#555';
-              if (useKm) {
-                if (w.km > 50) color = '#D4FF00';
-                else if (w.km > 30) color = '#4A9EFF';
-                else if (w.km > 15) color = '#8FE86A';
-                else if (w.km > 0) color = '#8A8A8A';
-              } else {
-                if (w.tss > 350) color = '#D4FF00';
-                else if (w.tss > 200) color = '#4A9EFF';
-                else if (w.tss > 100) color = '#8FE86A';
-                else if (w.tss > 0) color = '#8A8A8A';
-              }
-              return (
-                <g key={i}>
-                  <rect x={xx} y={yy} width={barW} height={h} rx={3} fill={color} opacity={isHover ? 1 : isCurrent ? 1 : 0.7} stroke={isHover ? '#D4FF00' : 'none'} strokeWidth={isHover ? 1.2 : 0} />
-                  {value > 0 && <text x={xx + barW / 2} y={yy - 5} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="9" fill={color}>{useKm ? value.toFixed(1) : value}</text>}
-                  <text x={xx + barW / 2} y={H - 18} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="8" fill={isCurrent ? '#D4FF00' : '#555'}>{`S${w.weekStart.getDate()}/${w.weekStart.getMonth() + 1}`}</text>
-                  <text x={xx + barW / 2} y={H - 6} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="8" fill="#8A8A8A">{useKm ? `${w.sessionCount}sess` : `${w.km}km`}</text>
-                </g>
-              );
-            })}
           </svg>
         </Card>
       );
