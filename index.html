@@ -8182,12 +8182,16 @@
           <div className="grid grid-cols-2 gap-3">
             <div className="rounded-lg p-3" style={{ background: 'var(--bg-elev-2)' }}>
               <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>IL Y A {comp.daysAgo} JOURS</div>
-              <div className="font-display font-bold tabular" style={{ color: 'var(--text-dim)' }}>{comp.past.normalizedPower}W · FC {comp.past.avgHr}</div>
+              <div className="font-display font-bold tabular" style={{ color: 'var(--text-dim)' }}>
+                {comp.past.normalizedPower}W · FC {comp.past.avgHr} · {comp.past.paceMinPerKm ? fmtPace(comp.past.paceMinPerKm) : '—'}
+              </div>
               <div className="font-mono text-[10px] mt-1" style={{ color: 'var(--text-faint)' }}>{fmtDate(comp.past.startMs)} · {Math.round(comp.past.durationSec / 60)} min</div>
             </div>
             <div className="rounded-lg p-3" style={{ background: 'var(--bg-elev-2)' }}>
               <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: comp.color }}>{fmtDate(comp.recent.startMs).toUpperCase()}</div>
-              <div className="font-display font-bold tabular" style={{ color: comp.color }}>{comp.recent.normalizedPower}W · FC {comp.recent.avgHr}</div>
+              <div className="font-display font-bold tabular" style={{ color: comp.color }}>
+                {comp.recent.normalizedPower}W · FC {comp.recent.avgHr} · {comp.recent.paceMinPerKm ? fmtPace(comp.recent.paceMinPerKm) : '—'}
+              </div>
               <div className="font-mono text-[10px] mt-1" style={{ color: 'var(--text-faint)' }}>{Math.round(comp.recent.durationSec / 60)} min</div>
             </div>
           </div>
