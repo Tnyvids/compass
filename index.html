@@ -8975,7 +8975,7 @@
         const pastTss = fitnessNow.series.dailyTss;
         const pastDays = pastCtl.length;
     
-        // --- Calcul ACWR glissant ---
+        // ACWR passé glissant
         const pastAcwr = new Array(pastDays).fill(null);
         let rolling7 = 0, rolling28 = 0;
         for (let i = 0; i < pastDays; i++) {
@@ -8992,7 +8992,7 @@
           }
         }
     
-        // Projection future (inchangée)
+        // Projection CTL/ATL et TSS futures
         const seedCtl = pastCtl[pastDays - 1];
         const seedAtl = pastAtl[pastDays - 1];
         const ctlAlpha = 1 - Math.exp(-1/42);
@@ -9013,8 +9013,8 @@
         });
         const futureDays = Math.min(90, Math.max(0, Math.round((lastPlannedMs - todayMs) / dayMs) + 7));
     
-        const futCtl = [], futAtl = [], futTsb = [], futTss = [];
-        let ctl = seedCtl, atl = seedAtl;
+        // TSS planifiée pour chaque jour futur
+        const futureTssPlan = [];
         for (let d = 1; d <= futureDays; d++) {
           const date = new Date(todayMs + d * dayMs);
           const wsDate = getWeekStart(date);
@@ -9032,6 +9032,35 @@
               : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(planned.type, profile.cp, profile.weightKg, planned.plannedKm, powerPaceTable) : 0));
             if (dur > 0) tss = estimateSessionTSS(planned.type, profile.cp, dur);
           }
+          futureTssPlan.push(tss);
+        }
+    
+        // Concaténer TSS passé + futur pour calculer ACWR glissant sur toute la période
+        const allTss = [...pastTss, ...futureTssPlan];
+        const allAcwr = new Array(allTss.length).fill(null);
+        let r7 = 0, r28 = 0;
+        for (let i = 0; i < allTss.length; i++) {
+          r7 += allTss[i];
+          r28 += allTss[i];
+          if (i >= 7) r7 -= allTss[i - 7];
+          if (i >= 28) r28 -= allTss[i - 28];
+          if (i >= 27) {
+            const acute = r7;
+            const chronicAvg = r28 / 4;
+            if (chronicAvg > 0) {
+              allAcwr[i] = acute / chronicAvg;
+            }
+          }
+        }
+    
+        const pastAcwrFull = allAcwr.slice(0, pastDays);
+        const futAcwr = allAcwr.slice(pastDays);
+    
+        // Calcul CTL/ATL futur
+        const futCtl = [], futAtl = [], futTsb = [], futTss = [];
+        let ctl = seedCtl, atl = seedAtl;
+        for (let d = 0; d < futureDays; d++) {
+          const tss = futureTssPlan[d];
           ctl = ctl + ctlAlpha * (tss - ctl);
           atl = atl + atlAlpha * (tss - atl);
           futCtl.push(ctl);
@@ -9043,14 +9072,14 @@
         const allCtl = [...pastCtl, ...futCtl];
         const allAtl = [...pastAtl, ...futAtl];
         const allTsb = [...pastTsb, ...futTsb];
-        const allTss = [...pastTss, ...futTss];
-        const allAcwr = [...pastAcwr, ...new Array(futureDays).fill(null)];
+        const allTssFinal = [...pastTss, ...futTss];
+        const allAcwrFinal = [...pastAcwrFull, ...futAcwr];
         const todayIdx = pastDays - 1;
         const totalDays = pastDays + futureDays;
         const dateAt = (i) => new Date(todayMs - (todayIdx - i) * dayMs);
     
         return {
-          ctl: allCtl, atl: allAtl, tsb: allTsb, tss: allTss, acwr: allAcwr,
+          ctl: allCtl, atl: allAtl, tsb: allTsb, tss: allTssFinal, acwr: allAcwrFinal,
           totalDays, todayIdx, futureDays, pastDays, dateAt,
           totalPastTss: Math.round(pastTss.reduce((s, v) => s + v, 0)),
           totalFutureTss: Math.round(futTss.reduce((s, v) => s + v, 0)),
@@ -9276,6 +9305,7 @@
             {visibleAcwr && (
               <>
                 <path d={acwrPath.past} fill="none" stroke="#D4FF00" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+                {acwrPath.future && <path d={acwrPath.future} fill="none" stroke="#D4FF00" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" strokeDasharray="5,4" opacity="0.85" />}
               </>
             )}
     
@@ -9300,252 +9330,6 @@
             <text x={padL + cw / 2} y={padT - 8} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="8" fill="#444">échelle gauche : charge / forme / fatigue · échelle droite : fraîcheur / ACWR</text>
           </svg>
         </Card>
-      );
-    }
-
-    // ========================================================================
-    // CP PROGRESSION BANNER — non-destructive suggestion when power curve has
-    // measurably improved. User can accept (updates profile.cp + history) or
-    // dismiss (silent, won't show again until next window).
-    // ========================================================================
-    function CPProgressionBanner({ progression, profile, onAcceptCP }) {
-      const [dismissed, setDismissed] = useState(false);
-      const [expanded, setExpanded] = useState(false);
-      if (!progression || dismissed) return null;
-
-      const { suggestedCP, currentCP, deltaCP, deltaPct, evidence, confidence, improvements, sampleCount } = progression;
-      const confLabel = { high: 'forte', medium: 'modérée', low: 'faible' }[confidence] || 'faible';
-      const confColor = confidence === 'high' ? 'var(--go)' : confidence === 'medium' ? 'var(--accent)' : 'var(--warn)';
-
-      function handleAccept() {
-        if (onAcceptCP) onAcceptCP(suggestedCP);
-        setDismissed(true);
-      }
-
-      return (
-        <Card className="p-5 md:p-6 mb-4" accent="var(--go)">
-          <div className="flex items-start gap-3 flex-wrap">
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(143, 232, 106, 0.15)' }}>
-              <IconTrending size={20} style={{ color: 'var(--go)' }} />
-            </div>
-            <div className="flex-1 min-w-[240px]">
-              <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--go)' }}>PROGRESSION DÉTECTÉE · CONFIANCE {confLabel.toUpperCase()}</div>
-              <div className="font-display text-lg md:text-xl font-bold mb-1">
-                Ta puissance a progressé. Nouvelle puissance seuil suggérée : <span style={{ color: 'var(--go)' }}>{suggestedCP}W</span> <span className="font-mono text-sm" style={{ color: 'var(--text-dim)' }}>(+{deltaCP}W, +{(deltaPct * 100).toFixed(1)}%)</span>
-              </div>
-              <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-                Sur les 5 dernières semaines, ta puissance soutenue s'est améliorée sur <span style={{ color: 'var(--text)' }}>{improvements} des {sampleCount} durées</span> que je surveille (3 min, 5 min, 10 min, 20 min, 30 min). Ta puissance seuil actuelle de <span style={{ color: 'var(--text)' }}>{currentCP}W</span> est probablement sous-estimée — accepter ajustera tes prédictions de course et tes zones d'entraînement.
-              </div>
-              {expanded && (
-                <div className="mt-3 p-3 rounded-lg fade-in" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
-                  <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--text-faint)' }}>DÉTAIL PAR DURÉE (avant → maintenant)</div>
-                  <div className="space-y-1">
-                    {evidence.map(e => {
-                      const durLabel = e.duration === 1800 ? '30 min' : e.duration === 1200 ? '20 min' : e.duration === 600 ? '10 min' : e.duration === 300 ? '5 min' : '3 min';
-                      const c = e.delta > 0 ? 'var(--go)' : e.delta < 0 ? 'var(--warn)' : 'var(--text-dim)';
-                      return (
-                        <div key={e.duration} className="font-mono text-xs flex items-center gap-3">
-                          <span style={{ color: 'var(--text-dim)', minWidth: 60 }}>{durLabel}</span>
-                          <span className="tabular" style={{ color: 'var(--text)' }}>{e.oldPower}W → {e.newPower}W</span>
-                          <span className="tabular" style={{ color: c }}>{e.delta > 0 ? '+' : ''}{e.delta}W</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div className="mt-3 font-mono text-[10px] italic" style={{ color: 'var(--text-faint)' }}>
-                    Méthode : je compare tes meilleurs efforts récents (5 dernières semaines) à ceux des 8 semaines précédentes. Je suggère un changement uniquement si au moins 3 durées s'améliorent en moyenne d'au moins 1,5 %, et si le gain absolu atteint 4 W. Je ne baisse jamais ta puissance seuil automatiquement (une perte de forme nécessite ton jugement).
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="flex gap-2 mt-4 flex-wrap">
-            <button onClick={handleAccept} className="btn lift flex items-center gap-2 px-4 py-2 rounded-lg font-mono text-[11px] tracking-widest" style={{ background: 'var(--go)', color: '#000' }}>
-              <IconCheck size={13} /> ACCEPTER · {suggestedCP}W
-            </button>
-            <button onClick={() => setExpanded(!expanded)} className="btn px-4 py-2 rounded-lg font-mono text-[11px] tracking-widest" style={{ background: 'var(--bg-elev)', color: 'var(--text-dim)' }}>
-              {expanded ? 'MASQUER' : 'VOIR'} LE DÉTAIL
-            </button>
-            <button onClick={() => setDismissed(true)} className="btn px-4 py-2 rounded-lg font-mono text-[11px] tracking-widest" style={{ background: 'transparent', color: 'var(--text-faint)' }}>
-              IGNORER
-            </button>
-          </div>
-        </Card>
-      );
-    }
-
-    // ========================================================================
-    // PREDICTION DETAIL PANEL — interactive panel that opens when clicking a
-    // distance row in RacePredictorCard. Shows:
-    //  - Anchor used (PR or power-curve)
-    //  - Pace per km + total time
-    //  - Power zones at race effort
-    //  - "What if" CP simulation (+5W / +10W gain visualizer)
-    // ========================================================================
-    function PredictionDetailPanel({ distance, cp, wprime, weightKg, prs, bestEfforts, tsb, sourceLabel }) {
-      const [simDelta, setSimDelta] = useState(0);
-
-      // Recompute prediction with current sim CP
-      const simCp = cp + simDelta;
-      const simPred = useMemo(
-        () => predictRaceTimeV2(simCp, wprime, weightKg, distance.km, prs, bestEfforts, 0, cp),
-        [simCp, wprime, weightKg, distance.km, prs, bestEfforts, cp]
-      );
-
-      // Anchor info
-      const anchor = useMemo(
-        () => pickAnchor(cp, wprime, weightKg, prs, bestEfforts),
-        [cp, wprime, weightKg, prs, bestEfforts]
-      );
-
-      const fmtTime = (sec) => {
-        if (!sec) return '—';
-        const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = Math.round(sec % 60);
-        if (h > 0) return `${h}h${String(m).padStart(2,'0')}'${String(s).padStart(2,'0')}`;
-        return `${m}'${String(s).padStart(2,'0')}`;
-      };
-      const fmtPace = (paceSecPerKm) => {
-        if (!paceSecPerKm) return '—';
-        const m = Math.floor(paceSecPerKm / 60);
-        const s = Math.round(paceSecPerKm % 60);
-        return `${m}'${String(s).padStart(2, '0')}/km`;
-      };
-
-      const baseTime = distance.predictedSec;
-      const simTime = simPred ? simPred.timeSec : baseTime;
-      const gain = baseTime - simTime;
-      const basePace = baseTime / distance.km;
-      const simPace = simTime / distance.km;
-      const racePower = distance.racePower || (simPred ? simPred.racePower : 0);
-
-      // Pace splits per km (simple constant pace assumption — runners deviate by 1-2% per split typically)
-      const splitsCount = Math.min(Math.ceil(distance.km), 12); // Cap at 12 displayed splits
-      const splits = [];
-      const splitKm = distance.km / splitsCount;
-      for (let i = 0; i < splitsCount; i++) {
-        const cumKm = (i + 1) * splitKm;
-        const cumTime = simPace * cumKm;
-        splits.push({ km: cumKm, cumTime });
-      }
-
-      // Power zones for race effort
-      const racePowerPct = cp ? Math.round((racePower / cp) * 100) : 0;
-      let zone, zoneDesc, zoneColor;
-      if (racePowerPct >= 110) { zone = 'Z4 · Intervalle'; zoneDesc = 'au-dessus du seuil'; zoneColor = 'var(--alert)'; }
-      else if (racePowerPct >= 95) { zone = 'Z3 · Seuil'; zoneDesc = 'pile au seuil'; zoneColor = 'var(--accent)'; }
-      else if (racePowerPct >= 85) { zone = 'Z2 · Endurance haute'; zoneDesc = 'sous-seuil dur'; zoneColor = 'var(--warn)'; }
-      else if (racePowerPct >= 75) { zone = 'Z2 · Endurance'; zoneDesc = 'allure tenable longtemps'; zoneColor = 'var(--compass)'; }
-      else { zone = 'Z1 · Footing'; zoneDesc = 'allure facile'; zoneColor = 'var(--go)'; }
-
-      const targetSec = (() => {
-        const s = (distance.current || '').trim();
-        if (!s) return null;
-        const parts = s.split(':').map(Number);
-        if (parts.length === 2 && !parts.some(isNaN)) return parts[0] * 60 + parts[1];
-        if (parts.length === 3 && !parts.some(isNaN)) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-        return null;
-      })();
-
-      return (
-        <div className="rounded-xl p-4 md:p-5 fade-in" style={{ background: 'rgba(74, 158, 255, 0.04)', border: '1px solid var(--border)' }}>
-          {/* Anchor + power info */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
-            <div>
-              <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>BASÉ SUR</div>
-              <div className="text-sm leading-relaxed" style={{ color: 'var(--text)' }}>
-                {anchor && anchor.source === 'pr' ? (
-                  <>Ton record <span className="font-bold" style={{ color: 'var(--accent)' }}>{anchor.anchorKey === '5k' ? '5K' : anchor.anchorKey === '10k' ? '10K' : anchor.anchorKey === 'semi' ? 'Semi' : 'Marathon'}</span> = <span className="font-mono tabular">{fmtTime(anchor.anchorSec)}</span></>
-                ) : anchor && anchor.source === 'power-curve' ? (
-                  <>Ta courbe de puissance ({sourceLabel})</>
-                ) : (
-                  <>Estimation depuis ta puissance seuil {cp}W</>
-                )}
-              </div>
-              <div className="font-mono text-[10px] mt-1" style={{ color: 'var(--text-faint)' }}>
-                {distance.calibrated ? '✓ calibré sur ton record' : 'extrapolation Riegel'}
-              </div>
-            </div>
-            <div>
-              <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>PUISSANCE DE COURSE</div>
-              <div className="font-display text-xl font-bold tabular" style={{ color: 'var(--compass)' }}>{racePower}<span className="font-mono text-[10px] ml-0.5">W</span></div>
-              <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>{racePowerPct}% de ta puissance seuil</div>
-            </div>
-            <div>
-              <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>ZONE D'EFFORT</div>
-              <div className="font-display text-base font-bold" style={{ color: zoneColor }}>{zone}</div>
-              <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>{zoneDesc}</div>
-            </div>
-          </div>
-
-          {/* Pace splits visualization */}
-          <div className="mb-4">
-            <div className="font-mono text-[9px] tracking-widest mb-2" style={{ color: 'var(--text-faint)' }}>ALLURE CIBLE — {fmtPace(simPace)}</div>
-            <div className="grid grid-cols-6 md:grid-cols-12 gap-1">
-              {splits.map((s, i) => {
-                const isLast = i === splits.length - 1;
-                const isStart = i === 0;
-                return (
-                  <div key={i} className="rounded p-1.5 text-center" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
-                    <div className="font-mono text-[8px]" style={{ color: 'var(--text-faint)' }}>
-                      {isLast ? `${distance.km.toFixed(1)}km` : `${Math.round(s.km)}km`}
-                    </div>
-                    <div className="font-mono text-[10px] tabular font-bold" style={{ color: 'var(--text)' }}>{fmtTime(s.cumTime)}</div>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="font-mono text-[10px] mt-2" style={{ color: 'var(--text-faint)' }}>
-              Splits temps cumulé · allure constante (en course tu varieras de 1-2% par km selon l'effort)
-            </div>
-          </div>
-
-          {/* CP simulation */}
-          <div className="rounded-lg p-3" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--border)' }}>
-            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-              <div>
-                <div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--accent)' }}>SIMULATION — ET SI MA PUISSANCE SEUIL CHANGEAIT ?</div>
-                <div className="text-xs mt-0.5" style={{ color: 'var(--text-dim)' }}>Déplace le curseur pour voir l'impact d'un gain (ou d'une baisse) de puissance</div>
-              </div>
-              <div className="text-right">
-                <div className="font-display text-lg font-bold tabular" style={{ color: simDelta === 0 ? 'var(--text)' : simDelta > 0 ? 'var(--go)' : 'var(--warn)' }}>
-                  {fmtTime(simTime)}
-                </div>
-                <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
-                  {simCp}W
-                  {simDelta !== 0 && (
-                    <span className="ml-1.5" style={{ color: gain > 0 ? 'var(--go)' : 'var(--warn)' }}>
-                      {gain > 0 ? '−' : '+'}{Math.abs(Math.round(gain))}s
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <span className="font-mono text-[10px] tabular" style={{ color: 'var(--warn)', minWidth: 30 }}>−10W</span>
-              <input
-                type="range"
-                min={-10}
-                max={20}
-                step={1}
-                value={simDelta}
-                onChange={(e) => setSimDelta(parseInt(e.target.value))}
-                className="flex-1"
-                style={{ accentColor: simDelta > 0 ? 'var(--go)' : simDelta < 0 ? 'var(--warn)' : 'var(--compass)' }}
-              />
-              <span className="font-mono text-[10px] tabular" style={{ color: 'var(--go)', minWidth: 30 }}>+20W</span>
-            </div>
-            <div className="flex items-center justify-center mt-2">
-              <div className="font-mono text-[11px] tabular px-3 py-1 rounded" style={{ background: 'var(--bg-elev)', color: simDelta > 0 ? 'var(--go)' : simDelta < 0 ? 'var(--warn)' : 'var(--text)' }}>
-                {simDelta === 0 ? 'Ta puissance seuil actuelle' : `${simDelta > 0 ? '+' : ''}${simDelta}W vs actuelle`}
-              </div>
-            </div>
-            {targetSec && simPred && (
-              <div className="mt-3 pt-3 border-t text-xs" style={{ borderColor: 'var(--border)', color: 'var(--text-dim)' }}>
-                Avec {simCp}W tu serais à <span style={{ color: 'var(--text)' }}>{fmtTime(Math.abs(simTime - targetSec))}</span> {simTime <= targetSec ? <span style={{ color: 'var(--go)' }}>sous</span> : <span style={{ color: 'var(--warn)' }}>au-dessus de</span>} ton record actuel ({fmtTime(targetSec)}).
-              </div>
-            )}
-          </div>
-        </div>
       );
     }
 
