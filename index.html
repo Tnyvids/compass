@@ -8582,7 +8582,7 @@
                 <>
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-4">
                     <div className="lg:col-span-2"><FitnessTrioCard fitness={fitness} /></div>
-                    <div><ACWRCard acwr={acwr} /></div>
+                    <div><ACWRCard acwr={acwr} planOverrides={planOverrides} profile={profile} activities={activities} /></div>
                   </div>
                 </>
               )}
@@ -8828,69 +8828,124 @@
       );
     }
 
-    function ACWRCard({ acwr }) {
-      const [hoverZone, setHoverZone] = useState(null);
+    function ACWRCard({ acwr, planOverrides, profile, activities }) {
+  const [hoverZone, setHoverZone] = useState(null);
 
-      if (!acwr.ratio) {
-        return (
-          <Card className="p-6 h-full flex flex-col justify-center">
-            <div className="flex items-center gap-2 mb-3">
-              <IconAlert size={14} style={{ color: 'var(--text-faint)' }} />
-              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }} title={TERMS.acwr.tooltip}>RATIO DE CHARGE <span style={{ opacity: 0.5 }}>ACWR</span> · RISQUE BLESSURE</div>
-            </div>
-            <div className="text-sm" style={{ color: 'var(--text-dim)' }}>Pas assez d'historique. Importe 3-4 semaines d'activités pour calculer ton ratio.</div>
-          </Card>
-        );
+  // Calcul de la TSS projetée pour les 7 prochains jours (séances planifiées)
+  const projectedAcuteTSS = useMemo(() => {
+    if (!profile.cp || !planOverrides) return 0;
+    let totalTSS = 0;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const dayMs = 86400000;
+    const powerPaceTable = buildPowerPaceTable(activities || []);
+
+    for (let d = 1; d <= 7; d++) {
+      const date = new Date(today.getTime() + d * dayMs);
+      const planned = getPlannedSession(profile, planOverrides, date);
+      if (!planned || planned.type === 'rest') continue;
+
+      const hasExplicitMin = Number.isFinite(planned.plannedMin) && planned.plannedMin > 0;
+      const hasExplicitKm = Number.isFinite(planned.plannedKm) && planned.plannedKm > 0;
+      const estimatedDur = estimateSessionDuration(planned.detail, planned.type);
+      const dur = hasExplicitMin
+        ? planned.plannedMin
+        : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(planned.type, profile.cp, profile.weightKg, planned.plannedKm, powerPaceTable) : 0));
+      if (dur > 0) {
+        totalTSS += estimateSessionTSS(planned.type, profile.cp, dur);
       }
-      const ratio = acwr.ratio;
-      const pos = Math.min(2, Math.max(0, ratio)) / 2 * 100;
-
-      // Define the 4 zones with their explanations
-      const zones = [
-        { id: 'undertraining', label: 'Sous-entraînement', range: '0 → 0.8', color: 'var(--text-dim)', bg: 'rgba(138, 138, 138, 0.3)', width: 40, advice: 'Tu fais moins que ta moyenne 28j. Cool si volontaire (récup), mais si ça dure tu vas perdre en condition. Tu peux progressivement remonter le volume.' },
-        { id: 'sweet', label: 'Zone safe', range: '0.8 → 1.3', color: 'var(--go)', bg: 'rgba(143, 232, 106, 0.4)', width: 25, advice: "Tu fais entre 80% et 130% de ta moyenne. C'est la zone idéale pour progresser sans casser. Continue comme ça." },
-        { id: 'high', label: 'Zone élevée', range: '1.3 → 1.5', color: 'var(--warn)', bg: 'rgba(255, 176, 32, 0.4)', width: 10, advice: "Tu pousses fort cette semaine. Risque de blessure modéré. Vigilance sur la suite — pas plus, et surveille les signaux du corps (genou, fatigue)." },
-        { id: 'danger', label: 'Zone risque', range: '1.5+', color: 'var(--danger)', bg: 'rgba(255, 91, 91, 0.4)', width: 25, advice: "Charge bien trop forte par rapport à ton historique. Le risque de blessure devient significatif. Récup obligatoire 48-72h, puis reviens progressivement." },
-      ];
-
-      const currentZone = zones.find(z => z.id === acwr.zone) || zones[1];
-      const displayedZone = hoverZone ? zones.find(z => z.id === hoverZone) : currentZone;
-
-      return (
-        <Card className="p-6 h-full flex flex-col" accent={currentZone.color}>
-          <div className="flex items-center gap-2 mb-4">
-            <IconAlert size={14} style={{ color: currentZone.color }} />
-            <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }} title={TERMS.acwr.tooltip}>RATIO DE CHARGE <span style={{ opacity: 0.5 }}>ACWR</span> · RISQUE BLESSURE</div>
-          </div>
-          <div className="font-display text-5xl font-bold tabular leading-none mb-1" style={{ color: currentZone.color }}>{ratio.toFixed(2)}</div>
-          <div className="font-mono text-[10px] tracking-widest mb-5" style={{ color: currentZone.color }}>{currentZone.label.toUpperCase()}</div>
-
-          <div className="relative h-4 rounded-full overflow-hidden mb-2 cursor-pointer" style={{ background: 'var(--border)' }} onMouseLeave={() => setHoverZone(null)}>
-            <div className="absolute inset-0 flex">
-              {zones.map(z => (
-                <div
-                  key={z.id}
-                  style={{ width: `${z.width}%`, background: z.bg, opacity: hoverZone && hoverZone !== z.id ? 0.4 : 1, transition: 'opacity 0.15s' }}
-                  onMouseEnter={() => setHoverZone(z.id)}
-                  title={`${z.label} (${z.range})`}
-                />
-              ))}
-            </div>
-            <div className="absolute top-1/2 -translate-y-1/2 w-1 h-6 rounded-full pointer-events-none" style={{ left: `calc(${pos}% - 2px)`, background: currentZone.color, boxShadow: `0 0 10px ${currentZone.color}` }}></div>
-          </div>
-          <div className="flex justify-between font-mono text-[10px] mb-4" style={{ color: 'var(--text-faint)' }}>
-            <span>0</span><span>0.8</span><span>1.3</span><span>1.5</span><span>2+</span>
-          </div>
-
-          <div className="text-sm leading-relaxed mt-auto" style={{ color: 'var(--text)' }}>
-            <div className="font-display font-bold mb-1" style={{ color: displayedZone.color }}>
-              {hoverZone ? `${displayedZone.label} (${displayedZone.range})` : 'Ton diagnostic actuel'}
-            </div>
-            <div style={{ color: 'var(--text-dim)' }}>{displayedZone.advice}</div>
-          </div>
-        </Card>
-      );
     }
+    return totalTSS;
+  }, [planOverrides, profile, activities]);
+
+  let projectedRatio = null;
+  if (acwr.ratio && projectedAcuteTSS > 0 && acwr.chronic > 0) {
+    projectedRatio = projectedAcuteTSS / acwr.chronic;
+  }
+
+  // Si pas d'ACWR calculé (pas assez d'historique), on ne peut pas projeter
+  if (!acwr.ratio) {
+    return (
+      <Card className="p-6 h-full flex flex-col justify-center">
+        <div className="flex items-center gap-2 mb-3">
+          <IconAlert size={14} style={{ color: 'var(--text-faint)' }} />
+          <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }} title={TERMS.acwr.tooltip}>RATIO DE CHARGE <span style={{ opacity: 0.5 }}>ACWR</span> · RISQUE BLESSURE</div>
+        </div>
+        <div className="text-sm" style={{ color: 'var(--text-dim)' }}>Pas assez d'historique. Importe 3-4 semaines d'activités pour calculer ton ratio.</div>
+      </Card>
+    );
+  }
+
+  const ratio = acwr.ratio;
+  const pos = Math.min(2, Math.max(0, ratio)) / 2 * 100;
+  const projectedPos = projectedRatio ? Math.min(2, Math.max(0, projectedRatio)) / 2 * 100 : null;
+
+  const zones = [
+    { id: 'undertraining', label: 'Sous-entraînement', range: '0 → 0.8', color: 'var(--text-dim)', bg: 'rgba(138, 138, 138, 0.3)', width: 40, advice: 'Tu fais moins que ta moyenne 28j. Cool si volontaire (récup), mais si ça dure tu vas perdre en condition. Tu peux progressivement remonter le volume.' },
+    { id: 'sweet', label: 'Zone safe', range: '0.8 → 1.3', color: 'var(--go)', bg: 'rgba(143, 232, 106, 0.4)', width: 25, advice: "Tu fais entre 80% et 130% de ta moyenne. C'est la zone idéale pour progresser sans casser. Continue comme ça." },
+    { id: 'high', label: 'Zone élevée', range: '1.3 → 1.5', color: 'var(--warn)', bg: 'rgba(255, 176, 32, 0.4)', width: 10, advice: "Tu pousses fort cette semaine. Risque de blessure modéré. Vigilance sur la suite — pas plus, et surveille les signaux du corps (genou, fatigue)." },
+    { id: 'danger', label: 'Zone risque', range: '1.5+', color: 'var(--danger)', bg: 'rgba(255, 91, 91, 0.4)', width: 25, advice: "Charge bien trop forte par rapport à ton historique. Le risque de blessure devient significatif. Récup obligatoire 48-72h, puis reviens progressivement." },
+  ];
+
+  const currentZone = zones.find(z => z.id === acwr.zone) || zones[1];
+  const displayedZone = hoverZone ? zones.find(z => z.id === hoverZone) : currentZone;
+
+  return (
+    <Card className="p-6 h-full flex flex-col" accent={currentZone.color}>
+      <div className="flex items-center gap-2 mb-4">
+        <IconAlert size={14} style={{ color: currentZone.color }} />
+        <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }} title={TERMS.acwr.tooltip}>RATIO DE CHARGE <span style={{ opacity: 0.5 }}>ACWR</span> · RISQUE BLESSURE</div>
+      </div>
+      
+      {/* Valeur actuelle */}
+      <div className="font-display text-5xl font-bold tabular leading-none mb-1" style={{ color: currentZone.color }}>{ratio.toFixed(2)}</div>
+      <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: currentZone.color }}>ACTUEL · {currentZone.label.toUpperCase()}</div>
+
+      {/* Projection si disponible */}
+      {projectedRatio !== null && (
+        <>
+          <div className="font-display text-3xl font-bold tabular mt-2" style={{ color: 'var(--compass)' }}>{projectedRatio.toFixed(2)}</div>
+          <div className="font-mono text-[10px] tracking-widest mb-4" style={{ color: 'var(--compass)' }}>PROJETÉ SEMAINE PROCHAINE</div>
+        </>
+      )}
+
+      {/* Barre de zones */}
+      <div className="relative h-4 rounded-full overflow-hidden mb-2 cursor-pointer" style={{ background: 'var(--border)' }} onMouseLeave={() => setHoverZone(null)}>
+        <div className="absolute inset-0 flex">
+          {zones.map(z => (
+            <div
+              key={z.id}
+              style={{ width: `${z.width}%`, background: z.bg, opacity: hoverZone && hoverZone !== z.id ? 0.4 : 1, transition: 'opacity 0.15s' }}
+              onMouseEnter={() => setHoverZone(z.id)}
+              title={`${z.label} (${z.range})`}
+            />
+          ))}
+        </div>
+        {/* Marqueur actuel */}
+        <div className="absolute top-1/2 -translate-y-1/2 w-1 h-6 rounded-full pointer-events-none" style={{ left: `calc(${pos}% - 2px)`, background: currentZone.color, boxShadow: `0 0 10px ${currentZone.color}` }}></div>
+        {/* Marqueur projeté */}
+        {projectedPos !== null && (
+          <div className="absolute top-1/2 -translate-y-1/2 w-1 h-5 rounded-full pointer-events-none" style={{ left: `calc(${projectedPos}% - 2px)`, background: 'var(--compass)', boxShadow: `0 0 8px var(--compass)`, opacity: 0.8 }}></div>
+        )}
+      </div>
+      <div className="flex justify-between font-mono text-[10px] mb-4" style={{ color: 'var(--text-faint)' }}>
+        <span>0</span><span>0.8</span><span>1.3</span><span>1.5</span><span>2+</span>
+      </div>
+
+      <div className="text-sm leading-relaxed mt-auto" style={{ color: 'var(--text)' }}>
+        <div className="font-display font-bold mb-1" style={{ color: displayedZone.color }}>
+          {hoverZone ? `${displayedZone.label} (${displayedZone.range})` : 'Ton diagnostic actuel'}
+        </div>
+        <div style={{ color: 'var(--text-dim)' }}>{displayedZone.advice}</div>
+        {projectedRatio !== null && !hoverZone && (
+          <div className="mt-2 text-xs" style={{ color: 'var(--compass)' }}>
+            → Avec ton plan, ton ratio la semaine prochaine serait de {projectedRatio.toFixed(2)}. {projectedRatio > 1.5 ? "Attention à la surcharge." : projectedRatio < 0.8 ? "Prévois un peu plus de volume." : "Charge bien équilibrée."}
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
 
     // ========================================================================
     // UNIFIED FITNESS CHART (V2) — Combines past data + future projection on
