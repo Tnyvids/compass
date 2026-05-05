@@ -8975,7 +8975,7 @@
         const pastTss = fitnessNow.series.dailyTss;
         const pastDays = pastCtl.length;
     
-        // ACWR passé glissant
+        // --- Calcul ACWR glissant ---
         const pastAcwr = new Array(pastDays).fill(null);
         let rolling7 = 0, rolling28 = 0;
         for (let i = 0; i < pastDays; i++) {
@@ -8992,7 +8992,7 @@
           }
         }
     
-        // Projection CTL/ATL et TSS futures
+        // Projection future (inchangée)
         const seedCtl = pastCtl[pastDays - 1];
         const seedAtl = pastAtl[pastDays - 1];
         const ctlAlpha = 1 - Math.exp(-1/42);
@@ -9013,8 +9013,8 @@
         });
         const futureDays = Math.min(90, Math.max(0, Math.round((lastPlannedMs - todayMs) / dayMs) + 7));
     
-        // TSS planifiée pour chaque jour futur
-        const futureTssPlan = [];
+        const futCtl = [], futAtl = [], futTsb = [], futTss = [];
+        let ctl = seedCtl, atl = seedAtl;
         for (let d = 1; d <= futureDays; d++) {
           const date = new Date(todayMs + d * dayMs);
           const wsDate = getWeekStart(date);
@@ -9032,35 +9032,6 @@
               : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(planned.type, profile.cp, profile.weightKg, planned.plannedKm, powerPaceTable) : 0));
             if (dur > 0) tss = estimateSessionTSS(planned.type, profile.cp, dur);
           }
-          futureTssPlan.push(tss);
-        }
-    
-        // Concaténer TSS passé + futur pour calculer ACWR glissant sur toute la période
-        const allTss = [...pastTss, ...futureTssPlan];
-        const allAcwr = new Array(allTss.length).fill(null);
-        let r7 = 0, r28 = 0;
-        for (let i = 0; i < allTss.length; i++) {
-          r7 += allTss[i];
-          r28 += allTss[i];
-          if (i >= 7) r7 -= allTss[i - 7];
-          if (i >= 28) r28 -= allTss[i - 28];
-          if (i >= 27) {
-            const acute = r7;
-            const chronicAvg = r28 / 4;
-            if (chronicAvg > 0) {
-              allAcwr[i] = acute / chronicAvg;
-            }
-          }
-        }
-    
-        const pastAcwrFull = allAcwr.slice(0, pastDays);
-        const futAcwr = allAcwr.slice(pastDays);
-    
-        // Calcul CTL/ATL futur
-        const futCtl = [], futAtl = [], futTsb = [], futTss = [];
-        let ctl = seedCtl, atl = seedAtl;
-        for (let d = 0; d < futureDays; d++) {
-          const tss = futureTssPlan[d];
           ctl = ctl + ctlAlpha * (tss - ctl);
           atl = atl + atlAlpha * (tss - atl);
           futCtl.push(ctl);
@@ -9072,14 +9043,14 @@
         const allCtl = [...pastCtl, ...futCtl];
         const allAtl = [...pastAtl, ...futAtl];
         const allTsb = [...pastTsb, ...futTsb];
-        const allTssFinal = [...pastTss, ...futTss];
-        const allAcwrFinal = [...pastAcwrFull, ...futAcwr];
+        const allTss = [...pastTss, ...futTss];
+        const allAcwr = [...pastAcwr, ...new Array(futureDays).fill(null)];
         const todayIdx = pastDays - 1;
         const totalDays = pastDays + futureDays;
         const dateAt = (i) => new Date(todayMs - (todayIdx - i) * dayMs);
     
         return {
-          ctl: allCtl, atl: allAtl, tsb: allTsb, tss: allTssFinal, acwr: allAcwrFinal,
+          ctl: allCtl, atl: allAtl, tsb: allTsb, tss: allTss, acwr: allAcwr,
           totalDays, todayIdx, futureDays, pastDays, dateAt,
           totalPastTss: Math.round(pastTss.reduce((s, v) => s + v, 0)),
           totalFutureTss: Math.round(futTss.reduce((s, v) => s + v, 0)),
@@ -9305,7 +9276,6 @@
             {visibleAcwr && (
               <>
                 <path d={acwrPath.past} fill="none" stroke="#D4FF00" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
-                {acwrPath.future && <path d={acwrPath.future} fill="none" stroke="#D4FF00" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" strokeDasharray="5,4" opacity="0.85" />}
               </>
             )}
     
