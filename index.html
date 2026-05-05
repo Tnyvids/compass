@@ -8959,35 +8959,45 @@
     function UnifiedFitnessChartCard({ activities, profile, planOverrides }) {
       const [hoverIdx, setHoverIdx] = useState(null);
       const [hidden, setHidden] = useState(() => new Set());
-
+    
       const data = useMemo(() => {
         if (!profile.cp || !activities) return null;
         const dayMs = 86400000;
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         const todayMs = today.getTime();
-
-        // ---- PAST: 90 days of actual data ----
-        const PAST_DAYS = 90;
+    
         const activitiesWithTss = activities.map(a => ({ ...a, tss: computeTSS(a, profile.cp) }));
         const fitnessNow = computeFitness(activitiesWithTss);
-        // computeFitness returns series.{ctl,atl,tsb,dailyTss} as arrays oldest→today
         const pastCtl = fitnessNow.series.ctl;
         const pastAtl = fitnessNow.series.atl;
         const pastTsb = fitnessNow.series.tsb;
         const pastTss = fitnessNow.series.dailyTss;
         const pastDays = pastCtl.length;
-
-        // Last values become the projection seed
+    
+        // --- Calcul ACWR glissant ---
+        const pastAcwr = new Array(pastDays).fill(null);
+        let rolling7 = 0, rolling28 = 0;
+        for (let i = 0; i < pastDays; i++) {
+          rolling7 += pastTss[i];
+          rolling28 += pastTss[i];
+          if (i >= 7) rolling7 -= pastTss[i - 7];
+          if (i >= 28) rolling28 -= pastTss[i - 28];
+          if (i >= 27) {
+            const acute = rolling7;
+            const chronicAvg = rolling28 / 4;
+            if (chronicAvg > 0) {
+              pastAcwr[i] = acute / chronicAvg;
+            }
+          }
+        }
+    
+        // Projection future (inchangée)
         const seedCtl = pastCtl[pastDays - 1];
         const seedAtl = pastAtl[pastDays - 1];
-
-        // ---- FUTURE: project until last planned session + 7 days, capped at 90 days ----
         const ctlAlpha = 1 - Math.exp(-1/42);
         const atlAlpha = 1 - Math.exp(-1/7);
         const powerPaceTable = buildPowerPaceTable(activities);
-
-        // Find horizon
         const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
         let lastPlannedMs = todayMs;
         Object.entries(planOverrides || {}).forEach(([wsKey, week]) => {
@@ -9002,8 +9012,7 @@
           });
         });
         const futureDays = Math.min(90, Math.max(0, Math.round((lastPlannedMs - todayMs) / dayMs) + 7));
-
-        // Build future arrays
+    
         const futCtl = [], futAtl = [], futTsb = [], futTss = [];
         let ctl = seedCtl, atl = seedAtl;
         for (let d = 1; d <= futureDays; d++) {
@@ -9030,49 +9039,45 @@
           futTsb.push(ctl - atl);
           futTss.push(tss);
         }
-
-        // Combined arrays: [past...today, future...]
-        // Index 0 = oldest past, index pastDays - 1 = today, indices pastDays...pastDays+futureDays-1 = future
+    
         const allCtl = [...pastCtl, ...futCtl];
         const allAtl = [...pastAtl, ...futAtl];
         const allTsb = [...pastTsb, ...futTsb];
         const allTss = [...pastTss, ...futTss];
+        const allAcwr = [...pastAcwr, ...new Array(futureDays).fill(null)];
         const todayIdx = pastDays - 1;
         const totalDays = pastDays + futureDays;
-
-        // Date for each index
         const dateAt = (i) => new Date(todayMs - (todayIdx - i) * dayMs);
-
+    
         return {
-          ctl: allCtl, atl: allAtl, tsb: allTsb, tss: allTss,
+          ctl: allCtl, atl: allAtl, tsb: allTsb, tss: allTss, acwr: allAcwr,
           totalDays, todayIdx, futureDays, pastDays, dateAt,
           totalPastTss: Math.round(pastTss.reduce((s, v) => s + v, 0)),
           totalFutureTss: Math.round(futTss.reduce((s, v) => s + v, 0)),
         };
       }, [activities, profile.cp, profile.weightKg, planOverrides]);
-
+    
       if (!data) return null;
-      const { ctl, atl, tsb, tss, totalDays, todayIdx, futureDays, pastDays, dateAt, totalPastTss, totalFutureTss } = data;
-
-      // Series definitions
+      const { ctl, atl, tsb, tss, acwr, totalDays, todayIdx, futureDays, pastDays, dateAt, totalPastTss, totalFutureTss } = data;
+    
       const seriesDef = [
         { key: 'tss', label: 'Charge', short: 'TSS', color: '#8A8A8A', tooltip: TERMS.tss.tooltip, axis: 'left' },
         { key: 'ctl', label: 'Forme de fond', short: 'CTL', color: '#4A9EFF', tooltip: TERMS.ctl.tooltip, axis: 'left' },
         { key: 'atl', label: 'Fatigue', short: 'ATL', color: '#FFB020', tooltip: TERMS.atl.tooltip, axis: 'left' },
         { key: 'tsb', label: 'Fraîcheur', short: 'TSB', color: '#8FE86A', tooltip: TERMS.tsb.tooltip, axis: 'right' },
+        { key: 'acwr', label: 'ACWR', short: 'ACWR', color: '#D4FF00', tooltip: 'Ratio charge récente / charge chronique', axis: 'right' },
       ];
-
+    
       function toggle(k) {
         const next = new Set(hidden);
         if (next.has(k)) next.delete(k); else next.add(k);
-        // Don't allow hiding all
         if (next.size >= seriesDef.length) return;
         setHidden(next);
       }
-
-      // Compute scales considering ONLY visible series
+    
       const visibleLeft = seriesDef.filter(s => !hidden.has(s.key) && s.axis === 'left');
       const visibleTsb = !hidden.has('tsb');
+      const visibleAcwr = !hidden.has('acwr');
       const leftValues = [];
       visibleLeft.forEach(s => {
         if (s.key === 'tss') leftValues.push(...tss);
@@ -9081,25 +9086,21 @@
       });
       const loadMax = leftValues.length ? Math.ceil(Math.max(30, ...leftValues) / 10) * 10 : 30;
       const tsbAbsMax = visibleTsb ? Math.max(20, ...tsb.map(Math.abs)) : 20;
-
-      // SVG layout
+      const maxAcwr = 2.5;
+    
       const W = 1000, H = 340;
-      const padL = 42, padR = 50, padT = 24, padB = 36;
+      const padL = 42, padR = 70, padT = 24, padB = 36;
       const cw = W - padL - padR, ch = H - padT - padB;
       const x = (i) => padL + (i / Math.max(1, totalDays - 1)) * cw;
       const yLoad = (v) => padT + ch - (v / loadMax) * ch;
       const yTsb = (v) => padT + ch / 2 - (v / tsbAbsMax) * (ch / 2);
-
+      const yAcwr = (v) => padT + ch - (v / maxAcwr) * ch;
+    
       const todayX = x(todayIdx);
       const slot = cw / totalDays;
       const barW = Math.max(1, slot * 0.7);
-
-      // Path builders
-      function buildPath(arr, yFn) {
-        return arr.map((v, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${yFn(v).toFixed(1)}`).join(' ');
-      }
+    
       function buildSplitPath(arr, yFn) {
-        // Returns { past, future } as separate paths split at todayIdx
         const past = [], future = [];
         arr.forEach((v, i) => {
           const cmd = `${past.length === 0 && i <= todayIdx ? 'M' : (future.length === 0 && i > todayIdx ? 'M' : 'L')} ${x(i).toFixed(1)} ${yFn(v).toFixed(1)}`;
@@ -9108,48 +9109,45 @@
         });
         return { past: past.join(' '), future: future.join(' ') };
       }
-
+    
       const ctlPath = buildSplitPath(ctl, yLoad);
       const atlPath = buildSplitPath(atl, yLoad);
       const tsbPath = buildSplitPath(tsb, yTsb);
-
-      // CTL area fill (past only — keeps the chart cleaner)
+      const acwrPath = buildSplitPath(acwr, yAcwr);
       const pastCtlArea = ctlPath.past + ` L ${todayX.toFixed(1)} ${yLoad(0).toFixed(1)} L ${x(0).toFixed(1)} ${yLoad(0).toFixed(1)} Z`;
-
-      // X ticks
-      const tickIndices = [
-        0,
-        Math.floor(totalDays * 0.25),
-        Math.floor(totalDays * 0.5),
-        Math.floor(totalDays * 0.75),
-        totalDays - 1,
-      ];
+    
+      const tickIndices = [0, Math.floor(totalDays * 0.25), Math.floor(totalDays * 0.5), Math.floor(totalDays * 0.75), totalDays - 1];
       const xLabels = tickIndices.map(i => {
         const d = dateAt(i);
         return { i, label: `${d.getDate()}/${d.getMonth() + 1}` };
       });
-
+    
       const yTicksLeft = [0, 0.25, 0.5, 0.75, 1].map(p => ({ v: p * loadMax, y: padT + ch - p * ch }));
-      const yTicksRight = visibleTsb ? [-tsbAbsMax, 0, tsbAbsMax].map(v => ({ v, y: yTsb(v) })) : [];
-
+      const yTicksRight = [];
+      if (visibleTsb) {
+        yTicksRight.push({ v: -tsbAbsMax, y: yTsb(-tsbAbsMax) });
+        yTicksRight.push({ v: 0, y: yTsb(0) });
+        yTicksRight.push({ v: tsbAbsMax, y: yTsb(tsbAbsMax) });
+      }
+      const acwrTicks = [0, 0.5, 1.0, 1.5, 2.0, 2.5];
+    
       function handleMouseMove(e) {
         const rect = e.currentTarget.getBoundingClientRect();
         const svgX = ((e.clientX - rect.left) / rect.width) * W;
         const idx = Math.round(((svgX - padL) / cw) * Math.max(1, totalDays - 1));
         setHoverIdx(Math.max(0, Math.min(totalDays - 1, idx)));
       }
-
+    
       const hoverDate = hoverIdx !== null ? dateAt(hoverIdx) : null;
       const hoverIsFuture = hoverIdx !== null && hoverIdx > todayIdx;
-
+    
       return (
         <Card className="p-6 md:p-7">
           <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
             <div>
-              <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--text-dim)' }}>FORME DE FOND · FATIGUE · FRAÎCHEUR · CHARGE — {pastDays}J PASSÉ {futureDays > 0 ? `+ ${futureDays}J FUTUR` : ''}</div>
+              <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--text-dim)' }}>FORME · FATIGUE · FRAÎCHEUR · ACWR — {pastDays}J PASSÉ {futureDays > 0 ? `+ ${futureDays}J FUTUR` : ''}</div>
               <div className="font-display text-lg md:text-xl font-bold">Toute ta charge sur un seul graphique</div>
             </div>
-            {/* Toggleable legend */}
             <div className="flex gap-2 font-mono text-[10px] flex-wrap">
               {seriesDef.map(s => {
                 const isHidden = hidden.has(s.key);
@@ -9177,7 +9175,7 @@
               })}
             </div>
           </div>
-
+    
           {hoverIdx !== null ? (
             <div className="mb-2 font-mono text-xs flex flex-wrap gap-x-4 gap-y-1" style={{ color: 'var(--text-faint)' }}>
               <span style={{ color: hoverIsFuture ? 'var(--accent)' : 'var(--text)' }}>
@@ -9185,17 +9183,18 @@
               </span>
               {!hidden.has('ctl') && <span><span style={{ color: '#4A9EFF' }}>Forme</span> {(ctl[hoverIdx] || 0).toFixed(1)}</span>}
               {!hidden.has('atl') && <span><span style={{ color: '#FFB020' }}>Fatigue</span> {(atl[hoverIdx] || 0).toFixed(1)}</span>}
-              {!hidden.has('tsb') && <span><span style={{ color: tsb[hoverIdx] >= 0 ? '#8FE86A' : '#FF5B5B' }}>Fraîcheur</span> {tsb[hoverIdx] >= 0 ? '+' : ''}{(tsb[hoverIdx] || 0).toFixed(1)}</span>}
+              {!hidden.has('tsb') && <span><span style={{ color: '#8FE86A' }}>Fraîcheur</span> {tsb[hoverIdx] >= 0 ? '+' : ''}{(tsb[hoverIdx] || 0).toFixed(1)}</span>}
               {!hidden.has('tss') && <span><span style={{ color: 'var(--accent)' }}>Charge</span> {Math.round(tss[hoverIdx] || 0)}</span>}
+              {!hidden.has('acwr') && acwr[hoverIdx] !== null && <span><span style={{ color: '#D4FF00' }}>ACWR</span> {acwr[hoverIdx].toFixed(2)}</span>}
             </div>
           ) : (
             <div className="mb-2 font-mono text-xs italic" style={{ color: 'var(--text-faint)' }}>
-              Survole pour voir les valeurs jour par jour · clique sur les puces pour masquer une série · ligne pleine = passé, pointillée = projeté
+              Survole pour voir les valeurs · ligne pleine = passé, pointillée = projeté
               {totalPastTss > 0 && <span> · Charge cumulée passée <span style={{ color: 'var(--accent)' }}>{totalPastTss}</span></span>}
               {totalFutureTss > 0 && <span> · à venir <span style={{ color: 'var(--accent)', opacity: 0.7 }}>{totalFutureTss}</span></span>}
             </div>
           )}
-
+    
           <svg viewBox={`0 0 ${W} ${H}`} className="w-full cursor-crosshair" preserveAspectRatio="xMidYMid meet" onMouseMove={handleMouseMove} onMouseLeave={() => setHoverIdx(null)}>
             <defs>
               <linearGradient id="ctlGradV2" x1="0" y1="0" x2="0" y2="1">
@@ -9203,30 +9202,39 @@
                 <stop offset="100%" stopColor="#4A9EFF" stopOpacity="0" />
               </linearGradient>
             </defs>
-
-            {/* Future zone background fill */}
+    
             {futureDays > 0 && (
               <rect x={todayX} y={padT} width={W - padR - todayX} height={ch} fill="#4A9EFF" opacity="0.025" />
             )}
-
-            {/* Y grid (left axis) */}
+    
             {yTicksLeft.map((t, i) => (
               <g key={'l'+i}>
                 <line x1={padL} y1={t.y} x2={W - padR} y2={t.y} stroke="#1F1F1F" strokeWidth="0.5" strokeDasharray="2,3" />
                 <text x={padL - 6} y={t.y + 3} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{Math.round(t.v)}</text>
               </g>
             ))}
-
-            {/* TSB axis labels (right) */}
-            {yTicksRight.map((t, i) => (
+    
+            {visibleTsb && yTicksRight.map((t, i) => (
               <text key={'r'+i} x={W - padR + 6} y={t.y + 3} textAnchor="start" fontFamily="JetBrains Mono" fontSize="9" fill={t.v === 0 ? '#8FE86A' : '#555'}>
                 {t.v === 0 ? '0' : `${t.v > 0 ? '+' : ''}${Math.round(t.v)}`}
               </text>
             ))}
-            {/* TSB zero baseline */}
+    
+            {visibleAcwr && acwrTicks.map(v => {
+              const yy = yAcwr(v);
+              return (
+                <g key={`acwr-${v}`}>
+                  <line x1={W - padR + 6} y1={yy} x2={W - padR + 10} y2={yy} stroke="#1F1F1F" strokeWidth="0.5" />
+                  <text x={W - padR + 13} y={yy + 3} textAnchor="start" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{v.toFixed(1)}</text>
+                </g>
+              );
+            })}
+    
+            {visibleAcwr && <line x1={padL} y1={yAcwr(1.3)} x2={W - padR} y2={yAcwr(1.3)} stroke="#FFB020" strokeWidth="0.8" strokeDasharray="2,3" opacity="0.5" />}
+            {visibleAcwr && <line x1={padL} y1={yAcwr(1.5)} x2={W - padR} y2={yAcwr(1.5)} stroke="#FF5B5B" strokeWidth="0.8" strokeDasharray="2,3" opacity="0.5" />}
+    
             {visibleTsb && <line x1={padL} y1={yTsb(0)} x2={W - padR} y2={yTsb(0)} stroke="#8FE86A" strokeWidth="0.5" strokeDasharray="1,4" opacity="0.4" />}
-
-            {/* TSS bars (background, only past unless tss series visible) */}
+    
             {!hidden.has('tss') && tss.map((v, i) => {
               if (v <= 0) return null;
               const isFuture = i > todayIdx;
@@ -9242,8 +9250,7 @@
                 <rect key={i} x={xx} y={padT + ch - barH} width={barW} height={barH} rx={0.5} fill={barColor} opacity={isHover ? 0.95 : (isFuture ? 0.30 : 0.45)} stroke={isFuture ? barColor : 'none'} strokeWidth={isFuture ? '0.5' : '0'} strokeDasharray={isFuture ? '1,1' : 'none'} />
               );
             })}
-
-            {/* CTL: past area fill + past line + future dashed line */}
+    
             {!hidden.has('ctl') && (
               <>
                 <path d={pastCtlArea} fill="url(#ctlGradV2)" />
@@ -9251,44 +9258,46 @@
                 {ctlPath.future && <path d={ctlPath.future} fill="none" stroke="#4A9EFF" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" strokeDasharray="5,4" opacity="0.85" />}
               </>
             )}
-
-            {/* ATL */}
+    
             {!hidden.has('atl') && (
               <>
                 <path d={atlPath.past} fill="none" stroke="#FFB020" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" strokeDasharray="3,3" />
                 {atlPath.future && <path d={atlPath.future} fill="none" stroke="#FFB020" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" strokeDasharray="3,3" opacity="0.6" />}
               </>
             )}
-
-            {/* TSB */}
+    
             {visibleTsb && (
               <>
                 <path d={tsbPath.past} fill="none" stroke="#8FE86A" strokeWidth="1.2" strokeLinejoin="round" strokeLinecap="round" opacity="0.85" />
                 {tsbPath.future && <path d={tsbPath.future} fill="none" stroke="#8FE86A" strokeWidth="1.2" strokeLinejoin="round" strokeLinecap="round" strokeDasharray="4,3" opacity="0.6" />}
               </>
             )}
-
-            {/* Today vertical line */}
+    
+            {visibleAcwr && (
+              <>
+                <path d={acwrPath.past} fill="none" stroke="#D4FF00" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+              </>
+            )}
+    
             <line x1={todayX} y1={padT} x2={todayX} y2={padT + ch} stroke="#D4FF00" strokeWidth="1" strokeDasharray="2,2" opacity="0.7" />
             <text x={todayX} y={padT - 6} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="9" fill="#D4FF00">AUJ.</text>
-
-            {/* Hover crosshair + dots */}
+    
             {hoverIdx !== null && (
               <g>
                 <line x1={x(hoverIdx)} y1={padT} x2={x(hoverIdx)} y2={padT + ch} stroke="#8A8A8A" strokeWidth="0.8" strokeDasharray="3,3" opacity="0.7" />
                 {!hidden.has('ctl') && <circle cx={x(hoverIdx)} cy={yLoad(ctl[hoverIdx])} r="3.5" fill="#4A9EFF" stroke="#0A0A0A" strokeWidth="1.5" />}
                 {!hidden.has('atl') && <circle cx={x(hoverIdx)} cy={yLoad(atl[hoverIdx])} r="3" fill="#FFB020" stroke="#0A0A0A" strokeWidth="1.5" />}
                 {visibleTsb && <circle cx={x(hoverIdx)} cy={yTsb(tsb[hoverIdx])} r="3" fill={tsb[hoverIdx] >= 0 ? '#8FE86A' : '#FF5B5B'} stroke="#0A0A0A" strokeWidth="1.5" />}
+                {visibleAcwr && acwr[hoverIdx] !== null && <circle cx={x(hoverIdx)} cy={yAcwr(acwr[hoverIdx])} r="3.5" fill="#D4FF00" stroke="#0A0A0A" strokeWidth="1.5" />}
               </g>
             )}
-
-            {/* X axis labels */}
+    
             {xLabels.map((t, i) => (
               <text key={i} x={x(t.i)} y={H - 14} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{t.label}</text>
             ))}
             <text x={padL} y={H - 4} textAnchor="start" fontFamily="JetBrains Mono" fontSize="8" fill="#444">← passé</text>
             {futureDays > 0 && <text x={W - padR} y={H - 4} textAnchor="end" fontFamily="JetBrains Mono" fontSize="8" fill="#444">futur →</text>}
-            <text x={padL + cw / 2 - 4} y={padT - 8} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="8" fill="#444">échelle gauche : charge / forme / fatigue · échelle droite : fraîcheur</text>
+            <text x={padL + cw / 2} y={padT - 8} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="8" fill="#444">échelle gauche : charge / forme / fatigue · échelle droite : fraîcheur / ACWR</text>
           </svg>
         </Card>
       );
