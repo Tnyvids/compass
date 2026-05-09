@@ -3910,6 +3910,8 @@
             <StrengthSection
               strengthSessions={strengthSessions}
               strengthStart={strengthStart}
+              activities={activities}
+              profile={profile}
               onStartWorkout={onStrengthStart}
               onResetStart={onResetStrengthStart}
               onClearHistory={onClearStrengthHistory}
@@ -5396,7 +5398,7 @@
     // STRENGTH SECTION — embeddable strength content (no page wrapper)
     // Used by PlanView (renfo tab) and could be used standalone if needed.
     // ========================================================================
-    function StrengthSection({ strengthSessions, strengthStart, onStartWorkout, onResetStart, onClearHistory }) {
+    function StrengthSection({ strengthSessions, strengthStart, activities = [], profile, onStartWorkout, onResetStart, onClearHistory }) {
       const [confirmReset, setConfirmReset] = useState(false);
       const [confirmClear, setConfirmClear] = useState(false);
 
@@ -5473,6 +5475,9 @@
               </Card>
             </div>
           </div>
+
+          {/* Pain vs Renfo CTL — visible feedback loop, the strongest motivator */}
+          <PainVsRenfoChart activities={activities} strengthSessions={strengthSessions} profile={profile} />
 
           {/* Empty state — first-time onboarding */}
           {strengthSessions.length === 0 && (
@@ -6600,7 +6605,7 @@
     // ========================================================================
     // PROFILE VIEW — Tony's data, editable
     // ========================================================================
-    function ProfileView({ profile, onSave, activities, planOverrides, onRecalibratePlan, onShowAllActivities, phaseGraduations = [], strengthSessions = [] }) {
+    function ProfileView({ profile, onSave, activities, planOverrides, onRecalibratePlan, onShowAllActivities, phaseGraduations = [] }) {
       const [editing, setEditing] = useState(false);
       const [draft, setDraft] = useState(profile);
       const dialog = useDialog();
@@ -6924,11 +6929,6 @@
                 </button>
               </div>
             </Card>
-          )}
-
-          {/* Pain vs Renfo CTL — visible feedback loop */}
-          {profile.showStrength !== false && (
-            <PainVsRenfoChart activities={activities} strengthSessions={strengthSessions} profile={profile} />
           )}
 
           {/* Renfo phase trophies */}
@@ -13458,7 +13458,6 @@
               <ProfileView
                 profile={profile}
                 phaseGraduations={phaseGraduations}
-                strengthSessions={strengthSessions}
                 onSave={async (newProfile) => {
                   // If CP changed, ask user if they want to recalibrate the plan
                   const oldCP = profile.cp;
