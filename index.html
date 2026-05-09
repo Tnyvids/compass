@@ -286,6 +286,7 @@
       planNotes: 'compass_plan_notes_v1',
       planOverrides: 'compass_plan_overrides_v1',
       sessionTemplates: 'compass_session_templates_v1',
+      phaseGraduations: 'compass_phase_graduations_v1',
     };
     const storage = {
       get(k, fb = null) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fb; } catch (e) { console.error('[Compass] storage.get failed for key', k, e); return fb; } },
@@ -1939,11 +1940,53 @@
       A: { id: 'A', name: 'SÉANCE A', title: 'Jambes & Genou', subtitle: 'Quadriceps + soleus, amplitude limitée pour PFPS', accent: '#D4FF00', duration: 15, exerciseKeys: ['squat_eccentric', 'dynamic_lunge', 'soleus_calf'] },
       B: { id: 'B', name: 'SÉANCE B', title: 'Hanches & Fessiers', subtitle: 'Moyen fessier + psoas — le pilier PFPS', accent: '#FF8040', duration: 15, exerciseKeys: ['hip_flexor_stretch', 'single_leg_bridge', 'clamshell'] },
     };
+    // 12-month progressive program adapted to PFPS + LLD profile.
+    // Each phase has a measurable graduation criterion that the user evaluates
+    // honestly at end of phase. Targets are specific to Tony's biomechanics
+    // (hypermobile patella, glute med priority, asymmetric work for the LLD).
     const STRENGTH_PHASES = [
-      { id: 1, name: 'Découverte', shortName: 'PHASE 1', weeks: [1, 2], multiplier: 0.6 },
-      { id: 2, name: 'Adaptation', shortName: 'PHASE 2', weeks: [3, 4], multiplier: 0.75 },
-      { id: 3, name: 'Consolidation', shortName: 'PHASE 3', weeks: [5, 6], multiplier: 0.9 },
-      { id: 4, name: 'Cible', shortName: 'PHASE 4', weeks: [7, 999], multiplier: 1 },
+      {
+        id: 1, name: 'Réactivation', shortName: 'PHASE 1', weeks: [1, 3], multiplier: 0.5,
+        theme: 'Réveiller le moyen fessier endormi par la sédentarité',
+        sessionsTarget: 2,
+        criterion: 'Sentir le brûlure ciblée à 8 reps de clamshell sans bouger le bassin.',
+        graduationText: "Tu as réactivé tes fessiers endormis. Le moyen fessier répond à la commande nerveuse, c'est la fondation pour tout le reste. Phase suivante : on charge un peu plus.",
+      },
+      {
+        id: 2, name: 'Adaptation', shortName: 'PHASE 2', weeks: [4, 6], multiplier: 0.7,
+        theme: "Tendons et muscles s'habituent à la charge",
+        sessionsTarget: 2,
+        criterion: 'Pont unilatéral 15 reps sans à-coup, des deux côtés.',
+        graduationText: "Tes tendons (rotulien et achiléen) ont absorbé la première charge. Le grand fessier soutient le bassin sans compensation. Place à la construction.",
+      },
+      {
+        id: 3, name: 'Construction', shortName: 'PHASE 3', weeks: [7, 12], multiplier: 1.0,
+        theme: 'Hypertrophie réelle du moyen fessier, ajout d\'isométriques',
+        sessionsTarget: 3,
+        criterion: '30 secondes de single-leg balance les yeux fermés sans poser le pied.',
+        graduationText: "Ton moyen fessier supporte maintenant 30 sec d'isométrique unilatérale sans tremblement — c'est un palier biomécanique. Le contrôle proprioceptif yeux fermés est en place. Tu protèges activement ta rotule mobile.",
+      },
+      {
+        id: 4, name: 'Unilatéral', shortName: 'PHASE 4', weeks: [13, 20], multiplier: 1.0,
+        theme: 'Casser la compensation gauche/droite due à la LLD (ratio 3:2)',
+        sessionsTarget: 3,
+        criterion: 'Écart ressenti gauche/droite ≤ 2/5 sur les exos unilatéraux.',
+        graduationText: "L'asymétrie due à ta LLD se compense maintenant musculairement, plus articulairement. Ton genou gauche n'est plus seul à porter le déséquilibre. Tu es prêt pour le transfert au geste de course.",
+      },
+      {
+        id: 5, name: 'Intégration course', shortName: 'PHASE 5', weeks: [21, 32], multiplier: 1.0,
+        theme: 'Transfert au geste de course (plyo légère, bondissements)',
+        sessionsTarget: 2,
+        criterion: 'Aucune douleur post-sortie longue 3 semaines de suite.',
+        graduationText: "La force construite se traduit en course : foulée plus stable, oscillation verticale réduite, économie améliorée. Ton genou tient sur les longues. Tu peux passer en maintenance.",
+      },
+      {
+        id: 6, name: 'Maintenance', shortName: 'PHASE 6', weeks: [33, 999], multiplier: 0.9,
+        theme: 'Minimum efficace pour ne rien perdre',
+        sessionsTarget: 2,
+        criterion: 'Phase indéfinie — tu maintiens tant que tu cours.',
+        graduationText: null,
+      },
     ];
     const STRENGTH_BASE = {
       squat_eccentric: { sets: 3, reps: 10, rest: 60 },
@@ -5086,6 +5129,270 @@
     }
 
     // ========================================================================
+    // PHASE GRADUATION MODAL — celebrates completing a phase of the renfo program
+    // ========================================================================
+    function PhaseGraduationModal({ phase, onClose }) {
+      useEffect(() => { const h = (e) => { if (e.key === 'Escape') onClose(); }; window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h); }, [onClose]);
+      if (!phase) return null;
+      return (
+        <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)', zIndex: 250, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div onClick={(e) => e.stopPropagation()} className="scale-in" style={{ background: 'var(--bg)', border: '1px solid var(--accent)', borderRadius: 16, width: '100%', maxWidth: 520, boxShadow: '0 20px 60px rgba(212,255,0,0.15), 0 20px 60px rgba(0,0,0,0.5)' }}>
+            <div className="px-7 pt-7 pb-2">
+              <div className="font-mono text-[10px] tracking-widest mb-3" style={{ color: 'var(--accent)' }}>TROPHÉE DE PHASE · PALIER FRANCHI</div>
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(212,255,0,0.12)' }}>
+                  <IconTrophy size={24} style={{ color: 'var(--accent)' }} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>{phase.shortName} / 6 BOUCLÉE</div>
+                  <div className="font-display text-2xl font-bold leading-tight" style={{ color: 'var(--text)' }}>{phase.name}</div>
+                </div>
+              </div>
+              <div className="rounded-lg p-4 mb-4" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
+                <div className="font-mono text-[10px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>CE QUE TU AS CONSTRUIT</div>
+                <div className="text-sm leading-relaxed" style={{ color: 'var(--text)' }}>{phase.graduationText}</div>
+              </div>
+              {phase.criterion && (
+                <div className="text-xs mb-4" style={{ color: 'var(--text-dim)' }}>
+                  <span className="font-mono" style={{ color: 'var(--text-faint)' }}>Critère validé : </span>{phase.criterion}
+                </div>
+              )}
+            </div>
+            <div className="px-7 pb-5 pt-2 flex justify-end">
+              <Button variant="primary" onClick={onClose} style={{ background: 'var(--accent)', color: '#000', borderColor: 'var(--accent)' }}>Continuer la phase suivante</Button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================================================
+    // PAIN VS RENFO CTL CHART — visual feedback loop tying strength to knee health
+    // ========================================================================
+    // X = last N weeks, two lines:
+    //   - blue: renfo CTL (EWMA of weekly session count, α = 1 − e^(−1/14))
+    //   - red:  post-run knee pain (smoothed across activities with postRunKneePain)
+    // Watching the red descend as the blue rises = the strongest motivator.
+    function PainVsRenfoChart({ activities, strengthSessions, profile, weeksBack = 12 }) {
+      const data = useMemo(() => {
+        const dayMs = 86400000;
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+        const totalDays = weeksBack * 7;
+        const startMs = today.getTime() - totalDays * dayMs;
+
+        // Per-day renfo session count (binary: did at least one session that day)
+        const sessionByDay = new Array(totalDays + 1).fill(0);
+        (strengthSessions || []).forEach(s => {
+          const sd = new Date(s.date); sd.setHours(0, 0, 0, 0);
+          const dayIdx = Math.round((sd.getTime() - startMs) / dayMs);
+          if (dayIdx >= 0 && dayIdx <= totalDays) sessionByDay[dayIdx]++;
+        });
+
+        // Weekly count rolling 7-day sum
+        const weeklyCount = new Array(totalDays + 1).fill(0);
+        for (let i = 0; i <= totalDays; i++) {
+          let sum = 0;
+          for (let k = Math.max(0, i - 6); k <= i; k++) sum += sessionByDay[k];
+          weeklyCount[i] = sum;
+        }
+
+        // EWMA of weekly count, α for 14-day half-life ≈ 1 - exp(-1/14)
+        const alpha = 1 - Math.exp(-1 / 14);
+        const renfoCtl = new Array(totalDays + 1).fill(0);
+        let acc = 0;
+        for (let i = 0; i <= totalDays; i++) {
+          acc = alpha * weeklyCount[i] + (1 - alpha) * acc;
+          renfoCtl[i] = acc;
+        }
+
+        // Pain points: from activities with postRunKneePain in the window
+        const painPoints = [];
+        (activities || []).forEach(a => {
+          if (typeof a.postRunKneePain !== 'number') return;
+          const ad = new Date(a.startMs); ad.setHours(0, 0, 0, 0);
+          const dayIdx = Math.round((ad.getTime() - startMs) / dayMs);
+          if (dayIdx >= 0 && dayIdx <= totalDays) painPoints.push({ dayIdx, score: a.postRunKneePain, date: a.startMs });
+        });
+        painPoints.sort((a, b) => a.dayIdx - b.dayIdx);
+
+        // Smoothed pain: per-day, exponential moving avg of pain scores observed up to that day
+        // (decay 21 days). For days with no point, carry forward the running EMA.
+        const painAlpha = 1 - Math.exp(-1 / 21);
+        const painSmooth = new Array(totalDays + 1).fill(null);
+        let lastEma = null;
+        let pIdx = 0;
+        for (let i = 0; i <= totalDays; i++) {
+          while (pIdx < painPoints.length && painPoints[pIdx].dayIdx === i) {
+            lastEma = lastEma === null ? painPoints[pIdx].score : painAlpha * painPoints[pIdx].score + (1 - painAlpha) * lastEma;
+            pIdx++;
+          }
+          if (lastEma !== null) painSmooth[i] = lastEma;
+        }
+
+        return { renfoCtl, painSmooth, painPoints, totalDays, startMs };
+      }, [activities, strengthSessions, weeksBack]);
+
+      const { renfoCtl, painSmooth, painPoints, totalDays, startMs } = data;
+      const hasAnyPain = painPoints.length > 0;
+      const hasAnyRenfo = (strengthSessions || []).length > 0;
+
+      if (!hasAnyPain && !hasAnyRenfo) {
+        return (
+          <Card className="p-6 mb-4">
+            <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--text-dim)' }}>DOULEUR vs RENFO · {weeksBack} SEMAINES</div>
+            <div className="text-sm italic" style={{ color: 'var(--text-faint)' }}>Le graphique apparaîtra dès tes premières séances de renfo + ton premier check-in douleur post-course.</div>
+          </Card>
+        );
+      }
+
+      // SVG layout
+      const W = 760, H = 220;
+      const padL = 40, padR = 40, padT = 18, padB = 28;
+      const cw = W - padL - padR, ch = H - padT - padB;
+      const x = (i) => padL + (i / Math.max(1, totalDays)) * cw;
+
+      // Left axis (renfo CTL): 0 to max(3, ceil(maxCtl))
+      const maxCtl = Math.max(3, Math.ceil(Math.max(...renfoCtl) * 10) / 10 + 0.2);
+      const yL = (v) => padT + ch - (v / maxCtl) * ch;
+      // Right axis (pain): 0 to 10
+      const yR = (v) => padT + ch - (v / 10) * ch;
+
+      const ctlPath = renfoCtl.map((v, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${yL(v).toFixed(1)}`).join(' ');
+      // Pain path: only over the smoothed region (skip leading nulls)
+      const painSegments = [];
+      let cur = [];
+      for (let i = 0; i <= totalDays; i++) {
+        if (painSmooth[i] !== null) cur.push(`${cur.length === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${yR(painSmooth[i]).toFixed(1)}`);
+        else if (cur.length) { painSegments.push(cur.join(' ')); cur = []; }
+      }
+      if (cur.length) painSegments.push(cur.join(' '));
+
+      // Target line at renfo CTL = 2 (sessions/week target)
+      const targetSessions = profile?.showStrength === false ? 0 : 2;
+
+      // Date labels (start, today)
+      const fmtMonthDay = (ms) => { const d = new Date(ms); return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`; };
+
+      // Insight text
+      let insight = null;
+      if (hasAnyPain && hasAnyRenfo && painPoints.length >= 3) {
+        const recent = painPoints.slice(-Math.min(5, painPoints.length));
+        const old = painPoints.slice(0, Math.min(5, painPoints.length));
+        const recentAvg = recent.reduce((s, p) => s + p.score, 0) / recent.length;
+        const oldAvg = old.reduce((s, p) => s + p.score, 0) / old.length;
+        const ctlNow = renfoCtl[totalDays];
+        const ctlStart = renfoCtl[0];
+        if (ctlNow > ctlStart + 0.3 && recentAvg < oldAvg - 0.5) {
+          insight = { tone: 'positive', text: `Renfo CTL ${ctlStart.toFixed(1)} → ${ctlNow.toFixed(1)} · Douleur ${oldAvg.toFixed(1)} → ${recentAvg.toFixed(1)}. La corrélation joue dans le bon sens.` };
+        } else if (ctlNow < ctlStart - 0.3 && recentAvg > oldAvg + 0.5) {
+          insight = { tone: 'negative', text: `Renfo en baisse (${ctlStart.toFixed(1)} → ${ctlNow.toFixed(1)}) et douleur qui remonte (${oldAvg.toFixed(1)} → ${recentAvg.toFixed(1)}). Le lien est net.` };
+        }
+      }
+
+      return (
+        <Card className="p-6 mb-4">
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+            <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>DOULEUR GENOU vs RENFO CTL · {weeksBack} SEMAINES</div>
+            <div className="flex items-center gap-3 font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
+              <span className="flex items-center gap-1.5"><span className="w-3 h-0.5" style={{ background: 'var(--compass)' }} />RENFO CTL</span>
+              <span className="flex items-center gap-1.5"><span className="w-3 h-0.5" style={{ background: 'var(--critical)' }} />DOULEUR</span>
+            </div>
+          </div>
+          <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: 'block' }}>
+            {/* Y-axis ticks left (renfo) */}
+            {[0, 1, 2, 3].map(v => v <= maxCtl && (
+              <g key={`l${v}`}>
+                <line x1={padL} y1={yL(v)} x2={W - padR} y2={yL(v)} stroke="var(--border)" strokeWidth="0.5" opacity="0.5" />
+                <text x={padL - 6} y={yL(v) + 3} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="var(--compass)">{v}</text>
+              </g>
+            ))}
+            {/* Right axis ticks (pain) */}
+            {[0, 5, 10].map(v => (
+              <g key={`r${v}`}>
+                <text x={W - padR + 6} y={yR(v) + 3} textAnchor="start" fontFamily="JetBrains Mono" fontSize="9" fill="var(--critical)">{v}</text>
+              </g>
+            ))}
+            {/* Target line */}
+            {targetSessions > 0 && (
+              <g>
+                <line x1={padL} y1={yL(targetSessions)} x2={W - padR} y2={yL(targetSessions)} stroke="var(--compass)" strokeWidth="1" strokeDasharray="3,3" opacity="0.4" />
+                <text x={W - padR - 4} y={yL(targetSessions) - 4} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="var(--compass)" opacity="0.6">cible {targetSessions}/sem</text>
+              </g>
+            )}
+            {/* Renfo CTL line */}
+            {hasAnyRenfo && <path d={ctlPath} fill="none" stroke="var(--compass)" strokeWidth="2" />}
+            {/* Pain smoothed line */}
+            {painSegments.map((p, i) => <path key={i} d={p} fill="none" stroke="var(--critical)" strokeWidth="1.8" strokeDasharray="4,2" />)}
+            {/* Pain points (dots) */}
+            {painPoints.map((p, i) => (
+              <circle key={i} cx={x(p.dayIdx)} cy={yR(p.score)} r="3" fill="var(--critical)" stroke="var(--bg)" strokeWidth="1" />
+            ))}
+            {/* X-axis labels */}
+            <text x={padL} y={H - 8} textAnchor="start" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{fmtMonthDay(startMs)}</text>
+            <text x={W - padR} y={H - 8} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#555">aujourd'hui</text>
+          </svg>
+          {!hasAnyPain && (
+            <div className="mt-3 text-xs italic" style={{ color: 'var(--text-faint)' }}>Aucun check-in douleur encore. Après chaque course importée, l'app te demandera 3 secondes pour noter ton genou.</div>
+          )}
+          {insight && (
+            <div className="mt-3 rounded-lg p-3 text-sm leading-relaxed" style={{ background: insight.tone === 'positive' ? 'var(--positive-dim)' : 'var(--critical-dim)', border: `1px solid ${insight.tone === 'positive' ? 'var(--positive)' : 'var(--critical)'}40`, color: insight.tone === 'positive' ? 'var(--positive)' : 'var(--critical)' }}>
+              {insight.text}
+            </div>
+          )}
+        </Card>
+      );
+    }
+
+    // ========================================================================
+    // PAIN CHECK-IN MODAL — quick 0-10 knee pain prompt after each run import
+    // ========================================================================
+    // Captures post-run knee pain so we can correlate it with renfo CTL over time.
+    // Skipping is fine (score stays unset and we won't ask again on this activity).
+    function PainCheckinModal({ activity, onSubmit, onSkip }) {
+      const [hover, setHover] = useState(null);
+      useEffect(() => { const h = (e) => { if (e.key === 'Escape') onSkip(); }; window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h); }, [onSkip]);
+      if (!activity) return null;
+      const km = (activity.distanceMeters / 1000).toFixed(1);
+      const min = Math.round(activity.durationSec / 60);
+      const colorFor = (n) => n === 0 ? 'var(--positive)' : n <= 3 ? 'var(--positive)' : n <= 5 ? 'var(--caution)' : n <= 7 ? 'var(--negative)' : 'var(--critical)';
+      const labelFor = (n) => n === 0 ? 'Aucune' : n <= 2 ? 'Très léger' : n <= 4 ? 'Léger' : n <= 6 ? 'Modéré' : n <= 8 ? 'Fort' : 'Sévère';
+      const display = hover != null ? hover : 0;
+      return (
+        <div onClick={onSkip} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)', zIndex: 250, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div onClick={(e) => e.stopPropagation()} className="scale-in" style={{ background: 'var(--bg)', border: '1px solid var(--border-bright)', borderRadius: 16, width: '100%', maxWidth: 520, boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
+            <div className="px-7 pt-6 pb-2">
+              <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--compass)' }}>CHECK-IN POST-COURSE · GENOU GAUCHE</div>
+              <div className="font-display text-lg font-bold mb-1">Comment réagit le genou après cette séance ?</div>
+              <div className="text-xs mb-4" style={{ color: 'var(--text-dim)' }}>{km} km · {min} min · 3 secondes pour rater la corrélation entre ton renfo et tes douleurs</div>
+              <div className="rounded-lg p-3 mb-3" style={{ background: 'var(--bg-elev)', border: `1px solid ${colorFor(display)}40` }}>
+                <div className="flex items-baseline justify-between mb-2">
+                  <div className="font-display text-3xl font-bold tabular" style={{ color: colorFor(display) }}>{display}<span className="font-mono text-sm" style={{ color: 'var(--text-faint)' }}>/10</span></div>
+                  <div className="font-mono text-xs tracking-widest" style={{ color: colorFor(display) }}>{labelFor(display).toUpperCase()}</div>
+                </div>
+                <div className="flex gap-1">
+                  {Array.from({ length: 11 }, (_, i) => (
+                    <button
+                      key={i}
+                      onMouseEnter={() => setHover(i)}
+                      onMouseLeave={() => setHover(null)}
+                      onClick={() => onSubmit(i)}
+                      className="btn flex-1 py-2 rounded font-mono text-xs tabular tracking-widest"
+                      style={{ background: 'var(--bg-elev-2)', color: colorFor(i), border: `1px solid ${colorFor(i)}30` }}
+                    >{i}</button>
+                  ))}
+                </div>
+              </div>
+              <div className="text-[11px] leading-snug" style={{ color: 'var(--text-faint)' }}>0 = aucune douleur · 10 = insupportable. Cette donnée alimente le graphique douleur vs renfo CTL.</div>
+            </div>
+            <div className="px-7 pb-5 pt-2 flex justify-end">
+              <Button variant="ghost" onClick={onSkip}>Plus tard</Button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================================================
     // STRENGTH SECTION — embeddable strength content (no page wrapper)
     // Used by PlanView (renfo tab) and could be used standalone if needed.
     // ========================================================================
@@ -5110,28 +5417,44 @@
               <div className="t-meta" style={{ color: 'var(--signal)' }}>RENFO</div>
               {phaseOffset !== 0 && <Tag color={phaseOffset > 0 ? 'var(--positive)' : 'var(--negative)'}>{phaseOffset > 0 ? '↑ ACCÉLÉRÉ' : '↓ RALENTI'}</Tag>}
             </div>
-            <h2 className="t-h2 mb-1">Renforcement · 2× / semaine</h2>
-            <div className="t-body-dim">15 minutes par séance · adapté à ton tendon rotulien</div>
+            <h2 className="t-h2 mb-1">Renforcement · {phase.sessionsTarget || 2}× / semaine</h2>
+            <div className="t-body-dim">Programme 12 mois en 6 phases — PFPS + LLD + dysmétrie patellaire</div>
           </div>
 
           {/* Phase + Stats */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-4">
             <div className="lg:col-span-2">
-              <Card className="p-6">
+              <Card className="p-6" accent="var(--accent)">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
                     <IconTrending size={14} style={{ color: 'var(--accent)' }} />
-                    <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>{phase.shortName} · SEMAINE {phase.currentWeek || '—'}</div>
+                    <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>{phase.shortName} / 6 · SEMAINE {phase.currentWeek || '—'}</div>
                   </div>
-                  <div className="font-mono text-xs tabular" style={{ color: 'var(--text-dim)' }}>{Math.round(phase.multiplier * 100)}% du programme cible</div>
+                  <div className="font-mono text-xs tabular" style={{ color: 'var(--text-dim)' }}>{Math.round(phase.multiplier * 100)}% du volume cible</div>
                 </div>
-                <div className="font-display text-2xl font-bold mb-3">{phase.name}</div>
-                <div className="h-1.5 rounded-full overflow-hidden mb-2" style={{ background: 'var(--border)' }}>
-                  <div className="h-full transition-all duration-500" style={{ width: `${phase.multiplier * 100}%`, background: 'var(--accent)' }} />
+                <div className="font-display text-2xl font-bold mb-1">{phase.name}</div>
+                {phase.theme && <div className="text-sm mb-4" style={{ color: 'var(--text-dim)' }}>{phase.theme}</div>}
+                {/* 6-phase progression bar */}
+                <div className="flex gap-1 mb-2">
+                  {STRENGTH_PHASES.map((p, i) => {
+                    const reached = phase.id >= p.id;
+                    const current = phase.id === p.id;
+                    return (
+                      <div key={p.id} className="flex-1 h-1.5 rounded-full" style={{
+                        background: current ? 'var(--accent)' : reached ? 'rgba(212,255,0,0.4)' : 'var(--border)',
+                      }} title={`${p.shortName} — ${p.name} (sem ${p.weeks[0]}-${p.weeks[1] === 999 ? '∞' : p.weeks[1]})`} />
+                    );
+                  })}
                 </div>
                 <div className="flex justify-between font-mono text-[9px]" style={{ color: 'var(--text-faint)' }}>
-                  <span>SEM 1</span><span>SEM 3</span><span>SEM 5</span><span>SEM 7+</span>
+                  <span>P1</span><span>P2</span><span>P3</span><span>P4</span><span>P5</span><span>P6</span>
                 </div>
+                {phase.criterion && (
+                  <div className="mt-4 pt-3 border-t" style={{ borderColor: 'var(--border)' }}>
+                    <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>OBJECTIF DE PASSAGE</div>
+                    <div className="text-sm" style={{ color: 'var(--text)' }}>{phase.criterion}</div>
+                  </div>
+                )}
               </Card>
             </div>
             <div>
@@ -5142,8 +5465,8 @@
                     <IconFlame size={16} style={{ color: streak > 0 ? 'var(--accent)' : 'var(--text-faint)' }} />
                   </div>
                   <div className="flex items-baseline gap-2">
-                    <div className="font-display text-5xl font-extrabold tabular leading-none" style={{ color: 'var(--accent)' }}>{thisWeekCount}</div>
-                    <div className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>/2</div>
+                    <div className="font-display text-5xl font-extrabold tabular leading-none" style={{ color: thisWeekCount >= (phase.sessionsTarget || 2) ? 'var(--positive)' : 'var(--accent)' }}>{thisWeekCount}</div>
+                    <div className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>/{phase.sessionsTarget || 2}</div>
                   </div>
                 </div>
                 <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>{streak} SEM. CONSÉCUTIVES</div>
@@ -6277,7 +6600,7 @@
     // ========================================================================
     // PROFILE VIEW — Tony's data, editable
     // ========================================================================
-    function ProfileView({ profile, onSave, activities, planOverrides, onRecalibratePlan, onShowAllActivities }) {
+    function ProfileView({ profile, onSave, activities, planOverrides, onRecalibratePlan, onShowAllActivities, phaseGraduations = [], strengthSessions = [] }) {
       const [editing, setEditing] = useState(false);
       const [draft, setDraft] = useState(profile);
       const dialog = useDialog();
@@ -6599,6 +6922,36 @@
                 <button onClick={onShowAllActivities} className="btn flex items-center gap-2 px-4 py-2 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)', color: 'var(--compass)', border: '1px solid rgba(74, 158, 255, 0.3)' }}>
                   <IconBarChart size={13} /> VOIR LE JOURNAL
                 </button>
+              </div>
+            </Card>
+          )}
+
+          {/* Pain vs Renfo CTL — visible feedback loop */}
+          {profile.showStrength !== false && (
+            <PainVsRenfoChart activities={activities} strengthSessions={strengthSessions} profile={profile} />
+          )}
+
+          {/* Renfo phase trophies */}
+          {profile.showStrength !== false && phaseGraduations.length > 0 && (
+            <Card className="p-6 mb-4">
+              <div className="flex items-center gap-2 mb-3">
+                <IconTrophy size={14} style={{ color: 'var(--accent)' }} />
+                <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--accent)' }}>TROPHÉES DE PHASE · RENFO</div>
+              </div>
+              <div className="space-y-3">
+                {phaseGraduations.map(g => {
+                  const p = STRENGTH_PHASES.find(x => x.id === g.phaseId);
+                  if (!p) return null;
+                  return (
+                    <div key={g.phaseId} className="rounded-lg p-3" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <div className="font-display font-bold" style={{ color: 'var(--accent)' }}>{p.shortName} · {p.name}</div>
+                        <div className="font-mono text-[10px] tabular" style={{ color: 'var(--text-faint)' }}>{new Date(g.date).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</div>
+                      </div>
+                      <div className="text-xs leading-relaxed" style={{ color: 'var(--text-dim)' }}>{p.graduationText}</div>
+                    </div>
+                  );
+                })}
               </div>
             </Card>
           )}
@@ -12684,6 +13037,9 @@
         return cleaned;
       });
       const [sessionTemplates, setSessionTemplates] = useState(() => storage.get(KEYS.sessionTemplates, []));
+      const [phaseGraduations, setPhaseGraduations] = useState(() => storage.get(KEYS.phaseGraduations, []));
+      const [pendingGraduation, setPendingGraduation] = useState(null);
+      const [pendingPainCheckin, setPendingPainCheckin] = useState(null);
 
       // Track CP changes: whenever CP updates, log a history entry
       useEffect(() => {
@@ -12762,6 +13118,33 @@
       useEffect(() => { storage.set(KEYS.activities, activities); }, [activities]);
       useEffect(() => { storage.set(KEYS.strengthSessions, strengthSessions); }, [strengthSessions]);
       useEffect(() => { if (strengthStart) storage.set(KEYS.strengthStart, strengthStart); }, [strengthStart]);
+      useEffect(() => { storage.set(KEYS.phaseGraduations, phaseGraduations); }, [phaseGraduations]);
+
+      // Detect phase completion → trigger graduation modal once per phase.
+      useEffect(() => {
+        if (!strengthStart || profile.showStrength === false) return;
+        const phaseOffset = computePhaseOffset(strengthSessions);
+        const cur = getStrengthPhase(strengthStart, phaseOffset);
+        const lastCompleted = STRENGTH_PHASES.filter(p => p.id < cur.id && p.graduationText).pop();
+        if (!lastCompleted) return;
+        if (phaseGraduations.some(g => g.phaseId === lastCompleted.id)) return;
+        setPendingGraduation(lastCompleted);
+      }, [strengthStart, strengthSessions, phaseGraduations, profile.showStrength]);
+
+      function acceptGraduation() {
+        if (!pendingGraduation) return;
+        setPhaseGraduations([...phaseGraduations, { phaseId: pendingGraduation.id, date: new Date().toISOString() }]);
+        setPendingGraduation(null);
+      }
+
+      function savePainCheckin(score) {
+        if (!pendingPainCheckin) return;
+        // score = number 0-10, or null if skipped
+        if (typeof score === 'number') {
+          setActivities(activities.map(a => a.id === pendingPainCheckin.id ? { ...a, postRunKneePain: score } : a));
+        }
+        setPendingPainCheckin(null);
+      }
       useEffect(() => { storage.set(KEYS.races, races); }, [races]);
       useEffect(() => { storage.set(KEYS.planOverrides, planOverrides); }, [planOverrides]);
       useEffect(() => { storage.set(KEYS.sessionTemplates, sessionTemplates); }, [sessionTemplates]);
@@ -12804,6 +13187,15 @@
         }
         const updated = [activity, ...activities].sort((a, b) => b.startMs - a.startMs);
         setActivities(updated);
+
+        // Trigger post-run knee pain check-in for non-trivial runs imported within 36h.
+        // Skip rest activities, very short jogs, or activities already rated.
+        const ageHours = (Date.now() - activity.startMs) / 3600000;
+        const km = (activity.distanceMeters || 0) / 1000;
+        const isRunLike = !activity.sport || /run|course/i.test(activity.sport);
+        if (isRunLike && km >= 2 && ageHours <= 36 && typeof activity.postRunKneePain !== 'number') {
+          setPendingPainCheckin(activity);
+        }
 
         // Auto-update CP if a new better effort detected
         const allBests = updated.map(a => a.bestEfforts).filter(Boolean);
@@ -13065,6 +13457,8 @@
             {view === 'profile' && (
               <ProfileView
                 profile={profile}
+                phaseGraduations={phaseGraduations}
+                strengthSessions={strengthSessions}
                 onSave={async (newProfile) => {
                   // If CP changed, ask user if they want to recalibrate the plan
                   const oldCP = profile.cp;
@@ -13109,6 +13503,8 @@
           {activityModal && <ActivityDetailModal activity={activityModal} cp={profile.cp} onClose={() => setActivityModal(null)} profile={profile} allActivities={activities} onNavigate={(a) => setActivityModal(a)} />}
           {pendingDateActivity && <DateConfirmModal activity={pendingDateActivity} onConfirm={handleConfirmDate} onCancel={() => setPendingDateActivity(null)} />}
           {manualEntry && <ManualActivityModal onSave={(activity) => { doImport(activity); setManualEntry(false); }} onCancel={() => setManualEntry(false)} />}
+          {pendingGraduation && <PhaseGraduationModal phase={pendingGraduation} onClose={acceptGraduation} />}
+          {pendingPainCheckin && <PainCheckinModal activity={pendingPainCheckin} onSubmit={savePainCheckin} onSkip={() => setPendingPainCheckin(null)} />}
         </div>
       );
     }
