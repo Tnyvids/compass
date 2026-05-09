@@ -7203,9 +7203,11 @@
         else if (linked.type === 'intervals') planIntent = 'intervals_plan';
       }
 
+      // p is paceMinPerKm (decimal minutes per km), e.g. 6.22 = 6'13/km.
       const fmtPaceLocal = (p) => {
-        if (!p) return '';
-        const m = Math.floor(p / 60), s = Math.round(p % 60);
+        if (!p || !isFinite(p)) return '';
+        const m = Math.floor(p);
+        const s = Math.round((p - m) * 60);
         return `${m}'${String(s).padStart(2, '0')}/km`;
       };
       const paceStr = pace ? fmtPaceLocal(pace) : '';
