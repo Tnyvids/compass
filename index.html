@@ -1710,7 +1710,7 @@
 
       const push = useCallback((msg, opts = {}) => {
         const id = 'toast_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
-        const toast = { id, message: msg, undo: opts.undo || null, kind: opts.kind || 'info' };
+        const toast = { id, message: msg, undo: opts.undo || null, action: opts.action || null, kind: opts.kind || 'info' };
         setToasts(prev => [...prev, toast]);
         timersRef.current[id] = setTimeout(() => dismiss(id), opts.duration || 7000);
         return id;
@@ -1736,6 +1736,12 @@
                   {t.undo && (
                     <button onClick={() => handleUndo(t)} className="btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-[11px] tracking-widest flex-shrink-0" style={{ background: c, color: '#000' }}>
                       <IconUndo size={12} /> ANNULER
+                    </button>
+                  )}
+                  {t.action && (
+                    <button onClick={() => { try { t.action.onClick && t.action.onClick(); } finally { dismiss(t.id); } }} className="btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-[11px] tracking-widest flex-shrink-0" style={{ background: c, color: '#000' }}>
+                      {t.action.icon ? <t.action.icon size={12} /> : null}
+                      {t.action.label}
                     </button>
                   )}
                   <button onClick={() => dismiss(t.id)} className="btn w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: 'var(--bg-elev-2)', color: 'var(--text-dim)' }}><IconX size={12} /></button>
@@ -2013,6 +2019,85 @@
     function buildStrengthSession(key, phase) {
       const s = STRENGTH_SESSIONS[key];
       return { ...s, exercises: s.exerciseKeys.map(k => scaleEx(k, phase.multiplier)) };
+    }
+
+    // ========================================================================
+    // KNEE RISK INDEX — combined 0-100 risk score
+    // ========================================================================
+    // Combines four signals weighted by injury research:
+    //   - Recent pain (35%): max + avg of post-run pain + check-in soreness over 7 days
+    //   - ACWR (25%): acute:chronic ratio, danger > 1.5
+    //   - Renfo compliance (25%): days since last strength session
+    //   - Profile factors (15%): LLD + PFPS history flags
+    // Returns { total, painScore, acwrScore, renfoScore, profileScore, driver, zone }.
+    function computeKneeRiskIndex(profile, activities, checkins, strengthSessions, acwr) {
+      const dayMs = 86400000;
+      const now = Date.now();
+
+      // 1. Pain signal
+      const recentRunPain = (activities || [])
+        .filter(a => typeof a.postRunKneePain === 'number' && (now - a.startMs) < 7 * dayMs)
+        .map(a => a.postRunKneePain);
+      const recentCheckinKnee = (checkins || [])
+        .filter(c => c && c.inputs && typeof c.inputs.soreness === 'number' && (now - c.date) < 7 * dayMs)
+        .map(c => c.inputs.soreness);
+      const allPain = [...recentRunPain, ...recentCheckinKnee];
+      let painScore = 0;
+      if (allPain.length) {
+        const peak = Math.max(...allPain);
+        const avg = allPain.reduce((s, v) => s + v, 0) / allPain.length;
+        painScore = Math.min(100, peak * 7 + avg * 3);
+      }
+
+      // 2. ACWR
+      let acwrScore = 0;
+      if (acwr && Number.isFinite(acwr.ratio)) {
+        if (acwr.ratio > 1.5) acwrScore = 100;
+        else if (acwr.ratio > 1.3) acwrScore = 50 + 50 * (acwr.ratio - 1.3) / 0.2;
+        else if (acwr.ratio >= 0.8) acwrScore = 0;
+        else acwrScore = 0;
+      }
+
+      // 3. Renfo compliance — only relevant when renfo is enabled
+      let renfoScore = 0;
+      if (profile && profile.showStrength !== false) {
+        const lastRenfo = strengthSessions && strengthSessions[0] ? strengthSessions[0].date : null;
+        if (lastRenfo) {
+          const daysSince = (now - lastRenfo) / dayMs;
+          if (daysSince <= 3) renfoScore = 0;
+          else if (daysSince <= 7) renfoScore = 50 * (daysSince - 3) / 4;
+          else if (daysSince <= 14) renfoScore = 50 + 50 * (daysSince - 7) / 7;
+          else renfoScore = 100;
+        } else {
+          renfoScore = 80; // never done renfo: high but not max (could be early adopter)
+        }
+      }
+
+      // 4. Profile factors
+      let profileScore = 0;
+      const kneeStr = String((profile && profile.knee && profile.knee.condition) || '').toLowerCase();
+      if (/lld|dysmétrie|dysmetrie|jambe.*courte|courte.*jambe/.test(kneeStr)) profileScore += 50;
+      if (/pfps|fémoro|femoro|patell|tendinit|tendinopath/.test(kneeStr)) profileScore += 50;
+      profileScore = Math.min(100, profileScore);
+
+      const total = Math.round(0.35 * painScore + 0.25 * acwrScore + 0.25 * renfoScore + 0.15 * profileScore);
+
+      // Identify dominant driver
+      const contribs = [
+        { key: 'pain', val: 0.35 * painScore, label: 'Douleur récente' },
+        { key: 'renfo', val: 0.25 * renfoScore, label: 'Renfo en retard' },
+        { key: 'acwr', val: 0.25 * acwrScore, label: 'Charge accélérée' },
+        { key: 'profile', val: 0.15 * profileScore, label: 'Profil à risque' },
+      ].sort((a, b) => b.val - a.val);
+      const driver = contribs[0];
+
+      let zone, zoneColor, zoneLabel;
+      if (total < 25) { zone = 'low'; zoneColor = 'var(--positive)'; zoneLabel = 'FAIBLE'; }
+      else if (total < 50) { zone = 'moderate'; zoneColor = 'var(--caution)'; zoneLabel = 'MODÉRÉ'; }
+      else if (total < 75) { zone = 'high'; zoneColor = 'var(--negative)'; zoneLabel = 'ÉLEVÉ'; }
+      else { zone = 'critical'; zoneColor = 'var(--critical)'; zoneLabel = 'CRITIQUE'; }
+
+      return { total, painScore, acwrScore, renfoScore, profileScore, driver, zone, zoneColor, zoneLabel };
     }
 
     // ========================================================================
@@ -2320,7 +2405,7 @@
     // ========================================================================
     // TODAY VIEW — Readiness + planned session + quick actions
     // ========================================================================
-    function TodayView({ profile, checkins, todayCheckin, activities, races, plannedSession, planOverrides, onCheckinStart, onCheckinView, onImport, onStrengthStart, onAddRace, onNav, coachVerdict }) {
+    function TodayView({ profile, checkins, todayCheckin, activities, strengthSessions = [], races, plannedSession, planOverrides, onCheckinStart, onCheckinView, onImport, onStrengthStart, onAddRace, onNav, coachVerdict }) {
       const now = new Date();
       const dayLabel = DAYS_FR_LONG[now.getDay()];
       const dateLabel = `${String(now.getDate()).padStart(2, '0')} ${MONTHS_FR[now.getMonth()]}`;
@@ -2370,13 +2455,10 @@
 
       return (
         <div className="max-w-[1400px] mx-auto px-4 md:px-8 py-5 md:py-8 fade-in pb-nav">
-          {/* Header — minimal, just date + race countdown if any */}
-          <div className="flex items-end justify-between mb-6 md:mb-8 gap-3">
+          {/* Header — minimal, just date */}
+          <div className="flex items-end justify-between mb-4 md:mb-5 gap-3">
             <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-2 flex-wrap">
-                <div className="t-meta" style={{ color: 'var(--compass)' }}>{dayLabel.toUpperCase()} {dateLabel}</div>
-                {nextRace && <Tag color="var(--signal)">J–{daysToRace} · {nextRace.name.toUpperCase()}</Tag>}
-              </div>
+              <div className="t-meta mb-2" style={{ color: 'var(--compass)' }}>{dayLabel.toUpperCase()} {dateLabel}</div>
               <h1 className="t-h1">{!todayCheckin && plannedSession?.type !== 'rest' ? "Comment tu te sens ?" : "Ta journée"}</h1>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
@@ -2389,6 +2471,9 @@
               </button>
             </div>
           </div>
+
+          {/* Race countdown hero — keeps the goal alive every morning */}
+          <RaceCountdownHero profile={profile} races={races} activities={activities} onNav={onNav} />
 
           {/* HERO ZONE — what should I do today?
               On training days: readiness (left) + planned session (right)
@@ -2408,48 +2493,44 @@
             </div>
           )}
 
-          {/* COACH VERDICT — if any, narrative form (actionable, contextual) */}
+          {/* KNEE RISK INDEX — combined daily score, action-oriented */}
+          {profile.cp && activities.length > 0 && (
+            <KneeRiskCard
+              profile={profile}
+              activities={activities}
+              checkins={checkins}
+              strengthSessions={strengthSessions}
+              onNav={onNav}
+              onStrengthStart={onStrengthStart}
+            />
+          )}
+
+          {/* WEEK STRIP — horizontal mini-timeline of the 7 days */}
+          <div className="mb-3">
+            <WeekStripCard profile={profile} planOverrides={planOverrides} activities={activities} onNav={onNav} />
+          </div>
+
+          {/* COACH VERDICT — narrative big-picture, less daily-actionable than knee risk above */}
           {coachVerdict && <div className="mb-3"><CoachCard verdict={coachVerdict} compact onMore={() => onNav('analytics')} /></div>}
 
           {/* FITNESS NARRATIVE — fallback when no coach verdict (would be redundant).
               Translates forme/fatigue/fraîcheur into a sentence instead of bare numbers. */}
           {!coachVerdict && fitnessSummary && (() => {
-            // Compose the narrative phrase
             const ctl = fitnessSummary.ctl;
             const atl = fitnessSummary.atl;
             const tsb = fitnessSummary.tsb;
-            // CTL trend over last 14 days vs current — positive = building, negative = detraining
-            // Use the series; index 0 in series is oldest, last is today
-            // We approximate: if CTL > 30, decent base; if < 15, low base
             let baseDesc;
             if (ctl >= 50) baseDesc = "ta forme de fond est solide";
             else if (ctl >= 30) baseDesc = "ta forme de fond est en construction";
             else if (ctl >= 15) baseDesc = "ta forme de fond est encore légère";
             else baseDesc = "ta forme de fond est faible (peu d'activités récentes)";
 
-            // Freshness narrative
             let freshDesc, action, freshTone;
-            if (tsb >= 15) {
-              freshDesc = "tu es très frais";
-              action = "moment idéal pour viser un record ou tester ton seuil";
-              freshTone = 'positive';
-            } else if (tsb >= 5) {
-              freshDesc = "tu es bien reposé";
-              action = "bon état pour une séance qualité ou une course";
-              freshTone = 'positive';
-            } else if (tsb >= -5) {
-              freshDesc = "tu es en équilibre";
-              action = "maintien possible, séance normale OK";
-              freshTone = 'neutral';
-            } else if (tsb >= -15) {
-              freshDesc = "tu accumules de la fatigue";
-              action = "phase de charge, surveille les signaux corporels";
-              freshTone = 'caution';
-            } else {
-              freshDesc = "tu es très fatigué";
-              action = "il faudrait alléger l'intensité quelques jours";
-              freshTone = 'negative';
-            }
+            if (tsb >= 15) { freshDesc = "tu es très frais"; action = "moment idéal pour viser un record ou tester ton seuil"; freshTone = 'positive'; }
+            else if (tsb >= 5) { freshDesc = "tu es bien reposé"; action = "bon état pour une séance qualité ou une course"; freshTone = 'positive'; }
+            else if (tsb >= -5) { freshDesc = "tu es en équilibre"; action = "maintien possible, séance normale OK"; freshTone = 'neutral'; }
+            else if (tsb >= -15) { freshDesc = "tu accumules de la fatigue"; action = "phase de charge, surveille les signaux corporels"; freshTone = 'caution'; }
+            else { freshDesc = "tu es très fatigué"; action = "il faudrait alléger l'intensité quelques jours"; freshTone = 'negative'; }
 
             const toneColor = { positive: 'var(--positive)', caution: 'var(--caution)', negative: 'var(--negative)', neutral: 'var(--text)' }[freshTone];
 
@@ -2464,7 +2545,6 @@
                 <div className="t-body mb-3" style={{ color: 'var(--text)' }}>
                   Aujourd'hui, {baseDesc} et <span style={{ color: toneColor, fontWeight: 600 }}>{freshDesc}</span>. {action[0].toUpperCase() + action.slice(1)}.
                 </div>
-                {/* Numbers as reference, smaller */}
                 <div className="flex items-center gap-4 md:gap-6 pt-3 border-t flex-wrap" style={{ borderColor: 'var(--border)' }}>
                   <div title={TERMS.ctl.tooltip}>
                     <span className="t-meta-dim" style={{ color: 'var(--text-faint)' }}>FORME DE FOND</span>{' '}
@@ -2485,11 +2565,6 @@
             );
           })()}
 
-          {/* WEEK STRIP — horizontal mini-timeline of the 7 days */}
-          <div className="mb-3">
-            <WeekStripCard profile={profile} planOverrides={planOverrides} activities={activities} onNav={onNav} />
-          </div>
-
           {/* LAST ACTIVITY — secondary, smaller */}
           {lastAct && (
             <div className="mb-3"><LastActivityCard activity={lastAct} cp={profile.cp} /></div>
@@ -2509,6 +2584,194 @@
             <div className="t-meta-dim" style={{ fontSize: 10 }}>{checkins.length} check-in{checkins.length > 1 ? 's' : ''} · {activities.length} activité{activities.length > 1 ? 's' : ''}</div>
           </div>
         </div>
+      );
+    }
+
+    // ========================================================================
+    // KNEE RISK CARD — compact Today widget exposing the combined risk index
+    // ========================================================================
+    function KneeRiskCard({ profile, activities, checkins, strengthSessions, onNav, onStrengthStart }) {
+      const data = useMemo(() => {
+        const acts = (activities || []).map(a => ({ ...a, tss: computeTSS(a, profile.cp) }));
+        const acwr = computeACWR(acts);
+        return computeKneeRiskIndex(profile, activities, checkins, strengthSessions, acwr);
+      }, [profile, activities, checkins, strengthSessions]);
+
+      // Always show — it's a permanent indicator. Even at score 0 it teaches what's tracked.
+      const { total, driver, zone, zoneColor, zoneLabel } = data;
+
+      let actionText = null, actionLabel = null, actionFn = null;
+      if (zone === 'critical' || zone === 'high') {
+        if (driver.key === 'pain') { actionText = 'Repos qualité 24-48h, pas de fractionné. Glaçage + étirement psoas.'; }
+        else if (driver.key === 'renfo' && profile.showStrength !== false) {
+          actionText = '15 minutes de Séance B maintenant = score qui chute de 20 points.';
+          actionLabel = 'DÉMARRER SÉANCE B';
+          actionFn = () => onStrengthStart && onStrengthStart('B');
+        }
+        else if (driver.key === 'acwr') { actionText = 'La charge monte trop vite. Allège la prochaine séance qualité de 25%.'; }
+        else if (driver.key === 'profile') { actionText = 'Profil à risque permanent — la talonnette + renfo régulier sont la seule défense durable.'; }
+      } else if (zone === 'moderate') {
+        actionText = `Surveillé. Facteur principal : ${driver.label.toLowerCase()}.`;
+        if (driver.key === 'renfo' && profile.showStrength !== false) {
+          actionLabel = 'VOIR PROGRAMME';
+          actionFn = () => onNav && onNav('plan');
+        }
+      } else {
+        actionText = 'Genou en zone safe. Continue exactement ce que tu fais.';
+      }
+
+      return (
+        <Card className="p-5 mb-4" accent={zoneColor}>
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div className="flex items-center gap-4 min-w-0">
+              <div className="flex-shrink-0">
+                <div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>RISQUE GENOU</div>
+                <div className="flex items-baseline gap-1">
+                  <div className="font-display font-extrabold leading-none tabular" style={{ fontSize: 44, color: zoneColor }}>{total}</div>
+                  <div className="font-mono text-xs" style={{ color: 'var(--text-faint)' }}>/100</div>
+                </div>
+              </div>
+              <div className="min-w-0">
+                <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: zoneColor }}>{zoneLabel}</div>
+                <div className="text-sm leading-snug" style={{ color: 'var(--text)' }}>{actionText}</div>
+              </div>
+            </div>
+            {actionLabel && actionFn && (
+              <Button variant="secondary" size="sm" onClick={(e) => { e.stopPropagation(); actionFn(); }} icon={IconDumbbell} style={{ background: zoneColor, color: '#000', borderColor: zoneColor }}>
+                {actionLabel}
+              </Button>
+            )}
+          </div>
+          {/* Mini contributors bar */}
+          <div className="mt-3 pt-3 border-t flex items-center gap-3 flex-wrap" style={{ borderColor: 'var(--border)' }}>
+            {[
+              { l: 'Douleur', v: data.painScore, w: 35 },
+              { l: 'Renfo', v: data.renfoScore, w: 25 },
+              { l: 'Charge', v: data.acwrScore, w: 25 },
+              { l: 'Profil', v: data.profileScore, w: 15 },
+            ].map((s, i) => (
+              <div key={i} className="flex items-center gap-1.5 font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
+                <span>{s.l.toUpperCase()}</span>
+                <span className="tabular" style={{ color: s.v > 50 ? zoneColor : 'var(--text-dim)' }}>{Math.round(s.v)}</span>
+                <span style={{ opacity: 0.4 }}>·{s.w}%</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      );
+    }
+
+    // ========================================================================
+    // RACE COUNTDOWN HERO — top-of-Today banner for the next future race.
+    // Shows days remaining, projected time vs target objective, ON/OFF TRACK status.
+    // The single most important visual on Today: keeps the goal alive every morning.
+    // ========================================================================
+    function RaceCountdownHero({ profile, races, activities, onNav }) {
+      const data = useMemo(() => {
+        if (!races || !races.length || !profile.cp || !profile.weightKg) return null;
+        const now = new Date(); now.setHours(0, 0, 0, 0);
+        const future = (races || []).filter(r => new Date(r.date) >= now).sort((a, b) => new Date(a.date) - new Date(b.date));
+        if (!future.length) return null;
+        const race = future[0];
+        const raceDate = new Date(race.date);
+        const daysToRace = Math.ceil((raceDate.getTime() - now.getTime()) / 86400000);
+
+        const distKm = (() => {
+          const s = String(race.distance || '').toLowerCase();
+          if (s.includes('marathon')) return 42.2;
+          if (s.includes('semi')) return 21.1;
+          const m = s.match(/(\d+(?:\.\d+)?)/);
+          return m ? parseFloat(m[1]) : null;
+        })();
+        if (!distKm) return null;
+
+        const targetSec = parsePRSec((race.objective || '').replace(/sub-?/i, '').trim());
+
+        // Current race prediction (uses live tsbNow so the hero reflects today's session)
+        const acts = (activities || []).map(a => ({ ...a, tss: computeTSS(a, profile.cp) }));
+        const f = computeFitness(acts);
+        const tsbForToday = (typeof f.tsbNow === 'number') ? f.tsbNow : f.tsb;
+        const allBests = (activities || []).map(a => a.bestEfforts).filter(Boolean);
+        const merged = {};
+        allBests.forEach(b => Object.entries(b).forEach(([d, p]) => {
+          const pNum = Number(p);
+          if (!Number.isFinite(pNum) || pNum <= 0) return;
+          if (!merged[d] || pNum > merged[d]) merged[d] = pNum;
+        }));
+        const pred = predictRaceTimeV2(profile.cp, 15000, profile.weightKg, distKm, profile.prs, merged, tsbForToday);
+
+        return { race, raceDate, daysToRace, distKm, targetSec, predictedSec: pred?.timeSec || null };
+      }, [profile, races, activities]);
+
+      if (!data) return null;
+      const { race, raceDate, daysToRace, targetSec, predictedSec } = data;
+
+      const fmtTime = (sec) => {
+        if (!sec) return '—';
+        const h = Math.floor(sec / 3600);
+        const m = Math.floor((sec % 3600) / 60);
+        const s = Math.round(sec % 60);
+        if (h > 0) return `${h}h${String(m).padStart(2, '0')}'${String(s).padStart(2, '0')}`;
+        return `${m}'${String(s).padStart(2, '0')}`;
+      };
+
+      // Status: ON TRACK / SERRÉ / PROCHE / OFF TRACK
+      let statusLabel, statusColor, deltaLabel = null;
+      if (targetSec && predictedSec) {
+        const delta = predictedSec - targetSec;
+        if (delta <= -15) { statusLabel = 'EN AVANCE'; statusColor = 'var(--positive)'; }
+        else if (delta <= 0) { statusLabel = 'SUR L\'OBJECTIF'; statusColor = 'var(--positive)'; }
+        else if (delta <= 30) { statusLabel = 'SERRÉ'; statusColor = 'var(--caution)'; }
+        else { statusLabel = 'EN RETARD'; statusColor = 'var(--negative)'; }
+        const sign = delta >= 0 ? '+' : '−';
+        const absDelta = Math.abs(Math.round(delta));
+        const dm = Math.floor(absDelta / 60), ds = absDelta % 60;
+        deltaLabel = `${sign}${dm > 0 ? `${dm}'${String(ds).padStart(2, '0')}` : `${ds}s`}`;
+      } else if (predictedSec) {
+        statusLabel = 'PRÉDICTION';
+        statusColor = 'var(--compass)';
+      } else {
+        statusLabel = 'EN COLLECTE';
+        statusColor = 'var(--text-dim)';
+      }
+
+      // Phase classification (mirrors RaceTimeline)
+      let phaseLabel;
+      if (daysToRace <= 14) phaseLabel = 'AFFÛTAGE';
+      else if (daysToRace <= 28) phaseLabel = 'PIC';
+      else if (daysToRace <= 56) phaseLabel = 'BUILD';
+      else phaseLabel = 'BASE';
+
+      return (
+        <button onClick={() => onNav && onNav('plan')} className="btn lift w-full text-left mb-4 relative overflow-hidden rounded-2xl p-5" style={{ background: 'var(--bg-elev)', border: `1px solid ${statusColor}40` }}>
+          <div className="absolute inset-0 pointer-events-none opacity-[0.07]" style={{ background: `radial-gradient(circle at top right, ${statusColor}, transparent 60%)` }} />
+          <div className="relative flex items-center justify-between gap-4 flex-wrap">
+            <div className="flex items-center gap-5 min-w-0">
+              <div className="flex-shrink-0">
+                <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>{phaseLabel}</div>
+                <div className="font-display font-extrabold leading-none tabular" style={{ fontSize: 'clamp(40px, 7vw, 60px)', color: statusColor }}>
+                  J−{daysToRace}
+                </div>
+              </div>
+              <div className="min-w-0">
+                <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>PROCHAINE COURSE</div>
+                <div className="font-display text-xl font-bold truncate">{race.name}</div>
+                <div className="font-mono text-xs" style={{ color: 'var(--text-faint)' }}>{race.distance} · {fmtDate(raceDate, true)}</div>
+              </div>
+            </div>
+            <div className="text-right flex-shrink-0">
+              <div className="font-mono text-[10px] tracking-widest mb-1.5 px-2 py-0.5 rounded-full inline-block" style={{ background: `${statusColor}18`, color: statusColor, border: `1px solid ${statusColor}40` }}>{statusLabel}</div>
+              <div className="font-display text-2xl font-bold tabular" style={{ color: statusColor }}>{fmtTime(predictedSec)}</div>
+              {targetSec ? (
+                <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
+                  objectif {fmtTime(targetSec)} <span style={{ color: statusColor }}>({deltaLabel})</span>
+                </div>
+              ) : (
+                <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>prédiction actuelle</div>
+              )}
+            </div>
+          </div>
+        </button>
       );
     }
 
@@ -13197,6 +13460,21 @@
           setPendingPainCheckin(activity);
         }
 
+        // Habit anchor — after an easy run with renfo enabled and no recent session,
+        // nudge the user while their legs are warm. Once per import, dismissible.
+        if (profile.showStrength !== false && isRunLike && km >= 3 && ageHours <= 6) {
+          const isEasy = !activity.normalizedPower || (profile.cp && (activity.normalizedPower / profile.cp) < 0.85);
+          const lastRenfoMs = strengthSessions[0] ? strengthSessions[0].date : 0;
+          const daysSinceRenfo = lastRenfoMs ? (Date.now() - lastRenfoMs) / 86400000 : 999;
+          if (isEasy && daysSinceRenfo >= 4) {
+            toast.push("Jambes chaudes. 15min de Séance B = ton genou tient la semaine.", {
+              kind: 'info',
+              duration: 18000,
+              action: { label: 'DÉMARRER B', icon: IconDumbbell, onClick: () => handleStrengthStart('B') },
+            });
+          }
+        }
+
         // Auto-update CP if a new better effort detected
         const allBests = updated.map(a => a.bestEfforts).filter(Boolean);
         const merged = {};
@@ -13390,6 +13668,7 @@
                 checkins={checkins}
                 todayCheckin={todayCheckin}
                 activities={activities}
+                strengthSessions={strengthSessions}
                 races={races}
                 plannedSession={plannedSession}
                 planOverrides={planOverrides}
