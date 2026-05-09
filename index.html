@@ -356,6 +356,7 @@
       planTotalWeeks: 12,
       unitMode: 'power',      // 'power' | 'pace' — for users without Stryd
       discipline: 'road',     // 'road' | 'trail' — future-proofing for GAP/D+ weighting
+      showStrength: true,     // toggle Renfo program visibility (CTA, suggestions, tab)
     };
 
     function getProfile() {
@@ -1659,6 +1660,35 @@
     const IconLayers = (p) => <Ico {...p}><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></Ico>;
     const IconUndo = (p) => <Ico {...p}><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></Ico>;
     const IconSave = (p) => <Ico {...p}><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></Ico>;
+    const IconRoute = (p) => <Ico {...p}><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></Ico>;
+    const IconTrendingDown = (p) => <Ico {...p}><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/></Ico>;
+    const IconCircle = (p) => <Ico {...p}><circle cx="12" cy="12" r="10"/></Ico>;
+    const IconBan = (p) => <Ico {...p}><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></Ico>;
+    const IconSparkle = (p) => <Ico {...p}><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6 5.6 18.4"/></Ico>;
+    const IconSun = (p) => <Ico {...p}><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></Ico>;
+    const IconCloud = (p) => <Ico {...p}><path d="M17.5 19a4.5 4.5 0 1 0-1.41-8.79 6 6 0 0 0-11.16 2.62A3.5 3.5 0 0 0 5.5 19h12z"/></Ico>;
+    const IconCloudRain = (p) => <Ico {...p}><path d="M17.5 16a4.5 4.5 0 1 0-1.41-8.79 6 6 0 0 0-11.16 2.62A3.5 3.5 0 0 0 5.5 16"/><line x1="8" y1="19" x2="8" y2="21"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="16" y1="19" x2="16" y2="21"/></Ico>;
+    const IconSnow = (p) => <Ico {...p}><line x1="12" y1="2" x2="12" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/><line x1="19.07" y1="4.93" x2="4.93" y2="19.07"/></Ico>;
+    const IconBed = (p) => <Ico {...p}><path d="M2 4v16M2 8h18a2 2 0 0 1 2 2v10M2 17h20"/><circle cx="7" cy="13" r="2"/></Ico>;
+    const IconSmilePlus = (p) => <Ico {...p}><path d="M21 12c0 4.97-4.03 9-9 9s-9-4.03-9-9 4.03-9 9-9c1.05 0 2.07.18 3 .51"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/><line x1="19" y1="3" x2="19" y2="9"/><line x1="22" y1="6" x2="16" y2="6"/></Ico>;
+    const IconFrown = (p) => <Ico {...p}><circle cx="12" cy="12" r="10"/><path d="M16 16s-1.5-2-4-2-4 2-4 2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></Ico>;
+    const IconMeh = (p) => <Ico {...p}><circle cx="12" cy="12" r="10"/><line x1="8" y1="15" x2="16" y2="15"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></Ico>;
+
+    // ========================================================================
+    // SESSION TYPES — single source of truth for session type metadata
+    // ========================================================================
+    // Each entry: { v: type key, l: French label, emoji: for DayEditModal picker only,
+    // Icon: SVG component for everywhere else, color: semantic token }
+    // The DayEditModal type picker is the ONLY allowed emoji exception (CLAUDE.md).
+    const SESSION_TYPES = [
+      { v: 'rest',      l: 'Repos',         emoji: '🛌', Icon: IconBed,      color: 'var(--text-faint)' },
+      { v: 'easy',      l: 'Footing easy',  emoji: '🏃', Icon: IconActivity, color: 'var(--positive)' },
+      { v: 'tempo',     l: 'Seuil / Tempo', emoji: '⚡', Icon: IconZap,      color: 'var(--signal)' },
+      { v: 'intervals', l: 'Intervalles',   emoji: '🔥', Icon: IconFlame,    color: 'var(--negative)' },
+      { v: 'long',      l: 'Sortie longue', emoji: '🛣️', Icon: IconRoute,    color: 'var(--compass)' },
+      { v: 'test',      l: 'Test',          emoji: '🎯', Icon: IconTarget,   color: 'var(--caution)' },
+    ];
+    const SESSION_TYPE_MAP = SESSION_TYPES.reduce((m, t) => { m[t.v] = t; return m; }, {});
 
     // ========================================================================
     // TOAST CONTEXT — global notification system with optional undo
@@ -1713,6 +1743,93 @@
             })}
           </div>
         </ToastContext.Provider>
+      );
+    }
+
+    // ========================================================================
+    // DIALOG CONTEXT — themed alert/confirm/prompt replacing native browser dialogs
+    // ========================================================================
+    // dialog.alert({ title, message }) → Promise<void>
+    // dialog.confirm({ title, message, confirmLabel?, cancelLabel?, danger? }) → Promise<boolean>
+    // dialog.prompt({ title, message, defaultValue?, placeholder? }) → Promise<string|null>
+    const DialogContext = React.createContext({
+      alert: () => Promise.resolve(),
+      confirm: () => Promise.resolve(false),
+      prompt: () => Promise.resolve(null),
+    });
+    const useDialog = () => React.useContext(DialogContext);
+
+    function DialogProvider({ children }) {
+      const [dialog, setDialog] = useState(null);
+      const [inputValue, setInputValue] = useState('');
+
+      const close = (value) => {
+        if (dialog) dialog.resolve(value);
+        setDialog(null);
+        setInputValue('');
+      };
+
+      const api = useMemo(() => ({
+        alert: (opts) => new Promise(resolve => setDialog({ type: 'alert', resolve, ...opts })),
+        confirm: (opts) => new Promise(resolve => setDialog({ type: 'confirm', resolve, ...opts })),
+        prompt: (opts) => new Promise(resolve => {
+          setInputValue(opts?.defaultValue || '');
+          setDialog({ type: 'prompt', resolve, ...opts });
+        }),
+      }), []);
+
+      useEffect(() => {
+        if (!dialog) return;
+        const onKey = (e) => {
+          if (e.key === 'Escape') close(dialog.type === 'confirm' ? false : dialog.type === 'prompt' ? null : undefined);
+          if (e.key === 'Enter' && dialog.type !== 'prompt') {
+            e.preventDefault();
+            close(dialog.type === 'confirm' ? true : undefined);
+          }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+      }, [dialog]); // eslint-disable-line react-hooks/exhaustive-deps
+
+      return (
+        <DialogContext.Provider value={api}>
+          {children}
+          {dialog && (
+            <div onClick={() => close(dialog.type === 'confirm' ? false : dialog.type === 'prompt' ? null : undefined)}
+              style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(3px)', WebkitBackdropFilter: 'blur(3px)', zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+              <div onClick={(e) => e.stopPropagation()} className="scale-in"
+                style={{ background: 'var(--bg)', border: `1px solid ${dialog.danger ? 'var(--critical)' : 'var(--border-bright)'}`, borderRadius: 16, width: '100%', maxWidth: 460, boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
+                <div className="px-6 pt-5 pb-3">
+                  {dialog.title && <div className="font-display text-lg font-bold mb-2" style={{ color: dialog.danger ? 'var(--critical)' : 'var(--text)' }}>{dialog.title}</div>}
+                  {dialog.message && <div className="text-sm leading-relaxed whitespace-pre-line" style={{ color: 'var(--text-dim)' }}>{dialog.message}</div>}
+                  {dialog.type === 'prompt' && (
+                    <input
+                      autoFocus
+                      type="text"
+                      value={inputValue}
+                      onChange={(e) => setInputValue(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); close(inputValue); } }}
+                      placeholder={dialog.placeholder || ''}
+                      className="input mt-3"
+                    />
+                  )}
+                </div>
+                <div className="px-6 pb-4 pt-2 flex items-center justify-end gap-2">
+                  {(dialog.type === 'confirm' || dialog.type === 'prompt') && (
+                    <Button variant="ghost" onClick={() => close(dialog.type === 'confirm' ? false : null)}>{dialog.cancelLabel || 'Annuler'}</Button>
+                  )}
+                  <Button
+                    variant={dialog.danger ? 'secondary' : 'primary'}
+                    onClick={() => close(dialog.type === 'confirm' ? true : dialog.type === 'prompt' ? inputValue : undefined)}
+                    style={dialog.danger ? { background: 'var(--critical)', color: '#fff', borderColor: 'var(--critical)' } : undefined}
+                  >
+                    {dialog.confirmLabel || (dialog.type === 'alert' ? 'OK' : dialog.type === 'prompt' ? 'Valider' : 'Confirmer')}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+        </DialogContext.Provider>
       );
     }
 
@@ -1810,17 +1927,17 @@
     // STRENGTH PROGRAM DATA
     // ========================================================================
     const EXERCISES = {
-      squat_eccentric: { name: 'Squat excentrique', subtitle: 'Descente lente 4 sec', videoId: 'D7vwmD9m-MY', why: 'Renforce le tendon rotulien (protocole Stanish validé scientifiquement). Ton assurance anti-tendinite.', steps: ['Pieds écartés largeur bassin, poids sur tout le pied.', "Descends en 4 secondes pleines jusqu'à cuisses parallèles.", 'Remonte normalement en 1-2 secondes.'], keyPoint: 'La descente doit être LENTE : compte "1001, 1002, 1003, 1004".', avoid: "Genoux qui rentrent vers l'intérieur." },
-      dynamic_lunge: { name: 'Fente avant alternée', subtitle: "Dynamique, un pas après l'autre", videoId: 'QOVaHwm-Q6U', why: 'Force unilatérale + stabilité du genou. Plus proche du geste de course que la fente statique.', steps: ["Grand pas en avant, descends jusqu'à 90° sur le genou avant.", 'Reviens à la position debout en poussant sur le talon avant.', "Enchaîne avec l'autre jambe, alterné."], keyPoint: 'Torse vertical, genou avant jamais devant la pointe du pied.', avoid: 'Se pencher en avant pour soulager la jambe avant.' },
-      soleus_calf: { name: 'Mollets genou plié', subtitle: 'Ciblage soleus, assis ou debout', videoId: 'gE1PJUrbmoM', why: 'Le soleus est LE muscle le plus sollicité en course et le plus souvent négligé. Un soleus fort = moins de contraintes sur le tendon rotulien.', steps: ['Assis, genoux à 90°, pieds au sol.', 'Monte sur la pointe des pieds, tiens 1 sec en haut.', 'Redescends lentement.'], keyPoint: 'Le genou reste plié à 90° tout le long — ça isole le soleus.', avoid: "Tendre les jambes pendant l'exercice." },
-      hip_flexor_stretch: { name: 'Étirement hip flexor', subtitle: 'Couch stretch', videoId: 'bCRfS2beNOc', why: 'Ta position assise raccourcit le psoas, ce qui bloque ton extension de hanche en course. Cet étirement seul peut transformer ta foulée.', steps: ['À genoux, un pied contre le mur (tibia vertical).', "L'autre pied devant, genou à 90°.", "Bascule le bassin vers l'avant en contractant le fessier arrière."], keyPoint: "Tu dois sentir l'étirement devant la hanche arrière, pas dans le dos.", avoid: 'Cambrer les lombaires — garde le nombril rentré.' },
-      single_leg_bridge: { name: 'Pont fessier unilatéral', subtitle: 'Pousser sur le talon', videoId: 'VUl8R0kn6v4', why: 'Active le grand fessier, inhibé par la position assise. Clé pour stabiliser le bassin et protéger le genou.', steps: ["Allongé, un pied au sol, autre jambe tendue en l'air.", 'Pousse sur le talon pour décoller le bassin, serre le fessier en haut.', 'Redescends sans toucher le sol.'], keyPoint: 'Pousse sur le TALON, pas la pointe.', avoid: 'Bassin qui bascule du côté de la jambe tendue.' },
-      clamshell: { name: 'Clamshell élastique', subtitle: 'Fessier moyen isolé', videoId: 'pR1AkgMmcpU', why: "Isole le moyen fessier, clé pour ta dysmétrie et prévenir le syndrome de l'essuie-glace.", steps: ['Sur le côté, genoux pliés à 45°, élastique au-dessus des genoux.', 'Pieds collés, écarte le genou du dessus sans bouger le bassin.', 'Contrôle la descente.'], keyPoint: 'Le bassin reste stable, ne roule pas en arrière.', avoid: 'Aller vite en perdant la tension.' },
+      squat_eccentric: { name: 'Squat excentrique', subtitle: 'Descente lente 4 sec', videoId: 'D7vwmD9m-MY', why: 'Renforce les quadriceps de manière contrôlée. Pour PFPS, descente limitée à 60° (pas plus bas) pour éviter de comprimer la rotule.', steps: ['Pieds écartés largeur bassin, poids sur tout le pied.', "Descends en 4 secondes pleines jusqu'à 60° max (pas en dessous).", 'Remonte normalement en 1-2 secondes.'], keyPoint: 'Descente LENTE et limitée — compte "1001, 1002, 1003, 1004". Stop à 60° tant que la rotule est sensible.', avoid: "Descendre trop bas (>90°) ou laisser le genou rentrer vers l'intérieur." },
+      dynamic_lunge: { name: 'Fente avant alternée', subtitle: "Dynamique, un pas après l'autre", videoId: 'QOVaHwm-Q6U', why: 'Force unilatérale + alignement genou-cheville-hanche. Pour PFPS, la priorité c\'est le contrôle du genou (pas de valgus).', steps: ["Grand pas en avant, descends jusqu'à 90° sur le genou avant.", 'Reviens à la position debout en poussant sur le talon avant.', "Enchaîne avec l'autre jambe, alterné."], keyPoint: 'Torse vertical, genou avant aligné sur le 2ème orteil. Si douleur, raccourcis l\'amplitude.', avoid: "Genou qui part vers l'intérieur (valgus) ou qui dépasse la pointe du pied." },
+      soleus_calf: { name: 'Mollets genou plié', subtitle: 'Ciblage soleus, assis ou debout', videoId: 'gE1PJUrbmoM', why: 'Un soleus fort absorbe plus de chocs au sol, ce qui réduit les contraintes transmises à la rotule. Très utile pour PFPS.', steps: ['Assis, genoux à 90°, pieds au sol.', 'Monte sur la pointe des pieds, tiens 1 sec en haut.', 'Redescends lentement.'], keyPoint: 'Le genou reste plié à 90° tout le long — ça isole le soleus.', avoid: "Tendre les jambes pendant l'exercice." },
+      hip_flexor_stretch: { name: 'Étirement hip flexor', subtitle: 'Couch stretch', videoId: 'bCRfS2beNOc', why: 'Le psoas court tire le bassin en antéversion, ce qui bascule la rotule vers l\'extérieur — facteur clé du PFPS. Cet étirement libère la mécanique.', steps: ['À genoux, un pied contre le mur (tibia vertical).', "L'autre pied devant, genou à 90°.", "Bascule le bassin vers l'avant en contractant le fessier arrière."], keyPoint: "Tu dois sentir l'étirement devant la hanche arrière, pas dans le dos.", avoid: 'Cambrer les lombaires — garde le nombril rentré.' },
+      single_leg_bridge: { name: 'Pont fessier unilatéral', subtitle: 'Pousser sur le talon', videoId: 'VUl8R0kn6v4', why: 'Le grand fessier contrôle l\'orientation du fémur sous la rotule. Un fessier fort = moins de friction fémoro-patellaire. C\'est le pilier rééducation PFPS.', steps: ["Allongé, un pied au sol, autre jambe tendue en l'air.", 'Pousse sur le talon pour décoller le bassin, serre le fessier en haut.', 'Redescends sans toucher le sol.'], keyPoint: 'Pousse sur le TALON, pas la pointe.', avoid: 'Bassin qui bascule du côté de la jambe tendue.' },
+      clamshell: { name: 'Clamshell élastique', subtitle: 'Fessier moyen isolé', videoId: 'pR1AkgMmcpU', why: "Le moyen fessier empêche le genou de partir en dedans (valgus dynamique). Faiblesse de ce muscle = cause #1 du PFPS chez les coureurs. Indispensable.", steps: ['Sur le côté, genoux pliés à 45°, élastique au-dessus des genoux.', 'Pieds collés, écarte le genou du dessus sans bouger le bassin.', 'Contrôle la descente.'], keyPoint: 'Le bassin reste stable, ne roule pas en arrière.', avoid: 'Aller vite en perdant la tension.' },
     };
 
     const STRENGTH_SESSIONS = {
-      A: { id: 'A', name: 'SÉANCE A', title: 'Jambes & Genou', subtitle: 'Tendon rotulien + force coureur', accent: '#D4FF00', duration: 15, exerciseKeys: ['squat_eccentric', 'dynamic_lunge', 'soleus_calf'] },
-      B: { id: 'B', name: 'SÉANCE B', title: 'Hanches & Fessiers', subtitle: 'Anti-sédentarité + dysmétrie', accent: '#FF8040', duration: 15, exerciseKeys: ['hip_flexor_stretch', 'single_leg_bridge', 'clamshell'] },
+      A: { id: 'A', name: 'SÉANCE A', title: 'Jambes & Genou', subtitle: 'Quadriceps + soleus, amplitude limitée pour PFPS', accent: '#D4FF00', duration: 15, exerciseKeys: ['squat_eccentric', 'dynamic_lunge', 'soleus_calf'] },
+      B: { id: 'B', name: 'SÉANCE B', title: 'Hanches & Fessiers', subtitle: 'Moyen fessier + psoas — le pilier PFPS', accent: '#FF8040', duration: 15, exerciseKeys: ['hip_flexor_stretch', 'single_leg_bridge', 'clamshell'] },
     };
     const STRENGTH_PHASES = [
       { id: 1, name: 'Découverte', shortName: 'PHASE 1', weeks: [1, 2], multiplier: 0.6 },
@@ -1873,7 +1990,7 @@
     function readinessAdvice(score, kneeScore, plannedType) {
       // plannedType: 'easy' | 'tempo' | 'intervals' | 'long' | 'rest' | 'unknown'
       if (kneeScore >= 7) return { level: 'rest', title: 'Repos strict', accent: '#FF5B5B', tag: 'NE PAS COURIR', icon: IconAlert, action: "Genou trop douloureux. Repos complet aujourd'hui. Si ça persiste 2 jours → kiné.", replacement: 'Mobilité douce, marche 20 min max, glace si gonflement.' };
-      if (kneeScore >= 5) return { level: 'easy', title: 'Pas de course', accent: '#FF8040', tag: 'GENOU EN ALERTE', icon: IconAlert, action: "Le genou demande de l'attention. Pas de course aujourd'hui — risque de bascule en tendinite.", replacement: 'Renfo Séance B (hanches/fessiers, sans charge sur le genou) ou vélo 30 min très doux.' };
+      if (kneeScore >= 5) return { level: 'easy', title: 'Pas de course', accent: '#FF8040', tag: 'GENOU EN ALERTE', icon: IconAlert, action: "Le genou demande de l'attention. Pas de course aujourd'hui — la douleur fémoro-patellaire (PFPS) s'aggrave vite si on force.", replacement: 'Renfo hanches/fessiers (Séance B, sans charge directe sur le genou) ou vélo 30 min très doux.' };
 
       if (score >= 80) return { level: 'go', title: 'Feu vert total', accent: '#8FE86A', tag: 'PLEINE FORME', icon: IconZap, action: 'Corps et tête sont prêts. Fais ta séance prévue à 100%. Si tu te sens vraiment fort → tu peux pousser légèrement.', replacement: null };
       if (score >= 65) return { level: 'normal', title: 'Séance normale', accent: '#D4FF00', tag: 'TOUT EST OK', icon: IconActivity, action: 'Signaux dans la norme. Fais ta séance Stryd comme planifiée, pas de modification.', replacement: null };
@@ -2338,7 +2455,7 @@
           {/* QUICK ACTIONS — minimal, ghost-style */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-6">
             <QuickAction icon={IconUpload} label="Importer activité" sublabel=".tcx · .gpx · .csv" onClick={onImport} />
-            <QuickAction icon={IconDumbbell} label="Séance de renfo" sublabel="A · B" onClick={() => onStrengthStart('suggest')} />
+            {profile.showStrength !== false && <QuickAction icon={IconDumbbell} label="Séance de renfo" sublabel="A · B" onClick={() => onStrengthStart('suggest')} />}
             <QuickAction icon={IconCalendar} label="Ajouter course" sublabel="Calendrier" onClick={onAddRace} />
             <QuickAction icon={IconTarget} label="Profil" sublabel={`Seuil ${profile.cp}W`} onClick={() => onNav('profile')} />
           </div>
@@ -2362,14 +2479,7 @@
       const wsStart = getWeekStart(now);
       const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
       const dayShort = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
-      const typeStyles = {
-        rest: { emoji: '·', color: 'var(--text-faint)', label: 'Repos' },
-        easy: { emoji: '🏃', color: 'var(--positive)', label: 'Footing' },
-        tempo: { emoji: '⚡', color: 'var(--signal)', label: 'Seuil' },
-        intervals: { emoji: '🔥', color: 'var(--negative)', label: 'Inter.' },
-        long: { emoji: '🛣️', color: 'var(--compass)', label: 'Longue' },
-        test: { emoji: '🎯', color: 'var(--caution)', label: 'Test' },
-      };
+      const shortLabels = { rest: 'Repos', easy: 'Footing', tempo: 'Seuil', intervals: 'Inter.', long: 'Longue', test: 'Test' };
       const days = dayKeys.map((dk, i) => {
         const d = new Date(wsStart); d.setDate(d.getDate() + i);
         const planned = getPlannedSession(profile, planOverrides, d);
@@ -2392,7 +2502,9 @@
           </div>
           <div className="grid grid-cols-7 gap-1.5 md:gap-2">
             {days.map((d, i) => {
-              const t = (d.planned && typeStyles[d.planned.type]) || typeStyles.rest;
+              const type = (d.planned && SESSION_TYPE_MAP[d.planned.type]) || SESSION_TYPE_MAP.rest;
+              const TypeIcon = type.Icon;
+              const isRest = !d.planned || d.planned.type === 'rest';
               return (
                 <button
                   key={i}
@@ -2408,9 +2520,11 @@
                   <div className="t-meta-dim mb-1" style={{ color: d.isToday ? 'var(--compass)' : 'var(--text-faint)', fontSize: 10 }}>
                     {dayShort[i]} {d.date.getDate()}
                   </div>
-                  <div className="text-base md:text-lg leading-none mb-1">{t.emoji}</div>
-                  <div className="leading-tight" style={{ color: t.color, fontSize: 10, fontWeight: 600 }}>
-                    {d.planned && d.planned.type !== 'rest' ? t.label : ''}
+                  <div className="mb-1 flex items-center justify-center" style={{ height: 18 }}>
+                    {isRest ? <span style={{ color: 'var(--text-faint)', fontSize: 14 }}>·</span> : <TypeIcon size={16} style={{ color: type.color }} />}
+                  </div>
+                  <div className="leading-tight" style={{ color: type.color, fontSize: 10, fontWeight: 600 }}>
+                    {!isRest ? shortLabels[d.planned.type] : ''}
                   </div>
                   {d.hasActivity && <div className="mt-auto pt-1.5"><div className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--positive)' }} /></div>}
                 </button>
@@ -2505,7 +2619,7 @@
         if (maxTarget > cp * 1.15) {
           out.push({
             color: 'var(--warn)',
-            icon: '⚠️',
+            Icon: IconAlert,
             text: `Cible max ${maxTarget}W = ${Math.round(maxTarget/cp*100)}% de ta puissance seuil. C'est très intense (zone VO2max). Si c'est volontaire (test, séance courte) OK ; sinon vise ${Math.round(cp*1.10)}W max.`,
           });
         }
@@ -2518,13 +2632,13 @@
             if (avgRdy < 60) {
               out.push({
                 color: 'var(--warn)',
-                icon: '🌙',
+                Icon: IconMoon,
                 text: `Ton readiness moyen des 3 derniers jours est ${Math.round(avgRdy)}/100. Cette séance dure pourrait être trop coûteuse — envisage de la décaler de 24h.`,
               });
             } else if (avgRdy >= 80) {
               out.push({
                 color: 'var(--go)',
-                icon: '⚡',
+                Icon: IconZap,
                 text: `Excellent readiness récent (${Math.round(avgRdy)}/100) — fenêtre idéale pour cette séance dure, vise le haut de ta cible.`,
               });
             }
@@ -2538,7 +2652,7 @@
           const s = Math.round((avgPace - m) * 60);
           out.push({
             color: 'var(--compass)',
-            icon: '🎯',
+            Icon: IconTarget,
             text: `Allure prévue : environ ${m}'${String(s).padStart(2,'0')}/km en moyenne (basé sur ton historique à cette puissance).`,
           });
         }
@@ -2572,20 +2686,25 @@
           {/* Smart insights */}
           {insights.length > 0 && (
             <div className="space-y-2 mb-4">
-              {insights.map((ins, i) => (
+              {insights.map((ins, i) => {
+                const I = ins.Icon;
+                return (
                 <div key={i} className="rounded-lg p-3 flex gap-2" style={{ background: `${ins.color}08`, border: `1px solid ${ins.color}30` }}>
-                  <div className="flex-shrink-0 text-base">{ins.icon}</div>
+                  <div className="flex-shrink-0" style={{ marginTop: 2 }}><I size={14} style={{ color: ins.color }} /></div>
                   <div className="text-sm leading-relaxed" style={{ color: 'var(--text)' }}>{ins.text}</div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
           {session.type === 'rest' ? (
             <div className="flex-1 flex flex-col justify-end">
-              <button onClick={() => onStrengthStart('suggest')} className="btn lift w-full px-4 py-3 rounded-xl font-mono text-[11px] tracking-widest flex items-center justify-center gap-2" style={{ background: 'rgba(212, 255, 0, 0.1)', border: '1px solid rgba(212, 255, 0, 0.3)', color: 'var(--accent)' }}>
-                <IconDumbbell size={14} /> SÉANCE DE RENFO À LA PLACE
-              </button>
+              {profile?.showStrength !== false && (
+                <button onClick={() => onStrengthStart('suggest')} className="btn lift w-full px-4 py-3 rounded-xl font-mono text-[11px] tracking-widest flex items-center justify-center gap-2" style={{ background: 'rgba(212, 255, 0, 0.1)', border: '1px solid rgba(212, 255, 0, 0.3)', color: 'var(--accent)' }}>
+                  <IconDumbbell size={14} /> SÉANCE DE RENFO À LA PLACE
+                </button>
+              )}
             </div>
           ) : (
             <div className="flex-1 flex flex-col justify-end">
@@ -2649,32 +2768,33 @@
 
       if (!weather) return null;
       const codeToInfo = (c) => {
-        if (c == null) return { e: '❓', l: '—' };
-        if (c <= 1) return { e: '☀️', l: 'Ensoleillé' };
-        if (c <= 3) return { e: '⛅', l: 'Variable' };
-        if (c <= 48) return { e: '🌫️', l: 'Brouillard' };
-        if (c <= 57) return { e: '🌦️', l: 'Bruine' };
-        if (c <= 67) return { e: '🌧️', l: 'Pluie' };
-        if (c <= 77) return { e: '🌨️', l: 'Neige' };
-        if (c <= 82) return { e: '🌧️', l: 'Averses' };
-        if (c <= 99) return { e: '⛈️', l: 'Orage' };
-        return { e: '❓', l: '—' };
+        if (c == null) return { Icon: IconCloud, l: '—' };
+        if (c <= 1) return { Icon: IconSun, l: 'Ensoleillé' };
+        if (c <= 3) return { Icon: IconCloud, l: 'Variable' };
+        if (c <= 48) return { Icon: IconCloud, l: 'Brouillard' };
+        if (c <= 57) return { Icon: IconCloudRain, l: 'Bruine' };
+        if (c <= 67) return { Icon: IconCloudRain, l: 'Pluie' };
+        if (c <= 77) return { Icon: IconSnow, l: 'Neige' };
+        if (c <= 82) return { Icon: IconCloudRain, l: 'Averses' };
+        if (c <= 99) return { Icon: IconCloudRain, l: 'Orage' };
+        return { Icon: IconCloud, l: '—' };
       };
       const info = codeToInfo(weather.codeMorn ?? weather.code);
+      const InfoIcon = info.Icon;
       const tDisplay = weather.tMorn != null ? Math.round(weather.tMorn) : Math.round((weather.tMin + weather.tMax) / 2);
       const precipDisplay = weather.precipMorn ?? weather.precip ?? 0;
       const windDisplay = weather.windMorn ?? weather.wind ?? 0;
       const advices = [];
-      if (tDisplay >= 26) advices.push('🥵 Chaleur — vise le bas de la fourchette puissance, prévois 500ml par heure.');
-      else if (tDisplay >= 20) advices.push('☀️ Conditions chaudes — hydrate-toi avant.');
-      else if (tDisplay <= 5) advices.push('🥶 Froid — bonnet et gants, échauffement plus long.');
-      if (precipDisplay >= 60) advices.push('☔ Pluie probable — tenue imperméable.');
-      if (windDisplay >= 30) advices.push(`💨 Vent fort (${Math.round(windDisplay)} km/h) — parcours abrité conseillé.`);
-      if (sessionType === 'intervals' && tDisplay >= 28) advices.push("🌡️ Trop chaud pour des intervalles — décale tôt le matin.");
+      if (tDisplay >= 26) advices.push('Chaleur — vise le bas de la fourchette puissance, prévois 500ml par heure.');
+      else if (tDisplay >= 20) advices.push('Conditions chaudes — hydrate-toi avant.');
+      else if (tDisplay <= 5) advices.push('Froid — bonnet et gants, échauffement plus long.');
+      if (precipDisplay >= 60) advices.push('Pluie probable — tenue imperméable.');
+      if (windDisplay >= 30) advices.push(`Vent fort (${Math.round(windDisplay)} km/h) — parcours abrité conseillé.`);
+      if (sessionType === 'intervals' && tDisplay >= 28) advices.push("Trop chaud pour des intervalles — décale tôt le matin.");
 
       return (
         <div className="flex items-start gap-3">
-          <div className="text-2xl flex-shrink-0">{info.e}</div>
+          <div className="flex-shrink-0" style={{ marginTop: 2 }}><InfoIcon size={22} style={{ color: 'var(--compass)' }} /></div>
           <div className="flex-1 min-w-0">
             <div className="t-meta mb-1" style={{ color: 'var(--text-faint)' }}>MÉTÉO PRÉVUE</div>
             <div className="t-body" style={{ color: 'var(--text)' }}>
@@ -2768,33 +2888,34 @@
 
       if (!sessionDate || error || !weather) return null;
 
-      // Map weather code → emoji + label
+      // Map weather code → icon + label
       const codeToInfo = (c) => {
-        if (c == null) return { e: '❓', l: '—' };
-        if (c === 0) return { e: '☀️', l: 'Ensoleillé' };
-        if (c <= 2) return { e: '⛅', l: 'Partiellement nuageux' };
-        if (c === 3) return { e: '☁️', l: 'Couvert' };
-        if (c <= 48) return { e: '🌫️', l: 'Brouillard' };
-        if (c <= 57) return { e: '🌦️', l: 'Bruine' };
-        if (c <= 67) return { e: '🌧️', l: 'Pluie' };
-        if (c <= 77) return { e: '🌨️', l: 'Neige' };
-        if (c <= 82) return { e: '🌧️', l: 'Averses' };
-        if (c <= 99) return { e: '⛈️', l: 'Orage' };
-        return { e: '❓', l: '—' };
+        if (c == null) return { Icon: IconCloud, l: '—' };
+        if (c === 0) return { Icon: IconSun, l: 'Ensoleillé' };
+        if (c <= 2) return { Icon: IconCloud, l: 'Partiellement nuageux' };
+        if (c === 3) return { Icon: IconCloud, l: 'Couvert' };
+        if (c <= 48) return { Icon: IconCloud, l: 'Brouillard' };
+        if (c <= 57) return { Icon: IconCloudRain, l: 'Bruine' };
+        if (c <= 67) return { Icon: IconCloudRain, l: 'Pluie' };
+        if (c <= 77) return { Icon: IconSnow, l: 'Neige' };
+        if (c <= 82) return { Icon: IconCloudRain, l: 'Averses' };
+        if (c <= 99) return { Icon: IconCloudRain, l: 'Orage' };
+        return { Icon: IconCloud, l: '—' };
       };
       const info = codeToInfo(weather.codeMorn ?? weather.code);
+      const InfoIcon = info.Icon;
       const tDisplay = weather.tMorn != null ? Math.round(weather.tMorn) : Math.round((weather.tMin + weather.tMax) / 2);
       const precipDisplay = weather.precipMorn ?? weather.precip ?? 0;
       const windDisplay = weather.windMorn ?? weather.wind ?? 0;
 
       // Build advice
       const advices = [];
-      if (tDisplay >= 26) advices.push('🥵 Chaleur — vise le bas de la fourchette puissance, prévois 500ml de boisson par heure.');
-      else if (tDisplay >= 20) advices.push('☀️ Conditions chaudes — hydrate-toi bien avant.');
-      else if (tDisplay <= 5) advices.push('🥶 Froid — bonnet et gants, échauffement plus long avant les efforts.');
-      if (precipDisplay >= 60) advices.push('☔ Forte chance de pluie — prévois ta tenue imperméable, attention aux trottoirs glissants.');
-      if (windDisplay >= 30) advices.push(`💨 Vent fort (${Math.round(windDisplay)} km/h) — protège-toi sur le retour, ou choisis un parcours abrité.`);
-      if (sessionType === 'intervals' && tDisplay >= 28) advices.push("🌡️ Trop chaud pour des intervalles — décale tôt le matin ou reporte d'un jour.");
+      if (tDisplay >= 26) advices.push('Chaleur — vise le bas de la fourchette puissance, prévois 500ml de boisson par heure.');
+      else if (tDisplay >= 20) advices.push('Conditions chaudes — hydrate-toi bien avant.');
+      else if (tDisplay <= 5) advices.push('Froid — bonnet et gants, échauffement plus long avant les efforts.');
+      if (precipDisplay >= 60) advices.push('Forte chance de pluie — prévois ta tenue imperméable, attention aux trottoirs glissants.');
+      if (windDisplay >= 30) advices.push(`Vent fort (${Math.round(windDisplay)} km/h) — protège-toi sur le retour, ou choisis un parcours abrité.`);
+      if (sessionType === 'intervals' && tDisplay >= 28) advices.push("Trop chaud pour des intervalles — décale tôt le matin ou reporte d'un jour.");
 
       // Build session date label
       const sessionDateLabel = (() => {
@@ -2815,7 +2936,7 @@
       return (
         <Card className="p-4 mt-4" accent="var(--compass)">
           <div className="flex items-start gap-3 flex-wrap">
-            <div className="text-3xl">{info.e}</div>
+            <div style={{ marginTop: 2 }}><InfoIcon size={26} style={{ color: 'var(--compass)' }} /></div>
             <div className="flex-1 min-w-0">
               <div className="t-meta mb-1">MÉTÉO · {sessionDateLabel}</div>
               <div className="font-display text-base font-bold mb-1">
@@ -2954,8 +3075,9 @@
                 </div>
               )}
               {data.pRemainingSessions === 0 && data.pSessions > 0 && (
-                <div className="text-sm leading-relaxed" style={{ color: kmPct >= 90 ? 'var(--go)' : 'var(--warn)' }}>
-                  {kmPct >= 90 ? '✅ Semaine bouclée à ' + kmPct + '%, beau boulot.' : 'Plus de séances prévues cette semaine. Tu as réalisé ' + kmPct + '% du volume prévu.'}
+                <div className="text-sm leading-relaxed flex items-center gap-1.5" style={{ color: kmPct >= 90 ? 'var(--go)' : 'var(--warn)' }}>
+                  {kmPct >= 90 && <IconCheck size={13} style={{ flexShrink: 0 }} />}
+                  <span>{kmPct >= 90 ? `Semaine bouclée à ${kmPct}%, beau boulot.` : `Plus de séances prévues cette semaine. Tu as réalisé ${kmPct}% du volume prévu.`}</span>
                 </div>
               )}
             </>
@@ -3073,8 +3195,7 @@
         return t >= 60 ? `${Math.floor(t / 60)}h${String(t % 60).padStart(2, '0')}` : `${t}min`;
       };
 
-      const typeIcons = { rest: '⊘', easy: '🏃', tempo: '🔥', intervals: '⚡', long: '🛤️', test: '📊' };
-      const typeColors = { rest: 'var(--text-dim)', easy: 'var(--go)', tempo: 'var(--warn)', intervals: 'var(--alert)', long: 'var(--compass)', test: 'var(--danger)' };
+      const getType = (t) => SESSION_TYPE_MAP[t] || SESSION_TYPE_MAP.rest;
 
       return (
         <Card className="p-5" accent={data.verdictColor}>
@@ -3124,22 +3245,26 @@
               </div>
 
               <div className="space-y-1.5">
-                {data.sessions.map((s, i) => (
+                {data.sessions.map((s, i) => {
+                  const t = getType(s.type);
+                  const TypeIcon = t.Icon;
+                  return (
                   <div key={i} className="flex items-center gap-3 rounded-lg p-2.5" style={{ background: 'var(--bg-elev-2)' }}>
-                    <div className="text-base">{typeIcons[s.type]}</div>
-                    <div className="font-mono text-xs w-16 flex-shrink-0" style={{ color: typeColors[s.type] }}>{s.dayLabel.toUpperCase().slice(0, 3)}</div>
+                    <TypeIcon size={14} style={{ color: t.color, flexShrink: 0 }} />
+                    <div className="font-mono text-xs w-16 flex-shrink-0" style={{ color: t.color }}>{s.dayLabel.toUpperCase().slice(0, 3)}</div>
                     <div className="flex-1 min-w-0">
                       <div className="font-display font-bold text-sm truncate">{s.label}</div>
                       {s.detail && <div className="text-xs truncate" style={{ color: 'var(--text-faint)' }}>{s.detail}</div>}
                     </div>
                     <div className="text-right flex-shrink-0">
-                      <div className="font-mono text-xs tabular" style={{ color: typeColors[s.type] }}>
+                      <div className="font-mono text-xs tabular" style={{ color: t.color }}>
                         {s.dur ? fmtDur(s.dur) : '—'} · {s.km ? `${s.km.toFixed(1)} km` : '—'}
                       </div>
                       {s.tss > 0 && <div className="font-mono text-xs" style={{ color: 'var(--text-faint)' }}>charge {s.tss}</div>}
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </>
           )}
@@ -3250,7 +3375,7 @@
       const questions = [
         { key: 'sleep', icon: IconMoon, label: 'Qualité du sommeil', sub: 'La nuit dernière, comment as-tu dormi ?', scale: ['Horrible', 'Très mauvais', 'Mauvais', 'Passable', 'Moyen', 'Correct', 'Bien', 'Très bien', 'Excellent', 'Parfait'], color: '#4A9EFF', min: 1, max: 10, hint: 'Tu vises 7-8h. Tony, le bébé dort bien — utilise cet avantage.' },
         { key: 'fatigue', icon: IconBattery, label: 'Fatigue physique', sub: 'À quel point te sens-tu fatigué ?', scale: ['Frais comme un gardon', 'Très en forme', 'En forme', 'Bien', 'Léger', 'Moyen', 'Un peu fatigué', 'Fatigué', 'Très fatigué', 'Épuisé'], color: '#FFB020', min: 1, max: 10, hint: '1 = comme un coureur frais le matin · 10 = jambes lourdes au réveil.' },
-        { key: 'soreness', icon: IconHeart, label: 'Genou gauche', sub: 'Évalue honnêtement (0 = aucune douleur, 10 = max)', scale: ['Aucune', 'Insignifiant', 'Très léger', 'Léger', 'Modéré', 'Notable', 'Gênant', 'Fort', 'Très fort', 'Sévère', 'Insupportable'], color: '#FF5B5B', min: 0, max: 10, hint: 'Vu ton historique tendinite, sois ultra-honnête. Score ≥5 = repos auto.' },
+        { key: 'soreness', icon: IconHeart, label: 'Genou gauche', sub: 'Évalue honnêtement (0 = aucune douleur, 10 = max)', scale: ['Aucune', 'Insignifiant', 'Très léger', 'Léger', 'Modéré', 'Notable', 'Gênant', 'Fort', 'Très fort', 'Sévère', 'Insupportable'], color: '#FF5B5B', min: 0, max: 10, hint: 'PFPS = douleur antérieure du genou, souvent en descente ou montée d\'escaliers. Sois ultra-honnête. Score ≥5 = repos auto.' },
         { key: 'motivation', icon: IconSmile, label: 'Motivation', sub: "Envie de t'entraîner aujourd'hui ?", scale: ['Zéro envie', 'Presque rien', 'Très faible', 'Faible', 'Mitigée', 'Moyenne', 'Bonne', 'Très bonne', 'Excellente', 'À fond'], color: '#D4FF00', min: 1, max: 10, hint: 'Le mental est ta plus grande force — fais-toi confiance.' },
         { key: 'stress', icon: IconZap, label: 'Stress mental', sub: 'Niveau de stress global aujourd\'hui', scale: ['Zen total', 'Très calme', 'Calme', 'Tranquille', 'Léger', 'Moyen', 'Un peu tendu', 'Tendu', 'Très stressé', 'Submergé'], color: '#FF8040', min: 1, max: 10, hint: 'Stress chronique = cortisol = mauvaise récup. Compte aussi le mental, pas que le physique.' },
       ];
@@ -3493,6 +3618,8 @@
     }
 
     function PlanView({ profile, races, checkins, activities, strengthSessions, strengthStart, planOverrides, sessionTemplates, onSaveTemplate, onApplyTemplate, onImportActivity, onViewActivity, onSavePlanWeek, onGeneratePlan, onAddRace, onRemoveRace, onSaveProfile, onStrengthStart, onResetStrengthStart, onClearStrengthHistory }) {
+      const dialog = useDialog();
+      const toast = useToast();
       const [tab, setTab] = useState('calendar');
       const [editingWeek, setEditingWeek] = useState(null);  // legacy modal mode (kept as fallback)
       const [editingInlineDay, setEditingInlineDay] = useState(null);  // {wsKey, dayKey} when inline-editing
@@ -3572,8 +3699,8 @@
                     if (lower.endsWith('.tcx')) activity = parseTCX(text);
                     else if (lower.endsWith('.gpx')) activity = parseGPX(text);
                     else if (lower.endsWith('.csv')) activity = parseStrydCSV(text, f.name, profile.weightKg);
-                  } catch (err) { alert(`Erreur : ${err.message || err}`); return; }
-                  if (!activity) { alert('Format non reconnu (.tcx, .gpx, .csv).'); return; }
+                  } catch (err) { toast.push(`Erreur : ${err.message || err}`, { kind: 'warn' }); return; }
+                  if (!activity) { toast.push('Format non reconnu (.tcx, .gpx, .csv).', { kind: 'warn' }); return; }
                   onImportActivity(activity);
                   if (fileRef.current) fileRef.current.value = '';
                 }
@@ -3596,7 +3723,7 @@
           <div className="flex gap-1 mb-5 border-b" style={{ borderColor: 'var(--border)' }}>
             {[
               { k: 'calendar', l: 'Calendrier', icon: IconCalendar },
-              { k: 'renfo', l: 'Renfo', icon: IconDumbbell },
+              ...(profile.showStrength !== false ? [{ k: 'renfo', l: 'Renfo', icon: IconDumbbell }] : []),
             ].map(it => {
               const Ic = it.icon;
               return (
@@ -3657,10 +3784,9 @@
               <div className="flex gap-2">
                 {weekOffset !== 0 && <button onClick={() => setWeekOffset(0)} className="btn px-3 py-2 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)' }}>AUJOURD'HUI</button>}
                 <button
-                  onClick={() => {
-                    if (confirm('Supprimer toutes les séances prévues de cette semaine ?')) {
-                      onSavePlanWeek(wsKey, buildDeletedWeek());
-                    }
+                  onClick={async () => {
+                    const ok = await dialog.confirm({ title: 'Supprimer toutes les séances prévues de cette semaine ?', danger: true, confirmLabel: 'Supprimer' });
+                    if (ok) onSavePlanWeek(wsKey, buildDeletedWeek());
                   }}
                   className="btn-base btn-danger btn-sm"
                 >
@@ -3766,14 +3892,7 @@
             };
             const day = currentWeek[editingInlineDay.dayKey] || { type: 'rest', label: 'Repos', detail: '' };
             const linkedActivity = (activities || []).find(a => a.linkedSession && a.linkedSession.weekStartKey === editingInlineDay.wsKey && a.linkedSession.dayKey === editingInlineDay.dayKey);
-            const typeOptions = [
-              { v: 'rest', l: 'Repos', emoji: '🛌', color: 'var(--text-faint)' },
-              { v: 'easy', l: 'Footing easy', emoji: '🏃', color: 'var(--positive)' },
-              { v: 'tempo', l: 'Seuil / Tempo', emoji: '⚡', color: 'var(--signal)' },
-              { v: 'intervals', l: 'Intervalles', emoji: '🔥', color: 'var(--negative)' },
-              { v: 'long', l: 'Sortie longue', emoji: '🛣️', color: 'var(--compass)' },
-              { v: 'test', l: 'Test', emoji: '🎯', color: 'var(--caution)' },
-            ];
+            const typeOptions = SESSION_TYPES;
             return (
               <DayEditModal
                 dayKey={editingInlineDay.dayKey}
@@ -4369,6 +4488,7 @@
     // and auto-link it to a specific planned session day.
     // ========================================================================
     function ImportFromPlanButton({ wsKey, dayKey, dayLabel, sessionType, sessionLabel, sessionDetail, alreadyImported, onImport, onView, compact = false }) {
+      const toast = useToast();
       const fileRef = useRef(null);
       async function handleFile(fileList) {
         if (!fileList || !fileList.length) return;
@@ -4381,11 +4501,11 @@
           else if (lower.endsWith('.gpx')) activity = parseGPX(text);
           else if (lower.endsWith('.csv')) activity = parseStrydCSV(text, f.name, null);
         } catch (err) {
-          alert(`Erreur de lecture du fichier "${f.name}" : ${err.message || err}`);
+          toast.push(`Erreur de lecture du fichier "${f.name}" : ${err.message || err}`, { kind: 'warn' });
           return;
         }
         if (!activity) {
-          alert('Format non reconnu. Utilise .tcx, .gpx ou .csv.');
+          toast.push('Format non reconnu. Utilise .tcx, .gpx ou .csv.', { kind: 'warn' });
           return;
         }
         // Force-link to this specific planned day
@@ -4430,18 +4550,13 @@
     // The grid stays intact behind. Two-modal stacking is handled with z-index.
     // ========================================================================
     function WeekEditorModal({ wsKey, initial, planOverrides, sessionTemplates = [], onSaveTemplate, onApplyTemplate, onSave, onClose, onDelete, weekContext, activities = [], onImportActivity, onViewActivity }) {
+      const dialog = useDialog();
+      const toast = useToast();
       const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
       const dayLabels = { lun: 'Lundi', mar: 'Mardi', mer: 'Mercredi', jeu: 'Jeudi', ven: 'Vendredi', sam: 'Samedi', dim: 'Dimanche' };
       const dayShort = { lun: 'LUN', mar: 'MAR', mer: 'MER', jeu: 'JEU', ven: 'VEN', sam: 'SAM', dim: 'DIM' };
-      const typeOptions = [
-        { v: 'rest', l: 'Repos', emoji: '🛌', color: 'var(--text-faint)' },
-        { v: 'easy', l: 'Footing easy', emoji: '🏃', color: 'var(--go)' },
-        { v: 'tempo', l: 'Seuil / Tempo', emoji: '⚡', color: 'var(--accent)' },
-        { v: 'intervals', l: 'Intervalles', emoji: '🔥', color: 'var(--alert)' },
-        { v: 'long', l: 'Sortie longue', emoji: '🛣️', color: 'var(--compass)' },
-        { v: 'test', l: 'Test', emoji: '🎯', color: 'var(--warn)' },
-      ];
-      const typeMap = typeOptions.reduce((m, t) => { m[t.v] = t; return m; }, {});
+      const typeOptions = SESSION_TYPES;
+      const typeMap = SESSION_TYPE_MAP;
       const buildEmptyWeek = () => dayKeys.reduce((acc, k) => ({ ...acc, [k]: { type: 'rest', label: 'Repos', detail: '', strengthToday: null, plannedKm: null, plannedMin: null } }), {});
       const buildInitialWeek = (src) => {
         if (!src) return buildEmptyWeek();
@@ -4473,15 +4588,17 @@
         const wsDate = new Date(wsKey + 'T00:00:00'); wsDate.setDate(wsDate.getDate() - 7);
         const prevKey = toLocalDateKey(wsDate);
         if (planOverrides[prevKey]) {
-          if (confirm('Copier les séances de la semaine précédente ? Les modifications actuelles seront écrasées.')) {
-            setWeek(planOverrides[prevKey]);
-          }
+          dialog.confirm({ title: 'Copier la semaine précédente ?', message: 'Les modifications actuelles seront écrasées.', confirmLabel: 'Copier' }).then(ok => {
+            if (ok) setWeek(planOverrides[prevKey]);
+          });
         } else {
-          alert('Pas de plan pour la semaine précédente.');
+          toast.push('Pas de plan pour la semaine précédente.', { kind: 'info' });
         }
       }
       function clearWeek() {
-        if (confirm('Effacer toutes les séances de cette semaine ?')) setWeek(buildEmptyWeek());
+        dialog.confirm({ title: 'Effacer toutes les séances de cette semaine ?', danger: true, confirmLabel: 'Effacer' }).then(ok => {
+          if (ok) setWeek(buildEmptyWeek());
+        });
       }
 
       const wsDate = new Date(wsKey + 'T00:00:00');
@@ -4661,6 +4778,7 @@
       }));
       const [showLibrary, setShowLibrary] = useState(false);
       const [showZones, setShowZones] = useState(false);
+      const dialog = useDialog();
 
       const templateSuggestion = useMemo(() => {
         return detectRepeatedPattern(localDay, planOverrides, sessionTemplates);
@@ -4838,9 +4956,9 @@
                             </span>
                             <Button
                               variant="secondary" size="sm" icon={IconSave}
-                              onClick={() => {
+                              onClick={async () => {
                                 const defaultName = localDay.label?.trim() || `Séance ${localDay.type}`;
-                                const name = prompt('Nom du template :', defaultName);
+                                const name = await dialog.prompt({ title: 'Sauvegarder comme template', message: 'Donne un nom à ce template — il sera réutilisable sur d\'autres jours.', defaultValue: defaultName, placeholder: 'Nom du template' });
                                 if (name && name.trim() && onSaveTemplate) onSaveTemplate(localDay, name.trim());
                               }}
                             >Sauvegarder</Button>
@@ -4858,9 +4976,9 @@
                         />
                         <Button
                           variant="secondary" size="sm" icon={IconSave}
-                          onClick={() => {
+                          onClick={async () => {
                             const defaultName = localDay.label && localDay.label.trim().length > 0 ? localDay.label : `Séance ${localDay.type}`;
-                            const name = prompt('Nom du template :', defaultName);
+                            const name = await dialog.prompt({ title: 'Sauvegarder comme template', defaultValue: defaultName, placeholder: 'Nom du template' });
                             if (name && name.trim() && onSaveTemplate) onSaveTemplate(localDay, name.trim());
                           }}
                           title="Sauvegarder cette séance comme template"
@@ -5043,14 +5161,14 @@
                 <div className="flex-1 min-w-[240px]">
                   <div className="font-display text-xl font-bold mb-1">Bienvenue dans le programme Renfo</div>
                   <div className="text-sm leading-relaxed mb-3" style={{ color: 'var(--text-dim)' }}>
-                    Deux séances de 15 minutes par semaine pour <span style={{ color: 'var(--text)' }}>protéger ton tendon rotulien</span> et améliorer ta foulée. Le programme s'intensifie progressivement sur 7 semaines.
+                    Deux séances de 15 minutes par semaine pour <span style={{ color: 'var(--text)' }}>contrôler ton PFPS</span> et améliorer ta foulée. Cible : moyen fessier, quadriceps en amplitude limitée, libération du psoas.
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs" style={{ color: 'var(--text-dim)' }}>
                     <div className="p-2.5 rounded-lg" style={{ background: 'var(--bg-elev)' }}>
-                      <span style={{ color: 'var(--accent)' }} className="font-bold">Séance A</span> — Jambes, genou, soleus. Protocole Stanish validé scientifiquement.
+                      <span style={{ color: 'var(--accent)' }} className="font-bold">Séance A</span> — Quadriceps (amplitude limitée pour PFPS) + soleus.
                     </div>
                     <div className="p-2.5 rounded-lg" style={{ background: 'var(--bg-elev)' }}>
-                      <span style={{ color: 'var(--accent)' }} className="font-bold">Séance B</span> — Hanches, fessiers, mobilité. Étirement psoas crucial vu ta posture assise.
+                      <span style={{ color: 'var(--accent)' }} className="font-bold">Séance B</span> — Moyen fessier + grand fessier + psoas. <span style={{ color: 'var(--accent)' }}>Le pilier rééducation PFPS</span>.
                     </div>
                   </div>
                   <div className="mt-3 font-mono text-[11px] italic" style={{ color: 'var(--text-faint)' }}>
@@ -5564,6 +5682,7 @@
     }
 
     function ActivityRow({ activity, cp, onView, onDelete }) {
+      const dialog = useDialog();
       const tss = computeTSS(activity, cp);
       const dateLabel = isToday(activity.startMs) ? "AUJOURD'HUI" : isYesterday(activity.startMs) ? 'HIER' : fmtDate(activity.startMs).toUpperCase();
       return (
@@ -5584,7 +5703,7 @@
               </div>
             </div>
             <button onClick={onView} className="btn px-3 py-2 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)' }}>DÉTAIL</button>
-            <button onClick={(e) => { e.stopPropagation(); if (confirm('Supprimer cette activité ?')) onDelete(); }} className="btn opacity-30 hover:opacity-100 transition w-8 h-8 rounded-full flex items-center justify-center"><IconTrash size={13} /></button>
+            <button onClick={async (e) => { e.stopPropagation(); const ok = await dialog.confirm({ title: 'Supprimer cette activité ?', danger: true, confirmLabel: 'Supprimer' }); if (ok) onDelete(); }} className="btn opacity-30 hover:opacity-100 transition w-8 h-8 rounded-full flex items-center justify-center"><IconTrash size={13} /></button>
           </div>
         </Card>
       );
@@ -6141,6 +6260,7 @@
     function ProfileView({ profile, onSave, activities, planOverrides, onRecalibratePlan, onShowAllActivities }) {
       const [editing, setEditing] = useState(false);
       const [draft, setDraft] = useState(profile);
+      const dialog = useDialog();
 
       const age = profile.birthYear ? getAge(profile.birthYear) : null;
       const totalAct = activities.length;
@@ -6269,6 +6389,26 @@
                 <button onClick={() => setDraft({...draft, unitMode: 'pace'})} className="btn py-3 rounded-lg" style={{ background: draft.unitMode === 'pace' ? 'var(--compass)' : 'var(--bg-elev-2)', color: draft.unitMode === 'pace' ? '#000' : 'var(--text)', border: `1px solid ${draft.unitMode === 'pace' ? 'var(--compass)' : 'var(--border)'}` }}>
                   <div className="font-display font-bold text-sm">Allure (min/km)</div>
                   <div className="font-mono text-[9px] tracking-widest mt-1">SANS CAPTEUR</div>
+                </button>
+              </div>
+            )}
+          </Card>
+
+          {/* Renfo toggle */}
+          <Card className="p-6 mb-4">
+            <div className="font-display text-lg font-bold mb-2">Programme renfo</div>
+            <div className="text-xs mb-4" style={{ color: 'var(--text-dim)' }}>Active si tu suis le programme de renforcement intégré (Séance A & B). Désactive pour cacher les CTAs, suggestions et l'onglet Renfo dans Plan — les données existantes sont conservées.</div>
+            {!editing ? (
+              <div><Tag color={profile.showStrength !== false ? 'var(--positive)' : 'var(--text-dim)'}>{profile.showStrength !== false ? 'ACTIVÉ' : 'DÉSACTIVÉ'}</Tag></div>
+            ) : (
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={() => setDraft({...draft, showStrength: true})} className="btn py-3 rounded-lg" style={{ background: draft.showStrength !== false ? 'var(--positive)' : 'var(--bg-elev-2)', color: draft.showStrength !== false ? '#000' : 'var(--text)', border: `1px solid ${draft.showStrength !== false ? 'var(--positive)' : 'var(--border)'}` }}>
+                  <div className="font-display font-bold text-sm">Activé</div>
+                  <div className="font-mono text-[9px] tracking-widest mt-1">RENFO VISIBLE</div>
+                </button>
+                <button onClick={() => setDraft({...draft, showStrength: false})} className="btn py-3 rounded-lg" style={{ background: draft.showStrength === false ? 'var(--text-faint)' : 'var(--bg-elev-2)', color: draft.showStrength === false ? '#000' : 'var(--text)', border: `1px solid ${draft.showStrength === false ? 'var(--text-faint)' : 'var(--border)'}` }}>
+                  <div className="font-display font-bold text-sm">Désactivé</div>
+                  <div className="font-mono text-[9px] tracking-widest mt-1">CTAS CACHÉS</div>
                 </button>
               </div>
             )}
@@ -6449,7 +6589,15 @@
           {/* Reset zone */}
           <div className="mt-10 pt-6 border-t" style={{ borderColor: 'var(--border)' }}>
             <div className="font-mono text-[10px] tracking-widest mb-3" style={{ color: 'var(--text-faint)' }}>ZONE DE RÉINITIALISATION</div>
-            <button onClick={() => { if (confirm('⚠️ Réinitialiser TOUTES les données ? Cette action est irréversible. Pense à exporter une sauvegarde avant.')) { Object.values(KEYS).forEach(k => storage.remove(k)); window.location.reload(); } }} className="btn px-4 py-2 rounded-lg font-mono text-[10px] tracking-widest opacity-50 hover:opacity-100" style={{ background: 'rgba(255, 91, 91, 0.06)', border: '1px solid rgba(255, 91, 91, 0.2)', color: 'var(--danger)' }}>RÉINITIALISER COMPASS</button>
+            <button onClick={async () => {
+              const ok = await dialog.confirm({
+                title: 'Réinitialiser TOUTES les données ?',
+                message: 'Cette action est irréversible. Pense à exporter une sauvegarde avant.',
+                danger: true,
+                confirmLabel: 'Tout effacer',
+              });
+              if (ok) { Object.values(KEYS).forEach(k => storage.remove(k)); window.location.reload(); }
+            }} className="btn px-4 py-2 rounded-lg font-mono text-[10px] tracking-widest opacity-50 hover:opacity-100" style={{ background: 'rgba(255, 91, 91, 0.06)', border: '1px solid rgba(255, 91, 91, 0.2)', color: 'var(--danger)' }}>RÉINITIALISER COMPASS</button>
           </div>
         </div>
       );
@@ -6458,6 +6606,7 @@
     function BackupCard() {
       const [importMsg, setImportMsg] = useState(null);
       const fileRef = useRef(null);
+      const dialog = useDialog();
 
       function exportAll() {
         const data = {};
@@ -6486,7 +6635,13 @@
           const parsed = JSON.parse(text);
           if (parsed.app !== 'COMPASS') throw new Error('Pas un backup COMPASS valide.');
           if (!parsed.data || typeof parsed.data !== 'object') throw new Error('Format invalide.');
-          if (!confirm(`⚠️ Restaurer ce backup (${parsed.exportedAt ? new Date(parsed.exportedAt).toLocaleString('fr-FR') : 'date inconnue'}) ? Toutes tes données actuelles seront écrasées.`)) return;
+          const ok = await dialog.confirm({
+            title: 'Restaurer ce backup ?',
+            message: `Backup du ${parsed.exportedAt ? new Date(parsed.exportedAt).toLocaleString('fr-FR') : 'date inconnue'}.\nToutes tes données actuelles seront écrasées.`,
+            danger: true,
+            confirmLabel: 'Restaurer',
+          });
+          if (!ok) return;
           Object.entries(parsed.data).forEach(([k, v]) => {
             if (KEYS[k]) storage.set(KEYS[k], v);
           });
@@ -6571,6 +6726,7 @@
     }
 
     function MySessionsView({ templates, onDelete, onRename, profile }) {
+      const dialog = useDialog();
       const [filter, setFilter] = useState('all'); // all | easy | tempo | intervals | long | test
       const [expanded, setExpanded] = useState(null);
       const cp = profile?.cp;
@@ -6660,8 +6816,8 @@
                       {isOpen ? 'MASQUER' : 'VOIR'} <IconChevronDown size={11} style={{ display: 'inline', transform: isOpen ? 'rotate(180deg)' : 'rotate(0)', transition: 'transform 0.2s' }} />
                     </button>
                     <button
-                      onClick={() => {
-                        const newName = prompt('Renommer le template :', tpl.name);
+                      onClick={async () => {
+                        const newName = await dialog.prompt({ title: 'Renommer le template', defaultValue: tpl.name, placeholder: 'Nouveau nom' });
                         if (newName && newName.trim() && newName.trim() !== tpl.name && onRename) onRename(tpl.id, newName.trim());
                       }}
                       className="btn w-9 h-9 rounded-lg flex items-center justify-center"
@@ -6757,12 +6913,13 @@
       const initialStr = `${initial.getFullYear()}-${pad(initial.getMonth()+1)}-${pad(initial.getDate())}T${pad(initial.getHours())}:${pad(initial.getMinutes())}`;
       const [dateStr, setDateStr] = useState(initialStr);
       const guess = activity.fileName || '';
+      const toast = useToast();
 
       useEffect(() => { const h = (e) => { if (e.key === 'Escape') onCancel(); }; window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h); }, [onCancel]);
 
       function confirm() {
         const ts = new Date(dateStr).getTime();
-        if (isNaN(ts)) { alert('Date invalide'); return; }
+        if (isNaN(ts)) { toast.push('Date invalide', { kind: 'warn' }); return; }
         onConfirm(ts);
       }
       // Quick presets
@@ -6825,22 +6982,22 @@
       // Priority 1 — knee injury risk
       if (kneeMax >= 6) {
         return {
-          status: 'injury_risk', emoji: '🚨', title: 'Signal genou fort', color: 'var(--danger)',
-          summary: `Ton genou a atteint ${kneeMax}/10 récemment. Vu ton historique de tendinite rotulienne, c'est un signal à prendre au sérieux maintenant — pas dans 3 jours.`,
-          actions: ['Stop course 48-72h minimum', 'Séance A de renfo (squats excentriques, protocole Stanish) tous les 2 jours', 'Si la douleur persiste après 5 jours → kiné'],
+          status: 'injury_risk', Icon: IconAlert, title: 'Signal genou fort', color: 'var(--danger)',
+          summary: `Ton genou a atteint ${kneeMax}/10 récemment. Avec ton PFPS (douleur fémoro-patellaire), c'est un signal à prendre au sérieux maintenant — pas dans 3 jours.`,
+          actions: ['Stop course 48-72h minimum', 'Renfo prioritaire fessiers + moyen fessier (Séance B) tous les 2 jours', 'Si la douleur persiste après 5 jours → kiné'],
         };
       }
       if (kneeMax >= 4 || kneeAvg >= 3) {
         return {
-          status: 'knee_warning', emoji: '⚠️', title: 'Genou à surveiller', color: 'var(--warn)',
-          summary: `Ton genou tire un peu en ce moment (pic à ${kneeMax}/10). Avec ton historique tendinite, c'est le moment d'être préventif sans dramatiser.`,
-          actions: ['Supprime le supra-seuil cette semaine, garde les footings faciles', 'Double la Séance A de renfo cette semaine', 'Glaçage 10 min après chaque course, étirement quadri 1×/jour'],
+          status: 'knee_warning', Icon: IconAlert, title: 'Genou à surveiller', color: 'var(--warn)',
+          summary: `Ton genou tire un peu en ce moment (pic à ${kneeMax}/10). Avec ton PFPS, c'est le moment d'être préventif sans dramatiser.`,
+          actions: ['Supprime le supra-seuil cette semaine, garde les footings faciles', 'Double la Séance B (fessiers/hanches) cette semaine', 'Glaçage 10 min après chaque course, étirement psoas 1×/jour'],
         };
       }
 
       if (last14Acts.length < 3) {
         return {
-          status: 'low_activity', emoji: '📉', title: "Peu d'activité récente", color: 'var(--text-dim)',
+          status: 'low_activity', Icon: IconTrendingDown, title: "Peu d'activité récente", color: 'var(--text-dim)',
           summary: `${last14Acts.length} activité${last14Acts.length === 1 ? '' : 's'} en 14 jours. Si c'était volontaire → OK. Sinon, reviens doucement pour ne pas casser ta progression.`,
           actions: ['3 footings faciles (30-40 min en Z1) cette semaine', '1 Séance A de renfo', 'Check-in readiness chaque matin pour voir tes signaux'],
         };
@@ -6851,13 +7008,13 @@
         // If next week is a recovery week, soften the verdict
         if (upcomingPlannedLoad && upcomingPlannedLoad.tss && upcomingPlannedLoad.tss < (fitness.ctl * 5 * 0.7)) {
           return {
-            status: 'overtraining_recovering', emoji: '🟠', title: 'Charge élevée — récup prévue', color: 'var(--warn)',
+            status: 'overtraining_recovering', Icon: IconAlert, title: 'Charge élevée — récup prévue', color: 'var(--warn)',
             summary: `Ton ratio de charge récente est à ${acwr.ratio}, mais ta semaine à venir est allégée (charge ${upcomingPlannedLoad.tss} prévue vs ${Math.round(fitness.ctl * 5)} normal). Bonne gestion — la décharge tombe au bon moment.`,
             actions: [`Respecte scrupuleusement la semaine de récup prévue (charge ${upcomingPlannedLoad.tss})`, 'Priorise le sommeil cette semaine de bascule', 'Pas de fractionné au-delà de ce qui est prévu'],
           };
         }
         return {
-          status: 'overtraining', emoji: '🔴', title: 'Charge excessive', color: 'var(--alert)',
+          status: 'overtraining', Icon: IconAlert, title: 'Charge excessive', color: 'var(--alert)',
           summary: `Ton ratio de charge récente est à ${acwr.ratio} (zone risque à partir de 1.5). Tu as poussé bien plus ces 7 derniers jours que ta moyenne. Continuer à ce rythme = blessure ou contre-performance garantie.`,
           actions: ['Semaine de décharge : volume -40%', '2 vrais jours OFF cette semaine', 'Sommeil 8h minimum, hydratation boostée'],
         };
@@ -6866,13 +7023,13 @@
       if (hasPower && fitness.tsb < -20) {
         if (upcomingPlannedLoad && upcomingPlannedLoad.tss && upcomingPlannedLoad.tss < (fitness.ctl * 5 * 0.7)) {
           return {
-            status: 'fatigued_recovering', emoji: '🟡', title: 'Fatigue — décharge prévue', color: 'var(--warn)',
+            status: 'fatigued_recovering', Icon: IconBattery, title: 'Fatigue — décharge prévue', color: 'var(--warn)',
             summary: `Fraîcheur ${fitness.tsb}, fatigue accumulée — mais ta semaine à venir est légère (charge ${upcomingPlannedLoad.tss} prévue). Continue sur ta lancée, la supercompensation va pouvoir faire son travail.`,
             actions: ['Respecte le volume allégé de la semaine à venir', 'Attention à ne pas ajouter de séances spontanées', 'Profite-en pour bien dormir et manger'],
           };
         }
         return {
-          status: 'fatigued', emoji: '😮‍💨', title: 'Fatigue accumulée', color: 'var(--warn)',
+          status: 'fatigued', Icon: IconBattery, title: 'Fatigue accumulée', color: 'var(--warn)',
           summary: `Tu es en zone fatigue importante (fraîcheur ${fitness.tsb}). Tu as bien construit, mais tes jambes ont besoin de repos pour que la supercompensation fasse son boulot.`,
           actions: ['Allège : volume -25% cette semaine', 'Pas de supra-seuil pendant 5-7 jours', 'Sortie longue facile + 2 footings easy OK'],
         };
@@ -6880,7 +7037,7 @@
 
       if (hasPower && fitness.tsb > 10 && (avgReadiness === null || avgReadiness >= 65)) {
         return {
-          status: 'peaking', emoji: '⚡', title: 'Prêt à performer', color: 'var(--go)',
+          status: 'peaking', Icon: IconZap, title: 'Prêt à performer', color: 'var(--go)',
           summary: `Tu es frais (fraîcheur ${fitness.tsb >= 0 ? '+' : ''}${fitness.tsb}) et ta forme de fond est bonne. C'est une fenêtre de performance — profite-en.`,
           actions: ['Bon moment pour un test de puissance seuil 10 min (frais, le matin)', 'Séance qualité supra-seuil à 100%', 'Si une course approche, la forme est là'],
         };
@@ -6888,7 +7045,7 @@
 
       if (thisWeekCheckins.length >= 3 && avgReadiness !== null && avgReadiness < 55) {
         return {
-          status: 'low_readiness', emoji: '🌙', title: 'Forme générale en baisse', color: 'var(--warn)',
+          status: 'low_readiness', Icon: IconMoon, title: 'Forme générale en baisse', color: 'var(--warn)',
           summary: `Ton readiness moyen cette semaine est ${avgReadiness}/100. Plusieurs signaux tirent vers le bas — sommeil, fatigue, stress.`,
           actions: ['Couche-toi 30 min plus tôt cette semaine', 'Une sortie "fun" libre sans montre pour décompresser', 'Si ça persiste 10+ jours, semaine de repos complet'],
         };
@@ -6908,24 +7065,26 @@
           ? `${thisWeekActs.length} séances cette semaine${thisWeekKm > 0 ? `, ${thisWeekKm.toFixed(1)} km` : ''}`
           : `${last14Acts.length} séances ces 14 derniers jours${last14Kms > 0 ? `, ${last14Kms.toFixed(0)} km cumulés` : ''}`;
         return {
-          status: 'stable_good', emoji: '✅', title: 'Tout roule', color: 'var(--go)',
+          status: 'stable_good', Icon: IconCheck, title: 'Tout roule', color: 'var(--go)',
           summary: `${ctxLine}${avgReadiness ? `, readiness moyen ${avgReadiness}/100` : ''}.${projInfo} Tu construis ta forme solidement, rien à signaler.`,
           actions: ['Continue exactement comme ça', 'Suis tes séances Stryd sans dévier', "N'oublie pas d'exporter un backup (Profil) une fois par mois"],
         };
       }
 
       return {
-        status: 'building', emoji: '📈', title: 'Phase de construction', color: 'var(--compass)',
+        status: 'building', Icon: IconTrending, title: 'Phase de construction', color: 'var(--compass)',
         summary: `${last14Acts.length} séances en 14 jours${last14Kms > 0 ? `, ${last14Kms.toFixed(0)} km cumulés` : ''}. Continue à importer tes séances pour avoir un diagnostic plus précis.`,
         actions: ["Importe chaque séance après l'avoir faite", 'Check-in readiness chaque matin', "Dans 2 semaines, l'analyse sera plus complète"],
       };
     }
 
     function CoachCard({ verdict, compact = false, onMore }) {
+      const VIcon = verdict.Icon || IconActivity;
+      const iconSize = compact ? 28 : 36;
       return (
         <Card className={compact ? 'p-5' : 'p-6 md:p-8'} accent={verdict.color}>
           <div className="flex items-start gap-4">
-            <div className={compact ? 'text-3xl' : 'text-4xl md:text-5xl'} style={{ flexShrink: 0, lineHeight: 1 }}>{verdict.emoji}</div>
+            <div style={{ flexShrink: 0, lineHeight: 1, marginTop: 2 }}><VIcon size={iconSize} style={{ color: verdict.color }} /></div>
             <div className="flex-1 min-w-0">
               <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: verdict.color }}>COACH · ÉVALUATION COMPASS</div>
               <div className={`font-display font-bold mb-3 leading-tight ${compact ? 'text-xl' : 'text-2xl md:text-3xl'}`} style={{ color: verdict.color }}>{verdict.title}</div>
@@ -7246,75 +7405,7 @@
       );
     }
 
-    // ========================================================================
-    // FORM TREND DETECTOR
-    // ========================================================================
-    function detectFormTrend(activitiesWithTss, cp) {
-      if (!cp || activitiesWithTss.length < 6) return null;
-      const now = Date.now();
-      const dayMs = 86400000;
-
-      const ctl = computeFitness(activitiesWithTss).ctl;
-      const threeWeeksAgoActs = activitiesWithTss.filter(a => a.startMs < now - 21 * dayMs);
-      const ctl3wAgo = threeWeeksAgoActs.length ? computeFitness(threeWeeksAgoActs).ctl : 0;
-      const ctlDeltaPerWeek = (ctl - ctl3wAgo) / 3;
-
-      const recentThresh = activitiesWithTss.filter(a =>
-        a.normalizedPower && a.durationSec > 15 * 60 &&
-        (a.normalizedPower / cp) > 0.80 && (a.normalizedPower / cp) < 1.10 &&
-        a.avgHr && a.startMs > now - 42 * dayMs
-      );
-      let hrTrend = null;
-      if (recentThresh.length >= 2) {
-        recentThresh.sort((a, b) => a.startMs - b.startMs);
-        const half = Math.max(1, Math.floor(recentThresh.length / 2));
-        const first = recentThresh.slice(0, half);
-        const last = recentThresh.slice(half);
-        if (last.length) {
-          const avgHrFirst = first.reduce((s, a) => s + a.avgHr, 0) / first.length;
-          const avgHrLast = last.reduce((s, a) => s + a.avgHr, 0) / last.length;
-          const avgPFirst = first.reduce((s, a) => s + a.normalizedPower, 0) / first.length;
-          const avgPLast = last.reduce((s, a) => s + a.normalizedPower, 0) / last.length;
-          hrTrend = { hrDelta: avgHrLast - avgHrFirst, pDelta: avgPLast - avgPFirst };
-        }
-      }
-
-      let diagnosis = null;
-      // Rising form: CTL up + HR flat or falling
-      if (ctlDeltaPerWeek > 0.5 && hrTrend && hrTrend.hrDelta < 2) {
-        diagnosis = { label: 'Forme montante', emoji: '📈', color: 'var(--go)', summary: `Forme de fond +${ctlDeltaPerWeek.toFixed(1)}/semaine sur 3 semaines, et ta FC reste stable pour des intensités comparables. Signal clair de progression.`, action: 'Continue exactement comme ça — ton corps absorbe bien la charge.' };
-      } else if (ctlDeltaPerWeek > 0.3 && hrTrend && hrTrend.hrDelta > 3) {
-        diagnosis = { label: "Fatigue qui s'installe", emoji: '⚠️', color: 'var(--warn)', summary: `Forme de fond en hausse mais ta FC monte de ${Math.round(hrTrend.hrDelta)} bpm sur des séances comparables. Signe de fatigue accumulée.`, action: 'Anticipe : prévois une semaine de décharge dans les 7 prochains jours.' };
-      } else if (ctlDeltaPerWeek < -0.5) {
-        diagnosis = { label: 'Charge en diminution', emoji: '📉', color: 'var(--text-dim)', summary: `Forme de fond en baisse de ${Math.abs(ctlDeltaPerWeek).toFixed(1)}/semaine. Si volontaire (taper) → OK. Sinon attention à la perte de condition.`, action: "Vérifie si c'est un taper planifié ou un ralentissement subi." };
-      } else if (Math.abs(ctlDeltaPerWeek) < 0.5) {
-        diagnosis = { label: 'Plateau', emoji: '➡️', color: 'var(--text)', summary: `Forme de fond stable depuis 3 semaines (${ctlDeltaPerWeek > 0 ? '+' : ''}${ctlDeltaPerWeek.toFixed(1)}/sem). Tu maintiens — pour progresser il faut soit augmenter le volume, soit la qualité.`, action: 'Choisis 1 séance qualité à durcir, ou ajoute 30 min de volume.' };
-      } else if (ctlDeltaPerWeek > 0.5) {
-        // Rising CTL but not enough HR data → still show progression
-        diagnosis = { label: 'Construction active', emoji: '🏗️', color: 'var(--compass)', summary: `Forme de fond +${ctlDeltaPerWeek.toFixed(1)}/semaine. Tu construis ta base — fais plus de séances au seuil pour voir l'impact sur ta FC.`, action: "Continue le volume, surveille ta forme du jour pour ne pas surcharger." };
-      }
-      if (!diagnosis) return null;
-      return { diagnosis, ctlDeltaPerWeek, hrTrend };
-    }
-
-    function FormTrendCard({ activitiesWithTss, cp }) {
-      const trend = useMemo(() => detectFormTrend(activitiesWithTss, cp), [activitiesWithTss, cp]);
-      if (!trend) return null;
-      const d = trend.diagnosis;
-      return (
-        <Card className="p-5" accent={d.color}>
-          <div className="flex items-start gap-3">
-            <div className="text-3xl" style={{ lineHeight: 1 }}>{d.emoji}</div>
-            <div className="flex-1 min-w-0">
-              <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: d.color }}>TENDANCE DE FORME · 3 SEMAINES</div>
-              <div className="font-display text-lg font-bold mb-2" style={{ color: d.color }}>{d.label}</div>
-              <div className="text-sm leading-relaxed mb-2" style={{ color: 'var(--text)' }}>{d.summary}</div>
-              <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>→ {d.action}</div>
-            </div>
-          </div>
-        </Card>
-      );
-    }
+    // FormTrendCard + detectFormTrend removed: superseded by UnifiedFitnessChartCard.
 
     // ========================================================================
     // DAILY RECOMMENDATION
@@ -7599,7 +7690,7 @@
         // Warning if TSB will go too negative
         let warning = null;
         if (minTsb.tsb < -25) {
-          warning = `⚠️ Fatigue prévue très élevée le ${fmtDate(minTsb.date, true)} (fraîcheur ${Math.round(minTsb.tsb)}). Risque de surentraînement si tu ne récupères pas après ce pic.`;
+          warning = `Fatigue prévue très élevée le ${fmtDate(minTsb.date, true)} (fraîcheur ${Math.round(minTsb.tsb)}). Risque de surentraînement si tu ne récupères pas après ce pic.`;
         }
 
         return { series, ctlDelta, peakCtl, minTsb, maxTsb, verdict, verdictColor, verdictDesc, warning, futurePlannedDays, futureDays };
@@ -7661,11 +7752,11 @@
             // TSB → human-friendly state
             const tsb = hovered.tsb;
             let stateLabel, stateColor, stateDesc;
-            if (tsb >= 15) { stateLabel = '✨ Très frais'; stateColor = 'var(--go)'; stateDesc = "Forme optimale, jour idéal pour un record ou une compétition"; }
-            else if (tsb >= 5) { stateLabel = '✓ Frais'; stateColor = 'var(--go)'; stateDesc = 'Bonne fraîcheur, peut taper fort'; }
-            else if (tsb >= -10) { stateLabel = '⟳ Productif'; stateColor = 'var(--text)'; stateDesc = "Équilibre entraînement / récup, dans le rythme"; }
-            else if (tsb >= -25) { stateLabel = '⚠ Fatigué'; stateColor = 'var(--warn)'; stateDesc = "Charge accumulée, prévoir récup à venir"; }
-            else { stateLabel = '⛔ Surchargé'; stateColor = 'var(--danger)'; stateDesc = "Risque de surentraînement"; }
+            if (tsb >= 15) { stateLabel = 'Très frais'; stateColor = 'var(--go)'; stateDesc = "Forme optimale, jour idéal pour un record ou une compétition"; }
+            else if (tsb >= 5) { stateLabel = 'Frais'; stateColor = 'var(--go)'; stateDesc = 'Bonne fraîcheur, peut taper fort'; }
+            else if (tsb >= -10) { stateLabel = 'Productif'; stateColor = 'var(--text)'; stateDesc = "Équilibre entraînement / récup, dans le rythme"; }
+            else if (tsb >= -25) { stateLabel = 'Fatigué'; stateColor = 'var(--warn)'; stateDesc = "Charge accumulée, prévoir récup à venir"; }
+            else { stateLabel = 'Surchargé'; stateColor = 'var(--danger)'; stateDesc = "Risque de surentraînement"; }
             return (
               <div className="mb-3 leading-relaxed">
                 <div className="font-mono text-xs">
@@ -10526,6 +10617,7 @@
     // ========================================================================
     function ManualActivityModal({ onSave, onCancel }) {
       const today = new Date().toISOString().slice(0, 10);
+      const toast = useToast();
       const [form, setForm] = useState({
         date: today, time: '08:00', distanceKm: '', duration: '',
         avgPower: '', normalizedPower: '', maxPower: '',
@@ -10546,9 +10638,9 @@
       function save() {
         const km = parseFloat(String(form.distanceKm).replace(',', '.'));
         const dur = parseDuration(form.duration);
-        if (!km || km <= 0 || !dur || dur <= 0) { alert('Distance (km) et durée requises. Durée au format : 50 (min), 50:30 (min:sec) ou 1:30:00 (h:m:s).'); return; }
+        if (!km || km <= 0 || !dur || dur <= 0) { toast.push('Distance (km) et durée requises. Durée au format : 50, 50:30 ou 1:30:00.', { kind: 'warn' }); return; }
         const startTime = new Date(`${form.date}T${form.time}:00`).getTime();
-        if (isNaN(startTime)) { alert('Date/heure invalide'); return; }
+        if (isNaN(startTime)) { toast.push('Date/heure invalide', { kind: 'warn' }); return; }
         const parseN = (v) => { const n = parseFloat(String(v).replace(',', '.')); return isNaN(n) ? null : n; };
         const avgPower = form.avgPower ? parseN(form.avgPower) : null;
         const np = form.normalizedPower ? parseN(form.normalizedPower) : avgPower;
@@ -10923,7 +11015,7 @@
           {/* Overlap warnings */}
           {overlapWarnings.length > 0 && (
             <div className="rounded-lg p-3 mb-4" style={{ background: 'rgba(255, 176, 32, 0.08)', border: '1px solid var(--warn)' }}>
-              <div className="font-mono text-[10px] tracking-widest mb-1.5" style={{ color: 'var(--warn)' }}>⚠️ COURSES TROP PROCHES</div>
+              <div className="font-mono text-[10px] tracking-widest mb-1.5 flex items-center gap-1.5" style={{ color: 'var(--warn)' }}><IconAlert size={11} /> COURSES TROP PROCHES</div>
               {overlapWarnings.map((w, i) => (
                 <div key={i} className="text-xs" style={{ color: 'var(--text-dim)' }}>
                   <span style={{ color: 'var(--text)' }}>{w.r1.name}</span> et <span style={{ color: 'var(--text)' }}>{w.r2.name}</span> sont à <span style={{ color: 'var(--warn)' }}>{w.days} jours</span> d'écart. Récup insuffisante pour deux courses A — privilégie une seule comme objectif.
@@ -11036,12 +11128,16 @@
                         {/* Hints */}
                         {proj.hints.length > 0 && (
                           <div className="mt-3 space-y-1.5">
-                            {proj.hints.map((h, i) => (
-                              <div key={i} className="rounded-lg p-2.5 text-xs leading-relaxed flex items-start gap-2" style={{ background: 'var(--bg-elev)', border: `1px solid ${h.type === 'warn' ? 'var(--warn)' : 'var(--compass)'}30` }}>
-                                <span style={{ color: h.type === 'warn' ? 'var(--warn)' : 'var(--compass)' }}>{h.type === 'warn' ? '⚠' : 'ℹ'}</span>
+                            {proj.hints.map((h, i) => {
+                              const HIcon = h.type === 'warn' ? IconAlert : IconInfo;
+                              const c = h.type === 'warn' ? 'var(--warn)' : 'var(--compass)';
+                              return (
+                              <div key={i} className="rounded-lg p-2.5 text-xs leading-relaxed flex items-start gap-2" style={{ background: 'var(--bg-elev)', border: `1px solid ${c}30` }}>
+                                <HIcon size={12} style={{ color: c, flexShrink: 0, marginTop: 2 }} />
                                 <span style={{ color: 'var(--text-dim)' }}>{h.text}</span>
                               </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         )}
 
@@ -12105,6 +12201,7 @@
     // PLAN GENERATOR MODAL — UI for generating a new plan
     // ========================================================================
     function PlanGeneratorModal({ profile, races, activities, onGenerate, onCancel }) {
+      const toast = useToast();
       const futureRaces = (races || []).filter(r => new Date(r.date) >= new Date()).sort((a, b) => new Date(a.date) - new Date(b.date));
       const [mode, setMode] = useState(futureRaces.length > 0 ? 'race' : 'custom');
       const [selectedRaceId, setSelectedRaceId] = useState(futureRaces[0]?.id || null);
@@ -12134,10 +12231,10 @@
       useEffect(() => { const h = (e) => { if (e.key === 'Escape') onCancel(); }; window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h); }, [onCancel]);
 
       function generatePreview() {
-        if (!profile.cp) { alert('Renseigne ta CP dans Profil avant de générer un plan.'); return; }
-        if (!targetDate) { alert('Sélectionne une date cible.'); return; }
-        if (totalWeeks < 4) { alert('La course est trop proche pour générer un plan complet (minimum 4 semaines).'); return; }
-        if (totalWeeks > 20) { alert('La course est trop loin (maximum 20 semaines). Réduit la plage ou attends.'); return; }
+        if (!profile.cp) { toast.push('Renseigne ta CP dans Profil avant de générer un plan.', { kind: 'warn' }); return; }
+        if (!targetDate) { toast.push('Sélectionne une date cible.', { kind: 'warn' }); return; }
+        if (totalWeeks < 4) { toast.push('Course trop proche : minimum 4 semaines pour un plan complet.', { kind: 'warn' }); return; }
+        if (totalWeeks > 20) { toast.push('Course trop loin : maximum 20 semaines. Réduit la plage ou attends.', { kind: 'warn' }); return; }
         const plan = buildPlan({
           raceDate: targetDate, totalWeeks, cp: profile.cp, weightKg: profile.weightKg || 70,
           sessionsPerWeek, addStrength, raceDistance: targetDistance,
@@ -12458,6 +12555,7 @@
       const [view, setView] = useState('today');
       const [profile, setProfile] = useState(getProfile());
       const toast = useToast();
+      const dialog = useDialog();
 
       // PWA install state
       const [installPrompt, setInstallPrompt] = useState(null);
@@ -12547,7 +12645,22 @@
         { id: 1, name: "Foulées d'Erdeven", distance: '10K', date: '2026-06-21', objective: 'sub-41:00', priority: 'A' },
         { id: 2, name: '10K Septembre', distance: '10K', date: '2026-09-15', objective: 'sub-40:00 confirmé', priority: 'A' },
       ]));
-      const [planOverrides, setPlanOverrides] = useState(() => storage.get(KEYS.planOverrides, DEFAULT_PLAN_OVERRIDES));
+      const [planOverrides, setPlanOverrides] = useState(() => {
+        // One-time migration: drop legacy non-Monday-keyed week entries.
+        // getWeekStart() returns Monday, so the canonical wsKey for any week is its Monday.
+        // Earlier versions sometimes wrote Sunday-keyed entries — they're shadow data, ignored
+        // by ACWR/projection lookups but still bloat exports and can shift horizon detection.
+        const raw = storage.get(KEYS.planOverrides, DEFAULT_PLAN_OVERRIDES) || {};
+        let changed = false;
+        const cleaned = {};
+        Object.entries(raw).forEach(([k, v]) => {
+          const d = new Date(k + 'T00:00:00');
+          if (isNaN(d.getTime()) || d.getDay() !== 1) { changed = true; return; }
+          cleaned[k] = v;
+        });
+        if (changed) storage.set(KEYS.planOverrides, cleaned);
+        return cleaned;
+      });
       const [sessionTemplates, setSessionTemplates] = useState(() => storage.get(KEYS.sessionTemplates, []));
 
       // Track CP changes: whenever CP updates, log a history entry
@@ -12647,7 +12760,7 @@
       }
       function doImport(activity, forcedLink = null) {
         if (activities.find(a => a.id === activity.id)) {
-          alert('Cette activité semble déjà importée (même date de début).');
+          toast.push('Cette activité semble déjà importée (même date de début).', { kind: 'warn' });
           return;
         }
         // If forcedLink is provided (e.g. user explicitly imported from Plan into a day),
@@ -12680,12 +12793,16 @@
         }));
         const newCp = estimateCPFromBests(merged);
         if (newCp && newCp > profile.cp + 5) {
-          if (confirm(`COMPASS détecte une nouvelle puissance seuil estimée à ${newCp}W (actuelle : ${profile.cp}W). Mettre à jour ?`)) {
-            setProfile({
+          dialog.confirm({
+            title: 'Mettre à jour la puissance seuil ?',
+            message: `COMPASS détecte une nouvelle puissance seuil estimée à ${newCp}W (actuelle : ${profile.cp}W).`,
+            confirmLabel: 'Mettre à jour',
+          }).then(ok => {
+            if (ok) setProfile({
               ...profile, cp: newCp, cpDate: new Date().toISOString().slice(0, 10),
               cpHistory: [{ date: new Date().toISOString().slice(0, 10), value: newCp, source: 'auto-detected' }, ...(profile.cpHistory || [])],
             });
-          }
+          });
         }
       }
       function handleConfirmDate(timestamp) {
@@ -12926,7 +13043,7 @@
             {view === 'profile' && (
               <ProfileView
                 profile={profile}
-                onSave={(newProfile) => {
+                onSave={async (newProfile) => {
                   // If CP changed, ask user if they want to recalibrate the plan
                   const oldCP = profile.cp;
                   const newCP = newProfile.cp;
@@ -12941,8 +13058,12 @@
                       if (overridesCount > 0) parts.push(`tes ${overridesCount} semaine${overridesCount > 1 ? 's' : ''} planifiée${overridesCount > 1 ? 's' : ''}`);
                       if (tplCount > 0) parts.push(`tes ${tplCount} template${tplCount > 1 ? 's' : ''} de séance`);
                       const what = parts.join(' et ');
-                      const msg = `Tu as modifié ta CP de ${oldCP}W → ${newCP}W (${pct >= 0 ? '+' : ''}${pct}%).\n\nVeux-tu recalibrer ${what} automatiquement ?\n\nTous les watts cibles seront ajustés proportionnellement.`;
-                      if (confirm(msg)) {
+                      const ok = await dialog.confirm({
+                        title: `Recalibrer ${what} ?`,
+                        message: `Tu as modifié ta CP de ${oldCP}W → ${newCP}W (${pct >= 0 ? '+' : ''}${pct}%).\nTous les watts cibles seront ajustés proportionnellement.`,
+                        confirmLabel: 'Recalibrer',
+                      });
+                      if (ok) {
                         if (overridesCount > 0) {
                           const newOverrides = recalibratePlanForCP(planOverrides, oldCP, newCP);
                           setPlanOverrides(newOverrides);
@@ -12976,7 +13097,9 @@
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(
       <ToastProvider>
-        <App />
+        <DialogProvider>
+          <App />
+        </DialogProvider>
       </ToastProvider>
     );
   </script>
