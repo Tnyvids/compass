@@ -1378,13 +1378,12 @@
         calibrated = true;
       }
 
-      // TSB bonus: documented effect of taper on race performance
+      // TSB bonus: linear model — 0.10% per TSB unit, capped at ±2.5%.
+      // A step function with a dead zone (−15 to +5) caused "aujourd'hui" and
+      // "frais" (TSB=0) to show identical times whenever current TSB fell in that range.
       let tsbBonus = 0;
       if (Number.isFinite(tsb)) {
-        if (tsb >= 20) tsbBonus = 0.020;
-        else if (tsb >= 10) tsbBonus = 0.010;
-        else if (tsb >= 5) tsbBonus = 0.005;
-        else if (tsb < -15) tsbBonus = -0.015;
+        tsbBonus = Math.max(-0.025, Math.min(0.025, tsb * 0.001));
       }
       // tsbBonus is a fractional power gain → time decreases by elasticity × bonus
       if (tsbBonus !== 0) {
