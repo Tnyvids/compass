@@ -983,10 +983,19 @@
       const currentIdx = Math.max(0, lastIdx - 1);
       const curCtl = ctlSeries[currentIdx];
       const curAtl = atlSeries[currentIdx];
+      // Live "now" values (last point) — include today's TSS impact.
+      // Used by tools that need the immediate post-session state, like the
+      // "aujourd'hui" race time prediction. The stable tsb above remains the
+      // default for fitness display (FormTrendCard, narrative, etc.).
+      const nowCtl = ctlSeries[lastIdx];
+      const nowAtl = atlSeries[lastIdx];
       return {
         ctl: Math.round(curCtl * 10) / 10,
         atl: Math.round(curAtl * 10) / 10,
         tsb: Math.round((curCtl - curAtl) * 10) / 10,
+        ctlNow: Math.round(nowCtl * 10) / 10,
+        atlNow: Math.round(nowAtl * 10) / 10,
+        tsbNow: Math.round((nowCtl - nowAtl) * 10) / 10,
         series: { ctl: ctlSeries, atl: atlSeries, tsb: tsbSeries, dailyTss: reversed },
       };
     }
@@ -1765,6 +1774,35 @@
         return n;
       };
       return { ...tpl, blocks: tpl.blocks.map(rescale) };
+    }
+
+    // Returns a structural fingerprint string for a blocks array, e.g. "warmup|g3[work,recovery]|cooldown"
+    function blockFingerprint(blocks) {
+      if (!Array.isArray(blocks) || blocks.length === 0) return '';
+      return blocks.map(b => {
+        if (b.kind === 'group') {
+          const childFp = (b.children || []).map(c => c.blockKind || 'x').join(',');
+          return `g${b.reps || 1}[${childFp}]`;
+        }
+        return b.blockKind || 'x';
+      }).join('|');
+    }
+
+    // Returns { count } if day.blocks pattern appears ≥ 2 times in planOverrides and has no matching template, else null.
+    function detectRepeatedPattern(day, planOverrides, sessionTemplates) {
+      if (!day || day.type === 'rest') return null;
+      if (!Array.isArray(day.blocks) || day.blocks.length === 0) return null;
+      const fp = blockFingerprint(day.blocks);
+      if (!fp) return null;
+      if ((sessionTemplates || []).some(t => t.type === day.type && blockFingerprint(t.blocks) === fp)) return null;
+      let count = 0;
+      Object.values(planOverrides || {}).forEach(week => {
+        if (!week || typeof week !== 'object') return;
+        Object.values(week).forEach(d => {
+          if (d && d.type === day.type && Array.isArray(d.blocks) && blockFingerprint(d.blocks) === fp) count++;
+        });
+      });
+      return count >= 2 ? { count } : null;
     }
 
 
@@ -3746,6 +3784,7 @@
                 wsKey={editingInlineDay.wsKey}
                 weekContext={{ cp: profile.cp, weightKg: profile.weightKg, ppt: buildPowerPaceTable(activities || []) }}
                 sessionTemplates={sessionTemplates}
+                planOverrides={planOverrides}
                 onSaveTemplate={onSaveTemplate}
                 onApplyTemplate={onApplyTemplate}
                 onImportActivity={onImportActivity}
@@ -4590,6 +4629,7 @@
               wsKey={wsKey}
               weekContext={weekContext}
               sessionTemplates={sessionTemplates}
+              planOverrides={planOverrides}
               onSaveTemplate={onSaveTemplate}
               onApplyTemplate={onApplyTemplate}
               onImportActivity={onImportActivity}
@@ -4610,7 +4650,7 @@
     // Design: clear sections separated by hairlines, type picker as chips,
     // library collapsed by default, sticky footer.
     // ========================================================================
-    function DayEditModal({ dayKey, dayLabel, dayDate, day, wsKey, weekContext, sessionTemplates, onSaveTemplate, onApplyTemplate, onImportActivity, linkedActivity, onViewActivity, typeOptions, onSaveDay, onClose }) {
+    function DayEditModal({ dayKey, dayLabel, dayDate, day, wsKey, weekContext, sessionTemplates, planOverrides, onSaveTemplate, onApplyTemplate, onImportActivity, linkedActivity, onViewActivity, typeOptions, onSaveDay, onClose }) {
       const [localDay, setLocalDay] = useState(() => ({
         type: day.type || 'rest',
         label: day.label ?? (day.type === 'rest' ? 'Repos' : ''),
@@ -4622,6 +4662,10 @@
       }));
       const [showLibrary, setShowLibrary] = useState(false);
       const [showZones, setShowZones] = useState(false);
+
+      const templateSuggestion = useMemo(() => {
+        return detectRepeatedPattern(localDay, planOverrides, sessionTemplates);
+      }, [localDay.type, blockFingerprint(localDay.blocks), planOverrides, sessionTemplates]); // eslint-disable-line react-hooks/exhaustive-deps
 
       const typeMap = typeOptions.reduce((m, t) => { m[t.v] = t; return m; }, {});
       const t = typeMap[localDay.type] || typeMap.rest;
@@ -4770,13 +4814,40 @@
                   {/* SECTION 4 — Library + import — collapsible row of small actions */}
                   <section>
                     <div className="flex items-center justify-between mb-3">
-                      <div className="t-meta" style={{ color: 'var(--text-faint)' }}>BIBLIOTHÈQUE & IMPORT</div>
+                      <div className="flex items-center gap-2">
+                        <div className="t-meta" style={{ color: 'var(--text-faint)' }}>BIBLIOTHÈQUE & IMPORT</div>
+                        {templateSuggestion && (
+                          <button
+                            onClick={() => setShowLibrary(true)}
+                            className="font-mono text-[9px] tracking-widest px-2 py-0.5 rounded-full"
+                            style={{ background: 'rgba(74,158,255,0.15)', color: 'var(--compass)', border: '1px solid rgba(74,158,255,0.35)', lineHeight: '1.4' }}
+                          >
+                            PATTERN ×{templateSuggestion.count}
+                          </button>
+                        )}
+                      </div>
                       <button onClick={() => setShowLibrary(v => !v)} className="t-meta-dim flex items-center gap-1" style={{ color: 'var(--text-dim)' }}>
                         {showLibrary ? 'MASQUER' : 'AFFICHER'} <IconChevronDown size={11} style={{ transform: showLibrary ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s' }} />
                       </button>
                     </div>
                     {showLibrary && (
-                      <div className="rounded-lg p-3 flex items-center gap-2 flex-wrap" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
+                      <div className="rounded-lg p-3 flex flex-col gap-3" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
+                        {templateSuggestion && (
+                          <div className="flex items-center justify-between gap-3 rounded-lg px-3 py-2" style={{ background: 'rgba(74,158,255,0.08)', border: '1px solid rgba(74,158,255,0.3)' }}>
+                            <span className="text-xs leading-snug" style={{ color: 'var(--compass)' }}>
+                              Structure identique répétée {templateSuggestion.count}× — sauvegarder comme template ?
+                            </span>
+                            <Button
+                              variant="secondary" size="sm" icon={IconSave}
+                              onClick={() => {
+                                const defaultName = localDay.label?.trim() || `Séance ${localDay.type}`;
+                                const name = prompt('Nom du template :', defaultName);
+                                if (name && name.trim() && onSaveTemplate) onSaveTemplate(localDay, name.trim());
+                              }}
+                            >Sauvegarder</Button>
+                          </div>
+                        )}
+                        <div className="flex items-center gap-2 flex-wrap">
                         <TemplatePicker
                           templates={sessionTemplates}
                           currentType={localDay.type}
@@ -4808,6 +4879,7 @@
                             onView={() => { if (linkedActivity) onViewActivity(linkedActivity); }}
                           />
                         )}
+                        </div>
                       </div>
                     )}
                   </section>
@@ -8848,9 +8920,14 @@
           { name: 'Marathon', km: 42.2, currentKey: 'marathon' },
         ];
         const wprime = cpWpFit ? cpWpFit.wprime : 15000;
+        // CRITICAL: "today" prediction uses tsbNow (live, post-session) not tsb
+        // (which is yesterday's stable value by convention). Otherwise today's
+        // session would have zero impact on the "aujourd'hui" race time until
+        // tomorrow — confusing for the user.
+        const tsbForToday = (typeof fitness.tsbNow === 'number') ? fitness.tsbNow : fitness.tsb;
         return distances.map(d => {
           const neutral = predictRaceTimeV2(profile.cp, wprime, profile.weightKg, d.km, profile.prs, mergedBestEfforts, 0);
-          const today = predictRaceTimeV2(profile.cp, wprime, profile.weightKg, d.km, profile.prs, mergedBestEfforts, fitness.tsb);
+          const today = predictRaceTimeV2(profile.cp, wprime, profile.weightKg, d.km, profile.prs, mergedBestEfforts, tsbForToday);
           return {
             ...d,
             current: profile.prs?.[d.currentKey],
@@ -8865,7 +8942,7 @@
             todayPower: today?.racePower,
           };
         });
-      }, [profile.cp, profile.weightKg, profile.prs, mergedBestEfforts, cpWpFit, fitness.tsb]);
+      }, [profile.cp, profile.weightKg, profile.prs, mergedBestEfforts, cpWpFit, fitness.tsb, fitness.tsbNow]);
 
       // Header always shows
       const header = (
