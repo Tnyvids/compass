@@ -7676,6 +7676,397 @@
     }
 
     // ========================================================================
+    // ACWR PROJECTION — forward-looking acute:chronic workload ratio.
+    //
+    // For each day from today to lastPlanned + 7 days, computes:
+    //   acute   = sum TSS over the trailing 7 days (real past + planned future)
+    //   chronic = sum TSS over the trailing 28 days, divided by 4 (weekly avg)
+    //   ratio   = acute / chronic
+    //
+    // 4 zones (mirrors computeACWR):
+    //   < 0.8   undertraining (grey)
+    //   0.8 1.3 sweet spot    (positive)
+    //   1.3 1.5 high          (caution)
+    //   > 1.5   danger        (critical)
+    //
+    // Confidence note: as the projected day moves further out, the chronic
+    // window includes more hypothetical (planned) TSS and less real history.
+    // Beyond +21 days the line switches from solid to dashed to signal
+    // reduced confidence (chronic window is then majority planned).
+    //
+    // Goal: surface injury risk windows BEFORE they happen, so user can
+    // anticipate decharge weeks. Critical given Tony's knee history.
+    // ========================================================================
+    function ACWRProjectionCard({ activities, profile, planOverrides }) {
+      const [hoverIdx, setHoverIdx] = useState(null);
+      const svgRef = useRef(null);
+
+      const projection = useMemo(() => {
+        if (!profile.cp) return { insufficient: 'no_cp' };
+
+        const dayMs = 86400000;
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayMs = today.getTime();
+        const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
+        const powerPaceTable = buildPowerPaceTable(activities || []);
+
+        // ===== STEP 1: find horizon (last planned day + 7) =====
+        let lastPlannedMs = todayMs;
+        Object.entries(planOverrides || {}).forEach(([wsKey, week]) => {
+          if (!week) return;
+          const wsDate = new Date(wsKey + 'T00:00:00');
+          if (isNaN(wsDate.getTime())) return;
+          dayKeys.forEach((dk, i) => {
+            const d = week[dk];
+            if (!d || d.type === 'rest') return;
+            const dms = wsDate.getTime() + i * dayMs;
+            if (dms >= todayMs && dms > lastPlannedMs) lastPlannedMs = dms;
+          });
+        });
+        if (lastPlannedMs <= todayMs) return { insufficient: 'no_plan' };
+        const futureDays = Math.round((lastPlannedMs - todayMs) / dayMs) + 7;
+
+        // ===== STEP 2: history sufficiency check (mirror computeACWR rules) =====
+        const activitiesWithTss = activities.map(a => ({ ...a, tss: computeTSS(a, profile.cp) }));
+        let earliestMs = todayMs;
+        let activityCount28 = 0;
+        activitiesWithTss.forEach(a => {
+          if (a.startMs < earliestMs) earliestMs = a.startMs;
+          if (!a.tss) return;
+          const aDay = new Date(a.startMs); aDay.setHours(0, 0, 0, 0);
+          const daysAgo = Math.round((todayMs - aDay.getTime()) / dayMs);
+          if (daysAgo >= 0 && daysAgo < 28) activityCount28++;
+        });
+        const daysOfHistory = Math.round((todayMs - earliestMs) / dayMs);
+        if (daysOfHistory < 14 || activityCount28 < 4) {
+          return { insufficient: 'not_enough_history', daysOfHistory, activityCount: activityCount28 };
+        }
+
+        // ===== STEP 3: build per-day TSS arrays =====
+        // Past 28 days (today's bucket included at index 0)
+        const pastTssByDay = new Array(28).fill(0);
+        activitiesWithTss.forEach(a => {
+          if (!a.tss) return;
+          const aDay = new Date(a.startMs); aDay.setHours(0, 0, 0, 0);
+          const daysAgo = Math.round((todayMs - aDay.getTime()) / dayMs);
+          if (daysAgo >= 0 && daysAgo < 28) pastTssByDay[daysAgo] += a.tss;
+        });
+
+        // Future planned TSS (idx 0 = tomorrow)
+        const futureTssByDay = new Array(futureDays).fill(0);
+        for (let d = 1; d <= futureDays; d++) {
+          const date = new Date(todayMs + d * dayMs);
+          const wsDate = getWeekStart(date);
+          const wsKey = toLocalDateKey(wsDate);
+          const dayIdx = (date.getDay() + 6) % 7;
+          const dayKey = dayKeys[dayIdx];
+          const planned = planOverrides[wsKey] && planOverrides[wsKey][dayKey];
+          if (planned && planned.type !== 'rest') {
+            const hasExplicitMin = Number.isFinite(planned.plannedMin) && planned.plannedMin > 0;
+            const hasExplicitKm = Number.isFinite(planned.plannedKm) && planned.plannedKm > 0;
+            const estimatedDur = estimateSessionDuration(planned.detail, planned.type);
+            const dur = hasExplicitMin
+              ? planned.plannedMin
+              : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(planned.type, profile.cp, profile.weightKg, planned.plannedKm, powerPaceTable) : 0));
+            if (dur > 0) futureTssByDay[d - 1] = estimateSessionTSS(planned.type, profile.cp, dur);
+          }
+        }
+
+        // tssAt(offset) — offset is days from today (negative=past, 0=today, positive=future)
+        function tssAt(off) {
+          if (off <= 0) {
+            const daysAgo = -off;
+            return daysAgo < 28 ? pastTssByDay[daysAgo] : 0;
+          }
+          if (off > 0 && off <= futureDays) return futureTssByDay[off - 1];
+          return 0;
+        }
+
+        // ===== STEP 4: rolling ACWR for each day d in [0, futureDays] =====
+        const series = [];
+        for (let d = 0; d <= futureDays; d++) {
+          let acute = 0;
+          for (let k = -6; k <= 0; k++) acute += tssAt(d + k);
+          let chronic = 0;
+          for (let k = -27; k <= 0; k++) chronic += tssAt(d + k);
+          const chronicWeekly = chronic / 4;
+          const ratio = chronicWeekly > 0 ? acute / chronicWeekly : null;
+          const date = new Date(todayMs + d * dayMs);
+          let zone = 'unknown';
+          if (ratio !== null) {
+            if (ratio < 0.8) zone = 'undertraining';
+            else if (ratio > 1.5) zone = 'danger';
+            else if (ratio > 1.3) zone = 'high';
+            else zone = 'sweet';
+          }
+          series.push({ d, date, ratio, acute, chronicWeekly, zone });
+        }
+
+        // ===== STEP 5: group consecutive same-zone days into windows =====
+        function groupWindows(targetZone) {
+          const windows = [];
+          let cur = null;
+          series.forEach(p => {
+            if (p.zone === targetZone && p.ratio !== null) {
+              if (!cur) cur = { startIdx: p.d, endIdx: p.d, peakRatio: p.ratio, peakIdx: p.d };
+              else {
+                cur.endIdx = p.d;
+                if (p.ratio > cur.peakRatio) { cur.peakRatio = p.ratio; cur.peakIdx = p.d; }
+              }
+            } else if (cur) {
+              windows.push(cur); cur = null;
+            }
+          });
+          if (cur) windows.push(cur);
+          return windows.map(w => ({
+            ...w,
+            startDate: new Date(todayMs + w.startIdx * dayMs),
+            endDate: new Date(todayMs + w.endIdx * dayMs),
+            peakDate: new Date(todayMs + w.peakIdx * dayMs),
+            days: w.endIdx - w.startIdx + 1,
+          }));
+        }
+        const redWindows = groupWindows('danger');
+        const amberWindows = groupWindows('high');
+
+        // ===== STEP 6: verdict =====
+        let verdict, verdictColor, verdictDesc;
+        if (redWindows.length > 0) {
+          const first = redWindows[0];
+          verdict = `${redWindows.length} fenêtre${redWindows.length > 1 ? 's' : ''} de risque blessure détectée${redWindows.length > 1 ? 's' : ''}`;
+          verdictColor = 'var(--critical)';
+          verdictDesc = `Premier dépassement à partir du ${fmtDate(first.startDate, true)} — ACWR projeté pic à ${first.peakRatio.toFixed(2)}. La charge planifiée monte trop vite par rapport à ta moyenne 28 jours.`;
+        } else if (amberWindows.length > 0) {
+          const peakAmber = amberWindows.reduce((max, w) => w.peakRatio > max.peakRatio ? w : max, amberWindows[0]);
+          verdict = `Charge en hausse — ${amberWindows.length} fenêtre${amberWindows.length > 1 ? 's' : ''} en vigilance`;
+          verdictColor = 'var(--caution)';
+          verdictDesc = `ACWR projeté monte à ${peakAmber.peakRatio.toFixed(2)} le ${fmtDate(peakAmber.peakDate, true)}. Pas critique (zone risque > 1.5) mais à surveiller — une décharge serait sage.`;
+        } else {
+          verdict = 'Charge maîtrisée sur tout l\'horizon planifié';
+          verdictColor = 'var(--positive)';
+          verdictDesc = `ACWR projeté reste en zone safe (≤ 1.3) sur les ${futureDays} prochains jours. Ton plan respecte la progression saine.`;
+        }
+
+        return {
+          series, redWindows, amberWindows, futureDays,
+          verdict, verdictColor, verdictDesc,
+          insufficient: false,
+        };
+      }, [activities, profile.cp, profile.weightKg, planOverrides]);
+
+      // ===== Empty / insufficient states =====
+      if (!projection || projection.insufficient) {
+        const reason = projection ? projection.insufficient : 'no_cp';
+        const messages = {
+          no_cp: 'Renseigne ta puissance seuil (CP) dans Profil pour activer la projection ACWR.',
+          no_plan: 'Planifie au moins une séance future dans Plan pour voir comment ta charge va évoluer.',
+          not_enough_history: `Il faut au moins 14 jours d'historique et 4 séances dans les 28 derniers jours. Actuellement : ${projection?.daysOfHistory || 0} jours, ${projection?.activityCount || 0} séances.`,
+        };
+        return (
+          <Card className="p-6 md:p-7">
+            <div className="flex items-center gap-2 mb-3">
+              <IconAlert size={14} style={{ color: 'var(--text-dim)' }} />
+              <div className="font-mono text-xs tracking-widest" style={{ color: 'var(--text-dim)' }}>RISQUE BLESSURE PROJETÉ · ACWR</div>
+            </div>
+            <div className="text-sm" style={{ color: 'var(--text-dim)' }}>{messages[reason] || messages.no_cp}</div>
+          </Card>
+        );
+      }
+
+      const { series, redWindows, amberWindows, futureDays, verdict, verdictColor, verdictDesc } = projection;
+
+      // ===== SVG layout =====
+      const W = 760, H = 200;
+      const padL = 36, padR = 16, padT = 18, padB = 28;
+      const cw = W - padL - padR, ch = H - padT - padB;
+      const yMaxAxis = Math.max(2.0, Math.ceil(Math.max(...series.map(p => p.ratio || 0)) * 10) / 10 + 0.1);
+      const x = (i) => padL + (i / Math.max(1, series.length - 1)) * cw;
+      const y = (v) => padT + ch - (v / yMaxAxis) * ch;
+
+      // Confidence cutoff: line solid up to day 21, dashed after
+      const CONFIDENCE_CUTOFF = 21;
+      const cutoffIdx = Math.min(CONFIDENCE_CUTOFF, series.length - 1);
+      const solidPts = series.slice(0, cutoffIdx + 1).filter(p => p.ratio !== null);
+      const dashedPts = series.slice(cutoffIdx).filter(p => p.ratio !== null);
+      const solidPath = solidPts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(p.d).toFixed(1)} ${y(p.ratio).toFixed(1)}`).join(' ');
+      const dashedPath = dashedPts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(p.d).toFixed(1)} ${y(p.ratio).toFixed(1)}`).join(' ');
+      const cutoffX = x(cutoffIdx);
+
+      // Zone band Y coords
+      const yUnder = y(0.8);
+      const ySweetTop = y(1.3);
+      const yHighTop = y(1.5);
+      const yChartTop = padT;
+      const yChartBot = padT + ch;
+
+      function handleMouseMove(e) {
+        if (!svgRef.current) return;
+        const rect = svgRef.current.getBoundingClientRect();
+        const mouseX = ((e.clientX - rect.left) / rect.width) * W;
+        let nearestIdx = 0, minDist = Infinity;
+        series.forEach((p, i) => {
+          const sx = x(p.d);
+          const d = Math.abs(sx - mouseX);
+          if (d < minDist) { minDist = d; nearestIdx = i; }
+        });
+        if (minDist < 30) setHoverIdx(nearestIdx);
+        else setHoverIdx(null);
+      }
+
+      const hovered = hoverIdx !== null ? series[hoverIdx] : null;
+      const zoneLabel = (z) => ({
+        sweet: 'zone safe',
+        high: 'vigilance',
+        danger: 'risque blessure',
+        undertraining: 'sous-charge',
+        unknown: '—',
+      })[z] || '—';
+      const zoneColor = (z) => ({
+        sweet: 'var(--positive)',
+        high: 'var(--caution)',
+        danger: 'var(--critical)',
+        undertraining: 'var(--text-dim)',
+        unknown: 'var(--text-faint)',
+      })[z] || 'var(--text-faint)';
+
+      return (
+        <Card className="p-6 md:p-7" accent={verdictColor}>
+          {/* HEADER */}
+          <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+            <div className="flex items-center gap-2">
+              <IconAlert size={14} style={{ color: verdictColor }} />
+              <div className="font-mono text-xs tracking-widest" style={{ color: 'var(--text-dim)' }}>RISQUE BLESSURE PROJETÉ · ACWR {futureDays} JOURS</div>
+            </div>
+            <div className="font-mono text-xs tabular" style={{ color: 'var(--text-faint)' }}>
+              {redWindows.length > 0 && <span style={{ color: 'var(--critical)' }}>{redWindows.length} risque · </span>}
+              {amberWindows.length > 0 && <span style={{ color: 'var(--caution)' }}>{amberWindows.length} vigilance · </span>}
+              <span>seuils 1.3 / 1.5</span>
+            </div>
+          </div>
+
+          {/* VERDICT */}
+          <div className="mb-4">
+            <div className="font-display text-lg font-bold" style={{ color: verdictColor }}>{verdict}</div>
+            <div className="text-sm leading-relaxed mt-1" style={{ color: 'var(--text-dim)' }}>{verdictDesc}</div>
+          </div>
+
+          {/* HOVER INFO BAR */}
+          {hovered ? (
+            <div className="mb-3 leading-relaxed">
+              <div className="font-mono text-xs">
+                <span style={{ color: hovered.d === 0 ? 'var(--compass)' : 'var(--text)' }}>{fmtDate(hovered.date, true)}</span>
+                <span className="ml-1" style={{ color: 'var(--text-faint)' }}>
+                  {hovered.d === 0 ? '(aujourd\'hui)' : `(J+${hovered.d})`}
+                  {hovered.d > CONFIDENCE_CUTOFF && <span className="ml-1" style={{ fontStyle: 'italic' }}>· confiance réduite</span>}
+                </span>
+              </div>
+              <div className="mt-1.5 flex items-baseline gap-2 flex-wrap">
+                <span className="font-display text-2xl font-bold tabular" style={{ color: zoneColor(hovered.zone) }}>
+                  {hovered.ratio !== null ? hovered.ratio.toFixed(2) : '—'}
+                </span>
+                <span className="font-mono text-xs uppercase tracking-wider" style={{ color: zoneColor(hovered.zone) }}>{zoneLabel(hovered.zone)}</span>
+              </div>
+              <div className="font-mono text-[11px] mt-1.5 flex flex-wrap gap-3" style={{ color: 'var(--text-faint)' }}>
+                <span>Charge 7j <span className="font-bold tabular" style={{ color: 'var(--text-dim)' }}>{Math.round(hovered.acute)}</span></span>
+                <span>Moy. 28j (par sem) <span className="font-bold tabular" style={{ color: 'var(--text-dim)' }}>{Math.round(hovered.chronicWeekly)}</span></span>
+              </div>
+            </div>
+          ) : (
+            <div className="mb-2 font-mono text-xs italic" style={{ color: 'var(--text-faint)' }}>Survole le graphique pour voir l'ACWR jour par jour. <span className="ml-1">Trait plein = première fenêtre fiable (≤ J+21) · pointillé = projection à fenêtre chronique majoritairement planifiée.</span></div>
+          )}
+
+          {/* SVG CHART */}
+          <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet" onMouseMove={handleMouseMove} onMouseLeave={() => setHoverIdx(null)} style={{ cursor: 'crosshair' }}>
+            {/* Zone bands (full width, behind) */}
+            <rect x={padL} y={yChartTop} width={cw} height={Math.max(0, yHighTop - yChartTop)} fill="var(--critical)" opacity="0.07" />
+            <rect x={padL} y={yHighTop} width={cw} height={Math.max(0, ySweetTop - yHighTop)} fill="var(--caution)" opacity="0.08" />
+            <rect x={padL} y={ySweetTop} width={cw} height={Math.max(0, yUnder - ySweetTop)} fill="var(--positive)" opacity="0.06" />
+            <rect x={padL} y={yUnder} width={cw} height={Math.max(0, yChartBot - yUnder)} fill="var(--text-dim)" opacity="0.04" />
+
+            {/* Zone threshold lines */}
+            <line x1={padL} y1={yHighTop} x2={W - padR} y2={yHighTop} stroke="var(--critical)" strokeWidth="0.5" strokeDasharray="2,3" opacity="0.5" />
+            <line x1={padL} y1={ySweetTop} x2={W - padR} y2={ySweetTop} stroke="var(--caution)" strokeWidth="0.5" strokeDasharray="2,3" opacity="0.5" />
+            <line x1={padL} y1={yUnder} x2={W - padR} y2={yUnder} stroke="var(--text-dim)" strokeWidth="0.5" strokeDasharray="2,3" opacity="0.4" />
+
+            {/* Zone labels (right edge) */}
+            <text x={W - padR - 4} y={(yChartTop + yHighTop) / 2 + 3} textAnchor="end" fontFamily="JetBrains Mono" fontSize="8" fill="var(--critical)" opacity="0.7">RISQUE</text>
+            <text x={W - padR - 4} y={(yHighTop + ySweetTop) / 2 + 3} textAnchor="end" fontFamily="JetBrains Mono" fontSize="8" fill="var(--caution)" opacity="0.7">VIGILANCE</text>
+            <text x={W - padR - 4} y={(ySweetTop + yUnder) / 2 + 3} textAnchor="end" fontFamily="JetBrains Mono" fontSize="8" fill="var(--positive)" opacity="0.7">SAFE</text>
+
+            {/* Y axis ticks */}
+            {[0, 0.5, 1.0, 1.3, 1.5, 2.0].filter(v => v <= yMaxAxis).map((v, i) => (
+              <g key={i}>
+                <text x={padL - 4} y={y(v) + 3} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{v.toFixed(1)}</text>
+              </g>
+            ))}
+
+            {/* Confidence boundary vertical line at J+21 */}
+            {cutoffIdx < series.length - 1 && (
+              <>
+                <line x1={cutoffX} y1={yChartTop} x2={cutoffX} y2={yChartBot} stroke="var(--text-faint)" strokeWidth="0.5" strokeDasharray="1,3" opacity="0.5" />
+                <text x={cutoffX} y={padT - 6} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="8" fill="var(--text-faint)">J+21</text>
+              </>
+            )}
+
+            {/* Today vertical line (left edge) */}
+            <line x1={padL} y1={yChartTop} x2={padL} y2={yChartBot} stroke="var(--compass)" strokeWidth="1" strokeDasharray="3,3" opacity="0.6" />
+            <text x={padL} y={padT - 6} textAnchor="start" fontFamily="JetBrains Mono" fontSize="9" fill="var(--compass)">aujourd'hui</text>
+
+            {/* Hover crosshair */}
+            {hovered && (
+              <line x1={x(hovered.d)} y1={yChartTop} x2={x(hovered.d)} y2={yChartBot} stroke="#8A8A8A" strokeWidth="0.8" strokeDasharray="3,3" opacity="0.6" />
+            )}
+
+            {/* ACWR line — solid (≤ J+21) and dashed (> J+21) */}
+            {solidPath && <path d={solidPath} fill="none" stroke="var(--text)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />}
+            {dashedPath && <path d={dashedPath} fill="none" stroke="var(--text)" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" strokeDasharray="5,4" opacity="0.7" />}
+
+            {/* Hover dot */}
+            {hovered && hovered.ratio !== null && (
+              <circle cx={x(hovered.d)} cy={y(hovered.ratio)} r="4" fill={zoneColor(hovered.zone)} stroke="#0A0A0A" strokeWidth="1.5" />
+            )}
+
+            {/* X axis labels — start, mid, end */}
+            <text x={padL} y={H - 8} textAnchor="start" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{fmtDate(series[0].date)}</text>
+            <text x={padL + cw / 2} y={H - 8} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{fmtDate(series[Math.floor(series.length / 2)].date)}</text>
+            <text x={W - padR} y={H - 8} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{fmtDate(series[series.length - 1].date)}</text>
+          </svg>
+
+          {/* WINDOWS LIST — red windows first, then amber */}
+          {(redWindows.length > 0 || amberWindows.length > 0) && (
+            <div className="mt-4 pt-4" style={{ borderTop: '1px solid var(--border)' }}>
+              <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--text-dim)' }}>FENÊTRES À ANTICIPER</div>
+              <div className="flex flex-col gap-1.5">
+                {redWindows.map((w, i) => (
+                  <div key={'r'+i} className="flex items-center gap-3 font-mono text-xs flex-wrap">
+                    <span className="inline-block w-2 h-2 rounded-sm" style={{ background: 'var(--critical)' }}></span>
+                    <span className="uppercase tracking-wider" style={{ color: 'var(--critical)', minWidth: '6em' }}>RISQUE</span>
+                    <span style={{ color: 'var(--text)' }}>{fmtDate(w.startDate)}{w.days > 1 ? ` → ${fmtDate(w.endDate)}` : ''}</span>
+                    <span style={{ color: 'var(--text-dim)' }}>{w.days}j</span>
+                    <span className="ml-auto tabular" style={{ color: 'var(--critical)' }}>pic {w.peakRatio.toFixed(2)}</span>
+                  </div>
+                ))}
+                {amberWindows.map((w, i) => (
+                  <div key={'a'+i} className="flex items-center gap-3 font-mono text-xs flex-wrap">
+                    <span className="inline-block w-2 h-2 rounded-sm" style={{ background: 'var(--caution)' }}></span>
+                    <span className="uppercase tracking-wider" style={{ color: 'var(--caution)', minWidth: '6em' }}>VIGILANCE</span>
+                    <span style={{ color: 'var(--text)' }}>{fmtDate(w.startDate)}{w.days > 1 ? ` → ${fmtDate(w.endDate)}` : ''}</span>
+                    <span style={{ color: 'var(--text-dim)' }}>{w.days}j</span>
+                    <span className="ml-auto tabular" style={{ color: 'var(--caution)' }}>pic {w.peakRatio.toFixed(2)}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 font-mono text-[10px] italic" style={{ color: 'var(--text-faint)' }}>
+                ACWR &gt; 1.5 = charge récente bien supérieure à la moyenne 28j → corrélé à un risque blessure accru. Décharger 1–2 semaines avant ces fenêtres pour casser la rampe.
+              </div>
+            </div>
+          )}
+        </Card>
+      );
+    }
+
+    // ========================================================================
     // PACE TIMELINE — unified past + future visualization of predicted paces.
     //
     // Past portion: derived from CP history (each cpHistory entry produces
@@ -8583,6 +8974,7 @@
                 </>
               )}
               <div className="mb-4"><FutureLoadProjectionCard activities={activities} profile={profile} planOverrides={planOverrides} /></div>
+              <div className="mb-4"><ACWRProjectionCard activities={activities} profile={profile} planOverrides={planOverrides} /></div>
             </>
           )}
 
@@ -8900,6 +9292,7 @@
     function UnifiedFitnessChartCard({ activities, profile, planOverrides }) {
       const [hoverIdx, setHoverIdx] = useState(null);
       const [hidden, setHidden] = useState(() => new Set());
+      const [zoom, setZoom] = useState('90j'); // '30j' | '90j' | 'all'
 
       const data = useMemo(() => {
         if (!profile.cp || !activities) return null;
@@ -8923,7 +9316,7 @@
         const seedCtl = pastCtl[pastDays - 1];
         const seedAtl = pastAtl[pastDays - 1];
 
-        // ---- FUTURE: project until last planned session + 7 days, capped at 90 days ----
+        // ---- FUTURE: project until last planned session + 7 days, capped at 180 days ----
         const ctlAlpha = 1 - Math.exp(-1/42);
         const atlAlpha = 1 - Math.exp(-1/7);
         const powerPaceTable = buildPowerPaceTable(activities);
@@ -8942,7 +9335,7 @@
             if (dms >= todayMs && dms > lastPlannedMs) lastPlannedMs = dms;
           });
         });
-        const futureDays = Math.min(90, Math.max(0, Math.round((lastPlannedMs - todayMs) / dayMs) + 7));
+        const futureDays = Math.min(180, Math.max(0, Math.round((lastPlannedMs - todayMs) / dayMs) + 7));
 
         // Build future arrays
         const futCtl = [], futAtl = [], futTsb = [], futTss = [];
@@ -8993,7 +9386,34 @@
       }, [activities, profile.cp, profile.weightKg, planOverrides]);
 
       if (!data) return null;
-      const { ctl, atl, tsb, tss, totalDays, todayIdx, futureDays, pastDays, dateAt, totalPastTss, totalFutureTss } = data;
+
+      // ---- ZOOM: slice the displayed window without touching computed data ----
+      // The full data (up to 90d past + 180d future) is always computed in the useMemo.
+      // The zoom toggle only filters what we render. CTL/ATL accuracy is preserved.
+      const fullData = data;
+      const fullTotalDays = fullData.totalDays;
+      const fullTodayIdx = fullData.todayIdx;
+      const fullPastDays = fullData.pastDays;
+      let dispStart = 0, dispEnd = fullTotalDays;
+      if (zoom === '30j') {
+        dispStart = Math.max(0, fullTodayIdx - 30);
+        dispEnd = Math.min(fullTotalDays, fullTodayIdx + 31);
+      } else if (zoom === '90j') {
+        dispStart = Math.max(0, fullTodayIdx - 90);
+        dispEnd = Math.min(fullTotalDays, fullTodayIdx + 91);
+      }
+      const ctl = fullData.ctl.slice(dispStart, dispEnd);
+      const atl = fullData.atl.slice(dispStart, dispEnd);
+      const tsb = fullData.tsb.slice(dispStart, dispEnd);
+      const tss = fullData.tss.slice(dispStart, dispEnd);
+      const totalDays = ctl.length;
+      const todayIdx = fullTodayIdx - dispStart;
+      const pastDays = Math.max(0, Math.min(fullPastDays - dispStart, totalDays));
+      const futureDays = Math.max(0, totalDays - pastDays);
+      const dateAt = (i) => fullData.dateAt(i + dispStart);
+      // Aggregate TSS reflects the displayed slice (not the full computed dataset)
+      const totalPastTss = Math.round(tss.slice(0, pastDays).reduce((s, v) => s + v, 0));
+      const totalFutureTss = Math.round(tss.slice(pastDays).reduce((s, v) => s + v, 0));
 
       // Series definitions
       const seriesDef = [
@@ -9117,6 +9537,37 @@
                 );
               })}
             </div>
+          </div>
+
+          {/* Zoom toggle — windows the displayed range without affecting calculations */}
+          <div className="mb-3 flex items-center gap-2 font-mono text-[10px] flex-wrap">
+            <span className="tracking-widest" style={{ color: 'var(--text-faint)' }}>FENÊTRE</span>
+            {[
+              { v: '30j', label: '30J' },
+              { v: '90j', label: '90J' },
+              { v: 'all', label: 'TOUT' },
+            ].map(opt => {
+              const active = zoom === opt.v;
+              return (
+                <button
+                  key={opt.v}
+                  onClick={() => setZoom(opt.v)}
+                  className="btn px-2 py-1 rounded tracking-wider transition"
+                  style={{
+                    background: active ? 'var(--bg-elev)' : 'transparent',
+                    border: `1px solid ${active ? 'var(--compass)' : 'var(--border)'}`,
+                    color: active ? 'var(--compass)' : 'var(--text-dim)',
+                  }}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+            {zoom !== 'all' && (fullPastDays > pastDays || (fullTotalDays - fullPastDays) > futureDays) && (
+              <span className="ml-1 italic" style={{ color: 'var(--text-faint)' }}>
+                · données complètes calculées · {fullPastDays}J passé + {fullTotalDays - fullPastDays}J futur disponibles
+              </span>
+            )}
           </div>
 
           {hoverIdx !== null ? (
