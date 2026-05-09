@@ -2637,9 +2637,9 @@
               </div>
             </div>
             {actionLabel && actionFn && (
-              <Button variant="secondary" size="sm" onClick={(e) => { e.stopPropagation(); actionFn(); }} icon={IconDumbbell} style={{ background: zoneColor, color: '#000', borderColor: zoneColor }}>
-                {actionLabel}
-              </Button>
+              <button onClick={(e) => { e.stopPropagation(); actionFn(); }} className="btn flex items-center gap-1.5 px-3 py-2 rounded-lg font-mono text-[11px] tracking-widest flex-shrink-0" style={{ background: zoneColor, color: '#000' }}>
+                <IconDumbbell size={12} /> {actionLabel}
+              </button>
             )}
           </div>
           {/* Mini contributors bar */}
