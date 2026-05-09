@@ -5751,8 +5751,14 @@
       const spread = p75 - p25;
       if (spread < 30) return { reps: [], threshold, reason: 'no-contrast' };
 
+      // Recovery floor: low water-mark used to extend bout boundaries to include
+      // the acceleration / deceleration ramps that the entry threshold cuts off.
+      // Picked at 25% into the spread above p25 — clearly above recovery jogging
+      // but well below sustained work power.
+      const recoveryFloor = p25 + 0.25 * spread;
+
       const minRepDur = 60, maxGapDur = 45;
-      const reps = [];
+      const initial = [];
       let inRep = false, repStart = 0, belowCount = 0;
       for (let i = 0; i < smoothed.length; i++) {
         const isAbove = smoothed[i] >= threshold;
@@ -5762,32 +5768,46 @@
           if (belowCount >= maxGapDur) {
             const repEnd = i - belowCount + 1;
             const repLen = repEnd - repStart;
-            if (repLen >= minRepDur) {
-              let sum = 0;
-              for (let k = repStart; k < repEnd; k++) sum += powers[k];
-              reps.push({ start: repStart, end: repEnd, avg: sum / repLen, dur: repLen });
-            }
+            if (repLen >= minRepDur) initial.push({ start: repStart, end: repEnd });
             inRep = false; belowCount = 0;
           }
         } else if (inRep && isAbove) belowCount = 0;
       }
       if (inRep) {
         const repLen = smoothed.length - repStart;
-        if (repLen >= minRepDur) {
-          let sum = 0;
-          for (let k = repStart; k < smoothed.length; k++) sum += powers[k];
-          reps.push({ start: repStart, end: smoothed.length, avg: sum / repLen, dur: repLen });
-        }
+        if (repLen >= minRepDur) initial.push({ start: repStart, end: smoothed.length });
       }
+
+      // Boundary refinement — extend each bout backward / forward as long as
+      // smoothed power stays above recoveryFloor, bounded by neighbouring bouts.
+      // This re-includes the ramps that the percentile threshold missed.
+      const refined = initial.map((r, idx) => {
+        const prevEnd = idx > 0 ? initial[idx - 1].end : 0;
+        const nextStart = idx < initial.length - 1 ? initial[idx + 1].start : smoothed.length;
+        let newStart = r.start;
+        while (newStart > prevEnd && smoothed[newStart - 1] >= recoveryFloor) newStart--;
+        let newEnd = r.end;
+        while (newEnd < nextStart && smoothed[newEnd] >= recoveryFloor) newEnd++;
+        return { start: newStart, end: newEnd };
+      });
+
+      // Compute final stats over the refined boundaries (raw power averaging).
+      const reps = refined.map(r => {
+        const dur = r.end - r.start;
+        let sum = 0;
+        for (let k = r.start; k < r.end; k++) sum += powers[k];
+        return { start: r.start, end: r.end, avg: sum / dur, dur };
+      });
+
       // Filter short warmup strides
       if (reps.length > 1) {
         const maxDur = Math.max(...reps.map(r => r.dur));
         const mainReps = reps.filter(r => r.dur >= maxDur * 0.5);
         if (mainReps.length >= reps.length / 2) {
-          return { reps: mainReps, threshold, allReps: reps };
+          return { reps: mainReps, threshold, recoveryFloor, allReps: reps };
         }
       }
-      return { reps, threshold };
+      return { reps, threshold, recoveryFloor };
     }
 
     // Detect if an activity (with trackpointPowers) is an interval session.
