@@ -391,6 +391,8 @@
       unitMode: 'power',      // 'power' | 'pace' — for users without Stryd
       discipline: 'road',     // 'road' | 'trail' — future-proofing for GAP/D+ weighting
       showStrength: true,     // toggle Renfo program visibility (CTA, suggestions, tab)
+      onboardingDone: false,  // flips to true after the welcome wizard (or auto-true for legacy users)
+      easyPaceMinPerKm: null, // captured from onboarding for users without a power meter
     };
 
     function getProfile() {
@@ -405,6 +407,10 @@
         if (side === 'droit' || side === 'les deux') zones.push('knee_right');
         if (zones.length === 0) zones.push('knee_left'); // sensible default when side is unspecified
         merged.injuryZones = zones;
+      }
+      // Existing users (anyone who already typed a name) skip the welcome wizard.
+      if (typeof merged.onboardingDone !== 'boolean') {
+        merged.onboardingDone = !!(merged.name && merged.name.trim().length > 0);
       }
       return merged;
     }
@@ -5807,6 +5813,200 @@
     }
 
     // ========================================================================
+    // ONBOARDING MODAL — first-launch wizard. Walks a brand-new user through
+    // the minimum profile data Compass needs to generate useful narratives.
+    // Triggered when profile.onboardingDone is false; legacy users skip via migration.
+    // ========================================================================
+    function OnboardingModal({ initialProfile, onComplete, onSkip }) {
+      const [step, setStep] = useState(0);
+      const [draft, setDraft] = useState({
+        name: initialProfile?.name || '',
+        birthYear: initialProfile?.birthYear || '',
+        weightKg: initialProfile?.weightKg || '',
+        fcMax: initialProfile?.fcMax || '',
+        hasPowerMeter: initialProfile?.cp ? true : null,
+        cp: initialProfile?.cp || '',
+        easyPaceMinPerKm: initialProfile?.easyPaceMinPerKm || '',
+        injuryZones: Array.isArray(initialProfile?.injuryZones) ? [...initialProfile.injuryZones] : [],
+      });
+
+      const steps = [
+        { key: 'welcome', label: 'BIENVENUE' },
+        { key: 'identity', label: 'IDENTITÉ' },
+        { key: 'body', label: 'MESURES' },
+        { key: 'power', label: 'PUISSANCE' },
+        { key: 'zones', label: 'BLESSURES' },
+      ];
+      const totalSteps = steps.length;
+      const cur = steps[step];
+
+      function next() {
+        if (step < totalSteps - 1) setStep(step + 1);
+        else finish();
+      }
+      function back() { if (step > 0) setStep(step - 1); }
+
+      function finish() {
+        const updates = {
+          name: (draft.name || '').trim(),
+          birthYear: draft.birthYear ? parseInt(draft.birthYear) : null,
+          weightKg: draft.weightKg ? parseFloat(draft.weightKg) : null,
+          fcMax: draft.fcMax ? parseInt(draft.fcMax) : null,
+          unitMode: draft.hasPowerMeter ? 'power' : 'pace',
+          cp: draft.hasPowerMeter && draft.cp ? parseInt(draft.cp) : (initialProfile?.cp || null),
+          easyPaceMinPerKm: !draft.hasPowerMeter && draft.easyPaceMinPerKm ? parseFloat(draft.easyPaceMinPerKm) : null,
+          injuryZones: Array.isArray(draft.injuryZones) ? draft.injuryZones : [],
+          onboardingDone: true,
+        };
+        onComplete(updates);
+      }
+
+      // Per-step validation: minimal required fields, never blocks the user past blockers
+      function canAdvance() {
+        if (cur.key === 'identity') return draft.name && draft.name.trim().length > 0;
+        if (cur.key === 'body') return draft.weightKg && parseFloat(draft.weightKg) > 0;
+        if (cur.key === 'power') {
+          if (draft.hasPowerMeter === null) return false;
+          if (draft.hasPowerMeter) return draft.cp && parseInt(draft.cp) > 0;
+          return draft.easyPaceMinPerKm && parseFloat(draft.easyPaceMinPerKm) > 0;
+        }
+        // welcome and zones always allow advance (zones can be empty = no tracking)
+        return true;
+      }
+
+      const cardStyle = { background: 'var(--bg-elev)', border: '1px solid var(--border)', borderRadius: 14, padding: '1.25rem 1.5rem' };
+
+      return (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)', zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, overflowY: 'auto' }}>
+          <div className="scale-in" style={{ background: 'var(--bg)', border: '1px solid var(--border-bright)', borderRadius: 16, width: '100%', maxWidth: 620, maxHeight: 'calc(100vh - 32px)', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
+            {/* Progress bar */}
+            <div className="px-7 pt-6">
+              <div className="flex items-center gap-2 mb-5">
+                {steps.map((s, i) => (
+                  <div key={s.key} className="flex-1 h-1 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
+                    <div className="h-full transition-all duration-500" style={{ width: i <= step ? '100%' : '0%', background: 'var(--compass)' }} />
+                  </div>
+                ))}
+              </div>
+              <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--compass)' }}>{cur.label} · ÉTAPE {step + 1}/{totalSteps}</div>
+            </div>
+
+            <div className="px-7 pb-2">
+              {cur.key === 'welcome' && (
+                <div>
+                  <div className="font-display text-3xl md:text-4xl font-bold mb-3 leading-tight">Bienvenue dans Compass</div>
+                  <div className="text-sm leading-relaxed mb-5" style={{ color: 'var(--text-dim)' }}>
+                    Compass t'aide à courir intelligent : ajuster ta charge, prévoir tes courses, surveiller tes signaux. Quelques questions pour personnaliser l'app — 1 minute, tu peux passer ou compléter plus tard depuis le Profil.
+                  </div>
+                  <div className="space-y-2 text-sm" style={{ color: 'var(--text-dim)' }}>
+                    <div className="flex gap-2"><span style={{ color: 'var(--compass)' }}>·</span> Ton identité et tes mesures de base</div>
+                    <div className="flex gap-2"><span style={{ color: 'var(--compass)' }}>·</span> Ta source d'intensité : capteur de puissance ou allure</div>
+                    <div className="flex gap-2"><span style={{ color: 'var(--compass)' }}>·</span> Zones du corps que tu veux surveiller (optionnel)</div>
+                  </div>
+                </div>
+              )}
+
+              {cur.key === 'identity' && (
+                <div>
+                  <div className="font-display text-2xl md:text-3xl font-bold mb-2 leading-tight">Tu t'appelles comment ?</div>
+                  <div className="text-sm mb-5" style={{ color: 'var(--text-dim)' }}>Ton prénom ou pseudo. Sert à personnaliser les messages du coach.</div>
+                  <div style={cardStyle}>
+                    <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>PRÉNOM OU PSEUDO</div>
+                    <input type="text" autoFocus value={draft.name} onChange={(e) => setDraft({...draft, name: e.target.value})} placeholder="Ex: Tony" className="input mb-4" />
+                    <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>ANNÉE DE NAISSANCE (OPTIONNEL)</div>
+                    <input type="number" value={draft.birthYear} onChange={(e) => setDraft({...draft, birthYear: e.target.value})} placeholder="Ex: 1992" className="input" />
+                  </div>
+                </div>
+              )}
+
+              {cur.key === 'body' && (
+                <div>
+                  <div className="font-display text-2xl md:text-3xl font-bold mb-2 leading-tight">Tes mesures</div>
+                  <div className="text-sm mb-5" style={{ color: 'var(--text-dim)' }}>Le poids est utilisé pour convertir watts/kg ↔ watts absolus et estimer la dépense énergétique. La FC max alimente les zones cardio.</div>
+                  <div style={cardStyle}>
+                    <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>POIDS (KG)</div>
+                    <input type="number" step="0.1" autoFocus value={draft.weightKg} onChange={(e) => setDraft({...draft, weightKg: e.target.value})} placeholder="Ex: 70" className="input mb-4" />
+                    <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>FC MAX (BPM, OPTIONNEL)</div>
+                    <input type="number" value={draft.fcMax} onChange={(e) => setDraft({...draft, fcMax: e.target.value})} placeholder="Ex: 195" className="input" />
+                  </div>
+                </div>
+              )}
+
+              {cur.key === 'power' && (
+                <div>
+                  <div className="font-display text-2xl md:text-3xl font-bold mb-2 leading-tight">Capteur de puissance ?</div>
+                  <div className="text-sm mb-5" style={{ color: 'var(--text-dim)' }}>Stryd, COROS Pod, Garmin Running Power… Si oui, Compass utilise tes watts pour calibrer charge et zones. Sinon on bascule sur l'allure.</div>
+                  <div className="grid grid-cols-2 gap-2 mb-4">
+                    <button onClick={() => setDraft({...draft, hasPowerMeter: true})} className="btn py-3 rounded-lg" style={{ background: draft.hasPowerMeter === true ? 'var(--compass)' : 'var(--bg-elev-2)', color: draft.hasPowerMeter === true ? '#000' : 'var(--text)', border: `1px solid ${draft.hasPowerMeter === true ? 'var(--compass)' : 'var(--border)'}` }}>
+                      <div className="font-display font-bold text-sm">Oui, j'ai un capteur</div>
+                      <div className="font-mono text-[9px] tracking-widest mt-0.5">WATTS</div>
+                    </button>
+                    <button onClick={() => setDraft({...draft, hasPowerMeter: false})} className="btn py-3 rounded-lg" style={{ background: draft.hasPowerMeter === false ? 'var(--compass)' : 'var(--bg-elev-2)', color: draft.hasPowerMeter === false ? '#000' : 'var(--text)', border: `1px solid ${draft.hasPowerMeter === false ? 'var(--compass)' : 'var(--border)'}` }}>
+                      <div className="font-display font-bold text-sm">Non, j'utilise l'allure</div>
+                      <div className="font-mono text-[9px] tracking-widest mt-0.5">MIN/KM</div>
+                    </button>
+                  </div>
+                  {draft.hasPowerMeter === true && (
+                    <div style={cardStyle}>
+                      <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>PUISSANCE SEUIL CP (W)</div>
+                      <input type="number" autoFocus value={draft.cp} onChange={(e) => setDraft({...draft, cp: e.target.value})} placeholder="Ex: 240" className="input" />
+                      <div className="text-xs mt-2 leading-relaxed" style={{ color: 'var(--text-faint)' }}>La CP est ta puissance soutenable ~30-60 min. Tu peux la trouver via un test 10 min ou un export Stryd. Modifiable à tout moment dans le Profil.</div>
+                    </div>
+                  )}
+                  {draft.hasPowerMeter === false && (
+                    <div style={cardStyle}>
+                      <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>ALLURE FOOTING EASY (MIN/KM, ex: 5.5 = 5'30/km)</div>
+                      <input type="number" step="0.1" autoFocus value={draft.easyPaceMinPerKm} onChange={(e) => setDraft({...draft, easyPaceMinPerKm: e.target.value})} placeholder="Ex: 5.5" className="input" />
+                      <div className="text-xs mt-2 leading-relaxed" style={{ color: 'var(--text-faint)' }}>L'allure que tu tiens en footing facile sans t'essouffler. Sert à estimer ta charge et tes zones tant que tu n'as pas de capteur de puissance.</div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {cur.key === 'zones' && (
+                <div>
+                  <div className="font-display text-2xl md:text-3xl font-bold mb-2 leading-tight">Zones à surveiller ?</div>
+                  <div className="text-sm mb-5" style={{ color: 'var(--text-dim)' }}>Coche les zones où tu as un historique de blessure ou douleur récurrente. Compass calcule un risque adapté et adapte ses recommandations. Laisse vide si tu n'as rien à signaler.</div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {INJURY_ZONES.map(z => {
+                      const checked = (draft.injuryZones || []).includes(z.key);
+                      return (
+                        <label key={z.key} className="flex items-center gap-2 px-2.5 py-2 rounded cursor-pointer" style={{ background: checked ? 'rgba(74,158,255,0.10)' : 'var(--bg-elev)', border: `1px solid ${checked ? 'var(--compass)' : 'var(--border)'}` }}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              const cur2 = Array.isArray(draft.injuryZones) ? draft.injuryZones : [];
+                              const next = checked ? cur2.filter(k => k !== z.key) : [...cur2, z.key];
+                              setDraft({ ...draft, injuryZones: next });
+                            }}
+                            style={{ accentColor: 'var(--compass)' }}
+                          />
+                          <span className="text-sm" style={{ color: checked ? 'var(--compass)' : 'var(--text-dim)' }}>{z.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer actions */}
+            <div className="px-7 py-5 flex items-center justify-between gap-2" style={{ borderTop: '1px solid var(--border)' }}>
+              <button onClick={onSkip} className="btn-base btn-ghost btn-sm" style={{ color: 'var(--text-faint)' }}>Passer pour l'instant</button>
+              <div className="flex gap-2">
+                {step > 0 && <button onClick={back} className="btn-base btn-secondary">← Précédent</button>}
+                <button onClick={next} disabled={!canAdvance()} className="btn-base btn-primary" style={{ opacity: canAdvance() ? 1 : 0.4, cursor: canAdvance() ? 'pointer' : 'not-allowed' }}>
+                  {step === totalSteps - 1 ? 'Terminer' : 'Suivant →'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================================================
     // PAIN CHECK-IN MODAL — quick 0-10 knee pain prompt after each run import
     // ========================================================================
     // Captures post-run knee pain so we can correlate it with renfo CTL over time.
@@ -7267,6 +7467,7 @@
                 <EditField label="FC repos" value={draft.fcRest || ''} onChange={(v) => setDraft({...draft, fcRest: v ? parseInt(v) : null})} />
                 <EditField label="FC max" value={draft.fcMax || ''} onChange={(v) => setDraft({...draft, fcMax: v ? parseInt(v) : null})} />
                 {draft.unitMode !== 'pace' && <EditField label="Puissance seuil (W)" value={draft.cp || ''} onChange={(v) => setDraft({...draft, cp: v ? parseInt(v) : null})} />}
+                {draft.unitMode === 'pace' && <EditField label="Allure footing (min/km)" value={draft.easyPaceMinPerKm || ''} onChange={(v) => setDraft({...draft, easyPaceMinPerKm: v ? parseFloat(v) : null})} />}
               </div>
             )}
             {detectedCp && profile.cp && Math.abs(detectedCp - profile.cp) > 5 && (
@@ -14105,6 +14306,13 @@
           {manualEntry && <ManualActivityModal onSave={(activity) => { doImport(activity); setManualEntry(false); }} onCancel={() => setManualEntry(false)} />}
           {pendingGraduation && <PhaseGraduationModal phase={pendingGraduation} onClose={acceptGraduation} />}
           {pendingPainCheckin && <PainCheckinModal activity={pendingPainCheckin} profile={profile} onSubmit={savePainCheckin} onSkip={() => setPendingPainCheckin(null)} />}
+          {!profile.onboardingDone && (
+            <OnboardingModal
+              initialProfile={profile}
+              onComplete={(updates) => setProfile({ ...profile, ...updates })}
+              onSkip={() => setProfile({ ...profile, onboardingDone: true })}
+            />
+          )}
         </div>
       );
     }
