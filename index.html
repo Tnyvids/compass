@@ -2591,6 +2591,7 @@
     // KNEE RISK CARD — compact Today widget exposing the combined risk index
     // ========================================================================
     function KneeRiskCard({ profile, activities, checkins, strengthSessions, onNav, onStrengthStart }) {
+      const [showDetails, setShowDetails] = useState(false);
       const data = useMemo(() => {
         const acts = (activities || []).map(a => ({ ...a, tss: computeTSS(a, profile.cp) }));
         const acwr = computeACWR(acts);
@@ -2642,20 +2643,28 @@
               </button>
             )}
           </div>
-          {/* Mini contributors bar */}
-          <div className="mt-3 pt-3 border-t flex items-center gap-3 flex-wrap" style={{ borderColor: 'var(--border)' }}>
-            {[
-              { l: 'Douleur', v: data.painScore, w: 35 },
-              { l: 'Renfo', v: data.renfoScore, w: 25 },
-              { l: 'Charge', v: data.acwrScore, w: 25 },
-              { l: 'Profil', v: data.profileScore, w: 15 },
-            ].map((s, i) => (
-              <div key={i} className="flex items-center gap-1.5 font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
-                <span>{s.l.toUpperCase()}</span>
-                <span className="tabular" style={{ color: s.v > 50 ? zoneColor : 'var(--text-dim)' }}>{Math.round(s.v)}</span>
-                <span style={{ opacity: 0.4 }}>·{s.w}%</span>
+          {/* Contributors detail — collapsed by default to keep the card scannable */}
+          <div className="mt-3 pt-3 border-t" style={{ borderColor: 'var(--border)' }}>
+            <button onClick={(e) => { e.stopPropagation(); setShowDetails(v => !v); }} className="w-full flex items-center justify-between font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>
+              <span>DÉCOMPOSITION DU SCORE</span>
+              <span className="flex items-center gap-1">{showDetails ? 'MASQUER' : 'AFFICHER'} <IconChevronDown size={10} style={{ transform: showDetails ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s' }} /></span>
+            </button>
+            {showDetails && (
+              <div className="mt-3 flex items-center gap-3 flex-wrap">
+                {[
+                  { l: 'Douleur', v: data.painScore, w: 35 },
+                  { l: 'Renfo', v: data.renfoScore, w: 25 },
+                  { l: 'Charge', v: data.acwrScore, w: 25 },
+                  { l: 'Profil', v: data.profileScore, w: 15 },
+                ].map((s, i) => (
+                  <div key={i} className="flex items-center gap-1.5 font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
+                    <span>{s.l.toUpperCase()}</span>
+                    <span className="tabular" style={{ color: s.v > 50 ? zoneColor : 'var(--text-dim)' }}>{Math.round(s.v)}</span>
+                    <span style={{ opacity: 0.4 }}>·{s.w}%</span>
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
           </div>
         </Card>
       );
@@ -2760,12 +2769,13 @@
               </div>
             </div>
             <div className="text-right flex-shrink-0">
-              <div className="font-mono text-[10px] tracking-widest mb-1.5 px-2 py-0.5 rounded-full inline-block" style={{ background: `${statusColor}18`, color: statusColor, border: `1px solid ${statusColor}40` }}>{statusLabel}</div>
-              <div className="font-display text-2xl font-bold tabular" style={{ color: statusColor }}>{fmtTime(predictedSec)}</div>
+              <div className="font-mono text-[11px] tracking-widest mb-2 px-3 py-1 rounded-full inline-block font-bold" style={{ background: statusColor, color: '#000' }}>{statusLabel}</div>
+              <div className="font-display text-2xl font-bold tabular leading-none" style={{ color: 'var(--text)' }}>{fmtTime(predictedSec)}</div>
               {targetSec ? (
-                <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
-                  objectif {fmtTime(targetSec)} <span style={{ color: statusColor }}>({deltaLabel})</span>
-                </div>
+                <>
+                  <div className="font-display font-bold tabular mt-1.5 leading-none" style={{ fontSize: 18, color: statusColor }}>{deltaLabel}</div>
+                  <div className="font-mono text-[10px] tabular mt-1" style={{ color: 'var(--text-faint)' }}>vs objectif {fmtTime(targetSec)}</div>
+                </>
               ) : (
                 <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>prédiction actuelle</div>
               )}
@@ -2879,7 +2889,7 @@
             <div className="text-sm leading-relaxed mb-4" style={{ color: 'var(--text)' }}>{advice.action}</div>
           </div>
           <div className="flex gap-2">
-            <button onClick={onView} className="btn lift flex-1 px-4 py-2.5 rounded-lg font-mono text-[11px] tracking-widest" style={{ background: advice.accent, color: '#000' }}>DÉTAIL</button>
+            <button onClick={onView} className="btn lift flex-1 px-4 py-2.5 rounded-lg font-mono text-[11px] tracking-widest" style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${advice.accent}40`, color: advice.accent }}>DÉTAIL</button>
             <button onClick={onRedo} className="btn px-4 py-2.5 rounded-lg font-mono text-[11px] tracking-widest" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}>REFAIRE</button>
           </div>
         </div>
@@ -2887,6 +2897,9 @@
     }
 
     function PlannedSessionCard({ session, sessionDate, daysAhead, advice, profile, onStrengthStart, activities, checkins, showWeather = false }) {
+      const [showZones, setShowZones] = useState(false);
+      const [showAllInsights, setShowAllInsights] = useState(false);
+      const [showDetail, setShowDetail] = useState(false);
       if (!session) {
         return (
           <Card className="p-7 h-full min-h-[280px] flex flex-col justify-center items-center text-center">
@@ -2896,8 +2909,9 @@
           </Card>
         );
       }
-      const typeColor = { rest: 'var(--text-dim)', easy: 'var(--go)', tempo: 'var(--warn)', intervals: 'var(--alert)', long: 'var(--compass)', test: 'var(--danger)' }[session.type] || 'var(--text)';
-      const typeLabel = { rest: 'REPOS', easy: 'FOOTING EASY', tempo: 'SEUIL', intervals: 'INTERVALLES', long: 'SORTIE LONGUE', test: 'TEST' }[session.type] || 'SÉANCE';
+      const typeMeta = SESSION_TYPE_MAP[session.type] || SESSION_TYPE_MAP.rest;
+      const typeColor = typeMeta.color;
+      const typeLabel = (typeMeta.l || 'Séance').toUpperCase();
       const showRecommendation = advice && advice.replacement && daysAhead === 0;
 
       let dateBadge;
@@ -2980,19 +2994,29 @@
             </div>
           </div>
           <div className="relative font-display text-3xl md:text-4xl font-bold mb-3 leading-tight">{session.label}</div>
-          <div className="relative text-sm mb-3" style={{ color: 'var(--text-dim)' }}>{session.detail}</div>
           {(session.plannedMin || session.plannedKm) && (
-            <div className="relative font-mono text-base mb-4 tabular font-bold" style={{ color: typeColor }}>
+            <div className="relative font-mono text-base mb-3 tabular font-bold" style={{ color: typeColor }}>
               {session.plannedMin ? `${session.plannedMin} min` : ''}
               {session.plannedMin && session.plannedKm ? ' · ' : ''}
               {session.plannedKm ? `${session.plannedKm} km` : ''}
             </div>
           )}
+          {session.detail && (
+            <div className="relative mb-4">
+              <button onClick={() => setShowDetail(v => !v)} className="w-full flex items-center justify-between font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>
+                <span>{showDetail ? 'MASQUER LE DÉTAIL' : 'VOIR LE DÉTAIL DE LA SÉANCE'}</span>
+                <IconChevronDown size={10} style={{ transform: showDetail ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s' }} />
+              </button>
+              {showDetail && (
+                <div className="text-sm mt-2 leading-relaxed" style={{ color: 'var(--text-dim)' }}>{session.detail}</div>
+              )}
+            </div>
+          )}
 
-          {/* Smart insights */}
+          {/* Smart insights — only show first by default to keep the card scannable */}
           {insights.length > 0 && (
             <div className="space-y-2 mb-4">
-              {insights.map((ins, i) => {
+              {(showAllInsights ? insights : insights.slice(0, 1)).map((ins, i) => {
                 const I = ins.Icon;
                 return (
                 <div key={i} className="rounded-lg p-3 flex gap-2" style={{ background: `${ins.color}08`, border: `1px solid ${ins.color}30` }}>
@@ -3001,6 +3025,11 @@
                 </div>
                 );
               })}
+              {insights.length > 1 && !showAllInsights && (
+                <button onClick={() => setShowAllInsights(true)} className="font-mono text-[10px] tracking-widest flex items-center gap-1" style={{ color: 'var(--text-dim)' }}>
+                  +{insights.length - 1} CONSEIL{insights.length - 1 > 1 ? 'S' : ''} <IconChevronDown size={10} />
+                </button>
+              )}
             </div>
           )}
 
@@ -3020,7 +3049,15 @@
                   <div className="text-sm leading-relaxed">{advice.replacement}</div>
                 </div>
               )}
-              <ZoneReference cp={profile.cp} type={session.type} />
+              {profile.cp && (
+                <div>
+                  <button onClick={() => setShowZones(v => !v)} className="w-full flex items-center justify-between font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>
+                    <span>ZONES D'ENTRAÎNEMENT</span>
+                    <span className="flex items-center gap-1">{showZones ? 'MASQUER' : 'AFFICHER'} <IconChevronDown size={10} style={{ transform: showZones ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s' }} /></span>
+                  </button>
+                  {showZones && <div className="mt-2"><ZoneReference cp={profile.cp} type={session.type} /></div>}
+                </div>
+              )}
             </div>
           )}
           {/* Embedded weather block — uses same sessionDate as the card */}
@@ -3592,34 +3629,20 @@
       }, [activity, cp]);
 
       return (
-        <Card className="p-6 mb-4">
-          <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <Card className="p-5 mb-4">
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
             <div className="flex items-center gap-2">
               <IconActivity size={14} style={{ color: 'var(--compass)' }} />
               <div className="font-mono text-xs tracking-widest" style={{ color: 'var(--text-dim)' }}>DERNIÈRE ACTIVITÉ · {fmtDate(activity.startMs)}</div>
             </div>
             <Tag color="var(--text-dim)">{activity.source.toUpperCase()}</Tag>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+          {/* Compact 3-stat row by default — full breakdown lives in Activity Detail modal */}
+          <div className="grid grid-cols-3 gap-3">
             <MiniStat label="DISTANCE" value={fmtDistance(activity.distanceMeters)} />
             <MiniStat label="DURÉE" value={fmtDuration(activity.durationSec)} />
-            <MiniStat label="ALLURE" value={activity.paceMinPerKm ? fmtPace(activity.paceMinPerKm).replace('/km','') : '—'} unit="/km" />
-            <MiniStat label="P. MOY" value={activity.avgPower || '—'} unit={activity.avgPower ? 'W' : ''} />
-            <MiniStat label="P. PONDÉRÉE" value={activity.normalizedPower || '—'} unit={activity.normalizedPower ? 'W' : ''} accent="var(--compass)" />
             <MiniStat label="CHARGE" value={tss || '—'} accent="var(--accent)" />
           </div>
-          {intensityFactor && (
-            <div className="mt-4 pt-4 border-t flex items-center gap-4 text-sm flex-wrap" style={{ borderColor: 'var(--border)', color: 'var(--text-dim)' }}>
-              <span title={TERMS.if.tooltip}>Intensité <span className="font-mono tabular" style={{ color: 'var(--text)' }}>{intensityFactor}</span></span>
-              {activity.avgHr && <span>FC moy <span className="font-mono tabular" style={{ color: 'var(--text)' }}>{activity.avgHr}</span></span>}
-              {(() => {
-                const drift = getEffectiveCardiacDrift(activity);
-                return drift !== null ? (
-                  <span>Dérive cardiaque <span className="font-mono tabular" style={{ color: 'var(--text)' }}>{drift > 0 ? '+' : ''}{drift}%</span></span>
-                ) : null;
-              })()}
-            </div>
-          )}
 
           {detectedReps && detectedReps.length >= 1 && (
             <div className="mt-4 pt-4 border-t" style={{ borderColor: 'var(--border)' }}>
@@ -5109,6 +5132,38 @@
       const isRest = localDay.type === 'rest';
       const fileRef = useRef(null);
 
+      const renfoSection = (
+        <section>
+          <div className="t-meta mb-3" style={{ color: 'var(--text-faint)' }}>RENFO</div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {strengthOptions.map(s => {
+              const active = localDay.strengthToday === s.v;
+              return (
+                <button
+                  key={s.v || 'none'}
+                  onClick={() => setField('strengthToday', s.v)}
+                  className="btn-base"
+                  style={{
+                    justifyContent: 'flex-start',
+                    padding: '0.625rem 0.875rem', minHeight: 40, fontSize: 13,
+                    background: active ? 'var(--signal-dim)' : 'var(--bg-elev)',
+                    border: `1px solid ${active ? 'var(--signal)' : 'var(--border-bright)'}`,
+                    color: active ? 'var(--signal)' : 'var(--text-dim)',
+                    fontWeight: active ? 600 : 500,
+                  }}
+                >
+                  <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{
+                    background: active ? 'var(--signal)' : 'transparent',
+                    border: `1.5px solid ${active ? 'var(--signal)' : 'var(--text-faint)'}`,
+                  }}></span>
+                  <span className="truncate">{s.l}</span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      );
+
       return (
         <div
           onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
@@ -5124,7 +5179,7 @@
             className="scale-in"
             style={{
               background: 'var(--bg)', border: '1px solid var(--border-bright)',
-              borderRadius: 16, width: '100%', maxWidth: 640,
+              borderRadius: 16, width: '100%', maxWidth: isRest ? 640 : 1040,
               maxHeight: 'calc(100vh - 32px)', display: 'flex', flexDirection: 'column',
               boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
               borderLeft: !isRest ? `3px solid ${t.color}` : '1px solid var(--border-bright)',
@@ -5197,8 +5252,9 @@
                 </button>
               )}
 
-              {!isRest && (
-                <>
+              {!isRest ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-6">
+                  <div className="space-y-6">
                   {/* SECTION 3 — Identity (name + planned dur/dist) */}
                   <section>
                     <div className="t-meta mb-3" style={{ color: 'var(--text-faint)' }}>SÉANCE</div>
@@ -5308,7 +5364,9 @@
                       </div>
                     )}
                   </section>
+                  </div>
 
+                  <div className="space-y-6">
                   {/* SECTION 5 — Structured blocks editor */}
                   <section>
                     <div className="t-meta mb-3" style={{ color: 'var(--text-faint)' }}>BLOCS DE LA SÉANCE</div>
@@ -5348,39 +5406,14 @@
                       )}
                     </section>
                   )}
-                </>
-              )}
 
-              {/* SECTION 8 — Strength */}
-              <section>
-                <div className="t-meta mb-3" style={{ color: 'var(--text-faint)' }}>RENFO</div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                  {strengthOptions.map(s => {
-                    const active = localDay.strengthToday === s.v;
-                    return (
-                      <button
-                        key={s.v || 'none'}
-                        onClick={() => setField('strengthToday', s.v)}
-                        className="btn-base"
-                        style={{
-                          justifyContent: 'flex-start',
-                          padding: '0.625rem 0.875rem', minHeight: 40, fontSize: 13,
-                          background: active ? 'var(--signal-dim)' : 'var(--bg-elev)',
-                          border: `1px solid ${active ? 'var(--signal)' : 'var(--border-bright)'}`,
-                          color: active ? 'var(--signal)' : 'var(--text-dim)',
-                          fontWeight: active ? 600 : 500,
-                        }}
-                      >
-                        <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{
-                          background: active ? 'var(--signal)' : 'transparent',
-                          border: `1.5px solid ${active ? 'var(--signal)' : 'var(--text-faint)'}`,
-                        }}></span>
-                        <span className="truncate">{s.l}</span>
-                      </button>
-                    );
-                  })}
+                  {/* SECTION 8 — Strength (in right col when not rest) */}
+                  {renfoSection}
+                  </div>
                 </div>
-              </section>
+              ) : (
+                renfoSection
+              )}
             </div>
 
             {/* Sticky footer */}
@@ -7716,6 +7749,20 @@
 
     function CoachCard({ verdict, compact = false, onMore }) {
       const VIcon = verdict.Icon || IconActivity;
+      // For "all good" verdicts in compact mode, render a discreet single-row strip
+      // instead of a full card — it doesn't need to compete with action items.
+      const isAllGood = compact && (verdict.status === 'stable_good' || verdict.status === 'peaking');
+      if (isAllGood) {
+        return (
+          <button onClick={onMore} className="btn w-full text-left flex items-center gap-3 px-4 py-3 mb-3 rounded-xl" style={{ background: 'var(--bg-elev)', border: `1px solid ${verdict.color}30` }}>
+            <VIcon size={16} style={{ color: verdict.color, flexShrink: 0 }} />
+            <div className="flex-1 min-w-0 text-sm" style={{ color: 'var(--text-dim)' }}>
+              <span className="font-bold" style={{ color: verdict.color }}>{verdict.title}.</span> <span className="opacity-80">{verdict.summary.split('.')[0]}.</span>
+            </div>
+            <IconChevronRight size={12} style={{ color: 'var(--text-faint)', flexShrink: 0 }} />
+          </button>
+        );
+      }
       const iconSize = compact ? 28 : 36;
       return (
         <Card className={compact ? 'p-5' : 'p-6 md:p-8'} accent={verdict.color}>
