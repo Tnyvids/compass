@@ -1989,28 +1989,28 @@
     // STRENGTH PROGRAM DATA
     // ========================================================================
     const EXERCISES = {
-      squat_eccentric: { name: 'Squat excentrique', subtitle: 'Descente lente 4 sec', videoId: 'D7vwmD9m-MY', why: 'Renforce les quadriceps de manière contrôlée. Pour PFPS, descente limitée à 60° (pas plus bas) pour éviter de comprimer la rotule.', steps: ['Pieds écartés largeur bassin, poids sur tout le pied.', "Descends en 4 secondes pleines jusqu'à 60° max (pas en dessous).", 'Remonte normalement en 1-2 secondes.'], keyPoint: 'Descente LENTE et limitée — compte "1001, 1002, 1003, 1004". Stop à 60° tant que la rotule est sensible.', avoid: "Descendre trop bas (>90°) ou laisser le genou rentrer vers l'intérieur." },
-      dynamic_lunge: { name: 'Fente avant alternée', subtitle: "Dynamique, un pas après l'autre", videoId: 'QOVaHwm-Q6U', why: 'Force unilatérale + alignement genou-cheville-hanche. Pour PFPS, la priorité c\'est le contrôle du genou (pas de valgus).', steps: ["Grand pas en avant, descends jusqu'à 90° sur le genou avant.", 'Reviens à la position debout en poussant sur le talon avant.', "Enchaîne avec l'autre jambe, alterné."], keyPoint: 'Torse vertical, genou avant aligné sur le 2ème orteil. Si douleur, raccourcis l\'amplitude.', avoid: "Genou qui part vers l'intérieur (valgus) ou qui dépasse la pointe du pied." },
-      soleus_calf: { name: 'Mollets genou plié', subtitle: 'Ciblage soleus, assis ou debout', videoId: 'gE1PJUrbmoM', why: 'Un soleus fort absorbe plus de chocs au sol, ce qui réduit les contraintes transmises à la rotule. Très utile pour PFPS.', steps: ['Assis, genoux à 90°, pieds au sol.', 'Monte sur la pointe des pieds, tiens 1 sec en haut.', 'Redescends lentement.'], keyPoint: 'Le genou reste plié à 90° tout le long — ça isole le soleus.', avoid: "Tendre les jambes pendant l'exercice." },
-      hip_flexor_stretch: { name: 'Étirement hip flexor', subtitle: 'Couch stretch', videoId: 'bCRfS2beNOc', why: 'Le psoas court tire le bassin en antéversion, ce qui bascule la rotule vers l\'extérieur — facteur clé du PFPS. Cet étirement libère la mécanique.', steps: ['À genoux, un pied contre le mur (tibia vertical).', "L'autre pied devant, genou à 90°.", "Bascule le bassin vers l'avant en contractant le fessier arrière."], keyPoint: "Tu dois sentir l'étirement devant la hanche arrière, pas dans le dos.", avoid: 'Cambrer les lombaires — garde le nombril rentré.' },
-      single_leg_bridge: { name: 'Pont fessier unilatéral', subtitle: 'Pousser sur le talon', videoId: 'VUl8R0kn6v4', why: 'Le grand fessier contrôle l\'orientation du fémur sous la rotule. Un fessier fort = moins de friction fémoro-patellaire. C\'est le pilier rééducation PFPS.', steps: ["Allongé, un pied au sol, autre jambe tendue en l'air.", 'Pousse sur le talon pour décoller le bassin, serre le fessier en haut.', 'Redescends sans toucher le sol.'], keyPoint: 'Pousse sur le TALON, pas la pointe.', avoid: 'Bassin qui bascule du côté de la jambe tendue.' },
-      clamshell: { name: 'Clamshell élastique', subtitle: 'Fessier moyen isolé', videoId: 'pR1AkgMmcpU', why: "Le moyen fessier empêche le genou de partir en dedans (valgus dynamique). Faiblesse de ce muscle = cause #1 du PFPS chez les coureurs. Indispensable.", steps: ['Sur le côté, genoux pliés à 45°, élastique au-dessus des genoux.', 'Pieds collés, écarte le genou du dessus sans bouger le bassin.', 'Contrôle la descente.'], keyPoint: 'Le bassin reste stable, ne roule pas en arrière.', avoid: 'Aller vite en perdant la tension.' },
+      squat_eccentric: { name: 'Squat excentrique', subtitle: 'Descente lente 4 sec', videoId: 'D7vwmD9m-MY', why: "Renforce les quadriceps de manière contrôlée. La descente limitée à 60° (pas plus bas) évite de comprimer la rotule quand le genou est sensible.", steps: ['Pieds écartés largeur bassin, poids sur tout le pied.', "Descends en 4 secondes pleines jusqu'à 60° max (pas en dessous).", 'Remonte normalement en 1-2 secondes.'], keyPoint: 'Descente LENTE et limitée — compte "1001, 1002, 1003, 1004". Stop à 60° tant que la rotule est sensible.', avoid: "Descendre trop bas (>90°) ou laisser le genou rentrer vers l'intérieur." },
+      dynamic_lunge: { name: 'Fente avant alternée', subtitle: "Dynamique, un pas après l'autre", videoId: 'QOVaHwm-Q6U', why: "Force unilatérale + alignement genou-cheville-hanche. La priorité, c'est le contrôle du genou (pas de valgus).", steps: ["Grand pas en avant, descends jusqu'à 90° sur le genou avant.", 'Reviens à la position debout en poussant sur le talon avant.', "Enchaîne avec l'autre jambe, alterné."], keyPoint: 'Torse vertical, genou avant aligné sur le 2ème orteil. Si douleur, raccourcis l\'amplitude.', avoid: "Genou qui part vers l'intérieur (valgus) ou qui dépasse la pointe du pied." },
+      soleus_calf: { name: 'Mollets genou plié', subtitle: 'Ciblage soleus, assis ou debout', videoId: 'gE1PJUrbmoM', why: "Un soleus fort absorbe plus de chocs au sol, ce qui réduit les contraintes transmises à la rotule. Très utile quand le genou est sensible.", steps: ['Assis, genoux à 90°, pieds au sol.', 'Monte sur la pointe des pieds, tiens 1 sec en haut.', 'Redescends lentement.'], keyPoint: 'Le genou reste plié à 90° tout le long — ça isole le soleus.', avoid: "Tendre les jambes pendant l'exercice." },
+      hip_flexor_stretch: { name: 'Étirement hip flexor', subtitle: 'Couch stretch', videoId: 'bCRfS2beNOc', why: "Un psoas court tire le bassin en antéversion, ce qui bascule la rotule vers l'extérieur — c'est un facteur clé des douleurs antérieures du genou. Cet étirement libère la mécanique.", steps: ['À genoux, un pied contre le mur (tibia vertical).', "L'autre pied devant, genou à 90°.", "Bascule le bassin vers l'avant en contractant le fessier arrière."], keyPoint: "Tu dois sentir l'étirement devant la hanche arrière, pas dans le dos.", avoid: 'Cambrer les lombaires — garde le nombril rentré.' },
+      single_leg_bridge: { name: 'Pont fessier unilatéral', subtitle: 'Pousser sur le talon', videoId: 'VUl8R0kn6v4', why: "Le grand fessier contrôle l'orientation du fémur sous la rotule. Un fessier fort = moins de friction sur la rotule. C'est la clé pour soulager une douleur antérieure du genou.", steps: ["Allongé, un pied au sol, autre jambe tendue en l'air.", 'Pousse sur le talon pour décoller le bassin, serre le fessier en haut.', 'Redescends sans toucher le sol.'], keyPoint: 'Pousse sur le TALON, pas la pointe.', avoid: 'Bassin qui bascule du côté de la jambe tendue.' },
+      clamshell: { name: 'Clamshell élastique', subtitle: 'Fessier moyen isolé', videoId: 'pR1AkgMmcpU', why: "Le moyen fessier empêche le genou de partir en dedans (valgus dynamique). Sa faiblesse est une cause fréquente de douleurs au genou chez le coureur. Indispensable.", steps: ['Sur le côté, genoux pliés à 45°, élastique au-dessus des genoux.', 'Pieds collés, écarte le genou du dessus sans bouger le bassin.', 'Contrôle la descente.'], keyPoint: 'Le bassin reste stable, ne roule pas en arrière.', avoid: 'Aller vite en perdant la tension.' },
     };
 
     const STRENGTH_SESSIONS = {
-      A: { id: 'A', name: 'SÉANCE A', title: 'Jambes & Genou', subtitle: 'Quadriceps + soleus, amplitude limitée pour PFPS', accent: '#D4FF00', duration: 15, exerciseKeys: ['squat_eccentric', 'dynamic_lunge', 'soleus_calf'] },
-      B: { id: 'B', name: 'SÉANCE B', title: 'Hanches & Fessiers', subtitle: 'Moyen fessier + psoas — le pilier PFPS', accent: '#FF8040', duration: 15, exerciseKeys: ['hip_flexor_stretch', 'single_leg_bridge', 'clamshell'] },
+      A: { id: 'A', name: 'SÉANCE A', title: 'Jambes & Genou', subtitle: 'Quadriceps + soleus, amplitude limitée pour épargner la rotule', accent: '#D4FF00', duration: 15, exerciseKeys: ['squat_eccentric', 'dynamic_lunge', 'soleus_calf'] },
+      B: { id: 'B', name: 'SÉANCE B', title: 'Hanches & Fessiers', subtitle: 'Moyen fessier + psoas — la clé pour soulager le genou', accent: '#FF8040', duration: 15, exerciseKeys: ['hip_flexor_stretch', 'single_leg_bridge', 'clamshell'] },
     };
-    // 12-month progressive program adapted to PFPS + LLD profile.
+    // 12-month progressive program for runners with anterior knee pain.
     // Each phase has a measurable graduation criterion that the user evaluates
-    // honestly at end of phase. Targets are specific to Tony's biomechanics
-    // (hypermobile patella, glute med priority, asymmetric work for the LLD).
+    // honestly at end of phase. Focus: glute medius reactivation, controlled
+    // quad loading at limited range, hip mobility, asymmetry correction.
     const STRENGTH_PHASES = [
       {
         id: 1, name: 'Réactivation', shortName: 'PHASE 1', weeks: [1, 3], multiplier: 0.5,
         theme: 'Réveiller le moyen fessier endormi par la sédentarité',
         sessionsTarget: 2,
-        criterion: 'Sentir le brûlure ciblée à 8 reps de clamshell sans bouger le bassin.',
+        criterion: 'Sentir la brûlure ciblée à 8 reps de clamshell sans bouger le bassin.',
         graduationText: "Tu as réactivé tes fessiers endormis. Le moyen fessier répond à la commande nerveuse, c'est la fondation pour tout le reste. Phase suivante : on charge un peu plus.",
       },
       {
@@ -2025,14 +2025,14 @@
         theme: 'Hypertrophie réelle du moyen fessier, ajout d\'isométriques',
         sessionsTarget: 3,
         criterion: '30 secondes de single-leg balance les yeux fermés sans poser le pied.',
-        graduationText: "Ton moyen fessier supporte maintenant 30 sec d'isométrique unilatérale sans tremblement — c'est un palier biomécanique. Le contrôle proprioceptif yeux fermés est en place. Tu protèges activement ta rotule mobile.",
+        graduationText: "Ton moyen fessier supporte maintenant 30 sec d'isométrique unilatérale sans tremblement — c'est un palier solide. Le contrôle proprioceptif yeux fermés est en place. Tu protèges activement ta rotule.",
       },
       {
         id: 4, name: 'Unilatéral', shortName: 'PHASE 4', weeks: [13, 20], multiplier: 1.0,
-        theme: 'Casser la compensation gauche/droite due à la LLD (ratio 3:2)',
+        theme: 'Égaliser gauche/droite, corriger les compensations',
         sessionsTarget: 3,
         criterion: 'Écart ressenti gauche/droite ≤ 2/5 sur les exos unilatéraux.',
-        graduationText: "L'asymétrie due à ta LLD se compense maintenant musculairement, plus articulairement. Ton genou gauche n'est plus seul à porter le déséquilibre. Tu es prêt pour le transfert au geste de course.",
+        graduationText: "Tes asymétries musculaires se compensent désormais — plus un côté qui porte plus que l'autre. Tu es prêt pour le transfert au geste de course.",
       },
       {
         id: 5, name: 'Intégration course', shortName: 'PHASE 5', weeks: [21, 32], multiplier: 1.0,
@@ -2086,9 +2086,9 @@
     const STRENGTH_ARCHETYPES = {
       pfps_lld: {
         id: 'pfps_lld',
-        name: 'PFPS + LLD',
-        shortName: 'PFPS',
-        description: "Programme dédié à la douleur fémoro-patellaire avec compensation pour dysmétrie de longueur de jambes. Cible : moyen fessier, quadriceps en amplitude limitée, libération du psoas.",
+        name: 'Douleur avant du genou',
+        shortName: 'GENOU AVANT',
+        description: "Pour ceux qui ressentent une douleur à l'avant ou autour de la rotule, surtout en descente d'escalier ou après une longue position assise. Cible : moyen fessier, quadriceps en amplitude limitée, mobilité du psoas.",
         targetZones: ['knee_left', 'knee_right'],
         exercises: EXERCISES,
         sessions: STRENGTH_SESSIONS,
@@ -2098,9 +2098,9 @@
 
       generic_prevention: {
         id: 'generic_prevention',
-        name: 'Prévention générique',
-        shortName: 'GÉNÉRIQUE',
-        description: "Renfo polyvalent pour le coureur sans pathologie spécifique. Cible : chaîne postérieure, gainage, fessiers. La base solide de tout coureur.",
+        name: 'Prévention course',
+        shortName: 'PRÉVENTION',
+        description: "Pour les coureurs sans douleur particulière qui veulent rester solides et éviter les blessures. Cible : chaîne postérieure, gainage, fessiers. La base de tout coureur.",
         targetZones: [],
         exercises: {
           goblet_squat: { name: 'Goblet squat', subtitle: 'Squat avec haltère devant la poitrine', videoId: 'MeIiIdhvXT4', why: "Force quadriceps + fessiers + gainage. Plus stable qu'un back squat pour démarrer.", steps: ["Tiens un haltère ou kettlebell contre la poitrine, coudes vers le bas.", "Pieds largeur épaules, descends jusqu'à 90° avec dos droit.", "Pousse sur les talons pour remonter."], keyPoint: "Garde la charge proche de la poitrine — ça force le tronc à rester droit.", avoid: "Décharger les talons ou laisser les genoux rentrer." },
@@ -2134,15 +2134,15 @@
 
       itband: {
         id: 'itband',
-        name: 'Bandelette IT',
-        shortName: 'ITBS',
-        description: "Programme pour la bandelette ilio-tibiale (ITBS). Faiblesse moyen fessier + bandelette tendue = douleur latérale du genou. Cible : isoler glute med + souplesse hanche.",
+        name: 'Douleur latérale du genou',
+        shortName: 'GENOU LATÉRAL',
+        description: "Pour ceux qui ressentent une douleur sur le côté du genou, souvent à la descente ou après quelques kilomètres. Cible : muscles stabilisateurs du bassin (moyen fessier) et souplesse de hanche.",
         targetZones: ['itband'],
         exercises: {
-          clamshell: { name: 'Clamshell élastique', subtitle: 'Fessier moyen isolé', videoId: 'pR1AkgMmcpU', why: "Le moyen fessier empêche le genou de partir en dedans (valgus dynamique). Faiblesse de ce muscle = cause #1 de l'ITBS chez le coureur.", steps: ["Sur le côté, genoux pliés à 45°, élastique au-dessus des genoux.", 'Pieds collés, écarte le genou du dessus sans bouger le bassin.', 'Contrôle la descente.'], keyPoint: 'Le bassin reste stable, ne roule pas en arrière.', avoid: 'Aller vite en perdant la tension.' },
-          side_lying_leg_raise: { name: 'Élévation jambe en latéral', subtitle: 'Moyen fessier dynamique', videoId: 'jgh6sGwtTwk', why: "Isole le moyen fessier en chaîne ouverte. Faiblesse de ce muscle = ITBS classique chez le coureur.", steps: ["Sur le côté, jambe du dessous pliée, jambe du dessus tendue.", "Lève la jambe du dessus à 30-40°, contrôle.", "Redescends sans poser."], keyPoint: "Pied légèrement orienté vers le sol — engage moyen fessier vs. tenseur du fascia lata.", avoid: "Bassin qui bascule en arrière, abducteurs qui font le travail." },
+          clamshell: { name: 'Clamshell élastique', subtitle: 'Fessier moyen isolé', videoId: 'pR1AkgMmcpU', why: "Le moyen fessier empêche le genou de partir en dedans (valgus dynamique). Sa faiblesse est une cause fréquente de douleur latérale du genou chez le coureur.", steps: ["Sur le côté, genoux pliés à 45°, élastique au-dessus des genoux.", 'Pieds collés, écarte le genou du dessus sans bouger le bassin.', 'Contrôle la descente.'], keyPoint: 'Le bassin reste stable, ne roule pas en arrière.', avoid: 'Aller vite en perdant la tension.' },
+          side_lying_leg_raise: { name: 'Élévation jambe en latéral', subtitle: 'Moyen fessier dynamique', videoId: 'jgh6sGwtTwk', why: "Isole le moyen fessier en chaîne ouverte. Sa faiblesse est typique chez le coureur qui ressent des douleurs sur le côté du genou.", steps: ["Sur le côté, jambe du dessous pliée, jambe du dessus tendue.", "Lève la jambe du dessus à 30-40°, contrôle.", "Redescends sans poser."], keyPoint: "Pied légèrement orienté vers le sol — engage moyen fessier vs. tenseur du fascia lata.", avoid: "Bassin qui bascule en arrière, abducteurs qui font le travail." },
           monster_walk: { name: 'Monster walk', subtitle: 'Élastique aux genoux ou chevilles', videoId: '13TUgg6JzGw', why: "Active moyen fessier en mouvement latéral. Préparation directe au schéma de course.", steps: ["Élastique au-dessus des genoux, position semi-squat.", "Pas latéraux : 10 à droite, 10 à gauche, sans laisser les genoux se rapprocher.", "Variante avancée : 10 pas avant en zigzag."], keyPoint: "Tension dans l'élastique constante — genoux écartés.", avoid: "Se redresser entre chaque pas." },
-          it_band_stretch: { name: 'Étirement bandelette IT', subtitle: 'Croisement jambe + flexion latérale', videoId: 'qH9F0VOJNwg', why: "Détend la bandelette ilio-tibiale, chronique en cas d'ITBS. À combiner avec le renfo fessier (sans renfo, étirer seul ne marche pas).", steps: ["Debout, jambe douloureuse derrière, croise-la dans le dos.", "Pousse la hanche vers le côté de la jambe douloureuse, bras levé en flexion latérale.", "Tiens 30-45 sec."], keyPoint: "Tu dois sentir l'étirement sur la face latérale de la cuisse.", avoid: "Forcer ou rebondir." },
+          it_band_stretch: { name: 'Étirement bandelette IT', subtitle: 'Croisement jambe + flexion latérale', videoId: 'qH9F0VOJNwg', why: "Détend la bandelette ilio-tibiale qui devient chroniquement tendue en cas de douleur latérale du genou. À combiner avec le renfo fessier — étirer seul ne marche pas.", steps: ["Debout, jambe douloureuse derrière, croise-la dans le dos.", "Pousse la hanche vers le côté de la jambe douloureuse, bras levé en flexion latérale.", "Tiens 30-45 sec."], keyPoint: "Tu dois sentir l'étirement sur la face latérale de la cuisse.", avoid: "Forcer ou rebondir." },
           hip_thrust: { name: 'Hip thrust', subtitle: 'Pont fessier dos sur banc', videoId: 'EAm-pLGbNGY', why: "Variante avancée du glute bridge avec amplitude supérieure. Force grand fessier maximale sans charge axiale.", steps: ["Haut du dos appuyé sur un banc, pieds au sol largeur épaules.", "Charge possible sur les hanches (haltère, plaque).", "Pousse les hanches vers le haut jusqu'à aligner épaules-hanches-genoux."], keyPoint: "Menton rentré, regard fixe. Pause 1 sec en haut.", avoid: "Hyperextension lombaire en haut." },
           glute_bridge: { name: 'Pont fessier', subtitle: 'Bilatéral, pieds au sol', videoId: 'wPM8icPu6H8', why: "Active grand fessier sans charger latéralement la hanche. Complément du travail de moyen fessier.", steps: ["Allongé, pieds au sol près des fesses, bras le long du corps.", "Pousse sur les talons pour décoller le bassin, serre les fessiers en haut.", "Redescends sans toucher complètement le sol."], keyPoint: "Le fessier fait le travail, pas les ischios.", avoid: "Cambrer les lombaires en haut." },
         },
@@ -2163,16 +2163,16 @@
           { id: 2, name: 'Adaptation', shortName: 'PHASE 2', weeks: [4, 6], multiplier: 0.7, theme: "Tendons et bandelette s'adaptent à la charge", sessionsTarget: 2, criterion: 'Side-lying leg raise 15 reps sans à-coup, des deux côtés.', graduationText: "Le moyen fessier supporte la charge. La bandelette se relâche au repos. On construit." },
           { id: 3, name: 'Construction', shortName: 'PHASE 3', weeks: [7, 12], multiplier: 1.0, theme: "Hypertrophie réelle du moyen fessier", sessionsTarget: 3, criterion: '30 secondes de single-leg balance avec genou stable, sans valgus.', graduationText: "Ton moyen fessier protège activement le genou. La bandelette ne tire plus à chaque foulée." },
           { id: 4, name: 'Unilatéral', shortName: 'PHASE 4', weeks: [13, 20], multiplier: 1.0, theme: "Égalisation gauche/droite", sessionsTarget: 3, criterion: 'Écart de force gauche/droite ≤ 2/5 sur le hip thrust unilatéral.', graduationText: "L'asymétrie hanche se compense. Tu n'as plus un côté qui tire plus que l'autre." },
-          { id: 5, name: 'Intégration course', shortName: 'PHASE 5', weeks: [21, 32], multiplier: 1.0, theme: "Transfert au geste de course", sessionsTarget: 2, criterion: 'Aucune douleur ITB après sortie longue 3 semaines de suite.', graduationText: "La force se traduit en course : pas de douleur latérale. Tu peux passer en maintenance." },
+          { id: 5, name: 'Intégration course', shortName: 'PHASE 5', weeks: [21, 32], multiplier: 1.0, theme: "Transfert au geste de course", sessionsTarget: 2, criterion: 'Aucune douleur latérale du genou après sortie longue 3 semaines de suite.', graduationText: "La force se traduit en course : pas de douleur latérale. Tu peux passer en maintenance." },
           { id: 6, name: 'Maintenance', shortName: 'PHASE 6', weeks: [33, 999], multiplier: 0.9, theme: "Minimum efficace pour ne rien perdre", sessionsTarget: 2, criterion: 'Phase indéfinie — tu maintiens tant que tu cours.', graduationText: null },
         ],
       },
 
       achilles: {
         id: 'achilles',
-        name: 'Tendinopathie achilléenne',
+        name: "Tendon d'Achille",
         shortName: 'ACHILLE',
-        description: "Programme pour la tendinopathie d'Achille. Le chargement excentrique du tendon (protocole Alfredson) est le gold standard. Cible : soleus + chargement excentrique progressif.",
+        description: "Pour ceux qui ressentent une douleur ou raideur derrière la cheville (au-dessus du talon), surtout au démarrage à froid ou après une séance. Renforcement progressif du tendon par chargement excentrique (méthode reconnue) + travail du mollet en profondeur.",
         targetZones: ['achilles_left', 'achilles_right'],
         exercises: {
           heel_drop_eccentric: { name: 'Heel drop excentrique', subtitle: 'Protocole Alfredson, descente lente 3 sec', videoId: 'XTV8Y3LmEvo', why: "Le protocole gold standard pour la tendinopathie achilléenne. Le chargement excentrique stimule la réparation du tendon.", steps: ["Sur une marche, pointes des pieds sur le bord, talons dans le vide.", "Monte avec les deux pieds, transfère le poids sur la jambe douloureuse.", "Descends LENTEMENT (3 secondes) le talon en dessous du niveau de la marche."], keyPoint: "La douleur modérée est normale et fait partie du processus. Stop si elle dépasse 5/10.", avoid: "Descendre trop vite — c'est la lenteur qui soigne." },
@@ -6668,6 +6668,9 @@
     function ExerciseModal({ exerciseKey, accent, exercises = EXERCISES, onClose }) {
       const ex = exercises[exerciseKey];
       useEffect(() => { const h = (e) => { if (e.key === 'Escape') onClose(); }; window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h); }, [onClose]);
+      // Open YouTube in a new tab with a curated search query — survives broken/removed videos
+      // and works across archetypes without maintaining a per-exercise videoId list.
+      const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(`${ex.name} exercice technique course`)}`;
       return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/85 backdrop-blur-md" onClick={onClose} />
@@ -6681,9 +6684,18 @@
             </div>
             <div className="p-6 grid grid-cols-1 lg:grid-cols-5 gap-6">
               <div className="lg:col-span-3">
-                <div className="aspect-video rounded-xl overflow-hidden" style={{ background: '#000', border: '1px solid var(--border)' }}>
-                  <iframe width="100%" height="100%" src={`https://www.youtube-nocookie.com/embed/${ex.videoId}?rel=0&modestbranding=1`} title={ex.name} frameBorder="0" allow="accelerometer; encrypted-media" allowFullScreen />
-                </div>
+                <a
+                  href={searchUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="aspect-video rounded-xl overflow-hidden flex flex-col items-center justify-center gap-3 transition hover:scale-[1.01]"
+                  style={{ background: 'linear-gradient(135deg, rgba(255,0,51,0.10), rgba(255,0,51,0.02))', border: '1px solid rgba(255,0,51,0.30)', textDecoration: 'none' }}
+                >
+                  <IconYoutube size={64} style={{ color: '#FF0033' }} />
+                  <div className="font-display font-bold text-lg" style={{ color: 'var(--text)' }}>Voir la démo sur YouTube</div>
+                  <div className="font-mono text-[10px] tracking-widest text-center px-4" style={{ color: 'var(--text-faint)' }}>RECHERCHE : {ex.name.toUpperCase()}</div>
+                  <div className="font-mono text-[9px]" style={{ color: 'var(--text-faint)' }}>↗ Ouvre dans un nouvel onglet</div>
+                </a>
               </div>
               <div className="lg:col-span-2 space-y-4">
                 <div className="rounded-xl p-4" style={{ background: `${accent}15`, border: `1px solid ${accent}30` }}>
