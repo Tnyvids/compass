@@ -3900,23 +3900,14 @@
 
       return (
         <div className="mb-4 rounded-xl p-5" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--border)' }}>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
-              <div className="font-mono text-xs tracking-widest mb-2" style={{ color: 'var(--text-faint)' }}>DISTANCE</div>
+              <div className="font-mono text-xs tracking-widest mb-2" style={{ color: 'var(--text-faint)' }}>VOLUME</div>
               <div className="font-display text-2xl font-bold tabular" style={{ color: 'var(--text)' }}>
                 <span style={{ color: rKm > 0 ? 'var(--go)' : 'var(--text-dim)' }}>{rKm.toFixed(1)}</span>
                 <span className="mx-1 opacity-40">/</span>
                 <span style={{ color: 'var(--compass)' }}>{pKm.toFixed(1)}</span>
                 <span className="font-mono text-sm ml-1" style={{ color: 'var(--text-dim)' }}>km</span>
-              </div>
-              <div className="font-mono text-xs mt-1" style={{ color: 'var(--text-faint)' }}>réalisé / prévu</div>
-            </div>
-            <div>
-              <div className="font-mono text-xs tracking-widest mb-2" style={{ color: 'var(--text-faint)' }}>DURÉE</div>
-              <div className="font-display text-2xl font-bold tabular" style={{ color: 'var(--text)' }}>
-                <span style={{ color: rDur > 0 ? 'var(--go)' : 'var(--text-dim)' }}>{fmtDur(rDur)}</span>
-                <span className="mx-1 opacity-40">/</span>
-                <span style={{ color: 'var(--compass)' }}>{fmtDur(pDur)}</span>
               </div>
               <div className="font-mono text-xs mt-1" style={{ color: 'var(--text-faint)' }}>réalisé / prévu</div>
             </div>
@@ -3954,6 +3945,7 @@
       const [editingInlineDay, setEditingInlineDay] = useState(null);  // {wsKey, dayKey} when inline-editing
       const [weekOffset, setWeekOffset] = useState(0);
       const [generatorOpen, setGeneratorOpen] = useState(false);
+      const [showRaceTimeline, setShowRaceTimeline] = useState(false);
       const buildDeletedWeek = () => ({
         lun: { type: 'rest', label: 'Repos', detail: '', strengthToday: null, plannedKm: null, plannedMin: null },
         mar: { type: 'rest', label: 'Repos', detail: '', strengthToday: null, plannedKm: null, plannedMin: null },
@@ -4185,9 +4177,26 @@
             </div>
           </Card>
 
-          {/* Races timeline (graphic) */}
+          {/* Races timeline (graphic) — collapsed by default since the next race is already on Today's hero */}
           <div className="mt-8">
-            <RaceTimeline races={races} profile={profile} activities={activities} planOverrides={planOverrides} onAddRace={onAddRace} onRemoveRace={onRemoveRace} />
+            <button
+              onClick={() => setShowRaceTimeline(v => !v)}
+              className="w-full flex items-center justify-between px-4 py-3 rounded-xl"
+              style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}
+            >
+              <div className="flex items-center gap-2">
+                <IconCalendar size={14} style={{ color: 'var(--compass)' }} />
+                <span className="font-mono text-[11px] tracking-widest" style={{ color: 'var(--text-dim)' }}>CALENDRIER COURSES · {upcomingRaces.length} à venir</span>
+              </div>
+              <span className="font-mono text-[10px] tracking-widest flex items-center gap-1" style={{ color: 'var(--text-faint)' }}>
+                {showRaceTimeline ? 'MASQUER' : 'AFFICHER'} <IconChevronDown size={10} style={{ transform: showRaceTimeline ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s' }} />
+              </span>
+            </button>
+            {showRaceTimeline && (
+              <div className="mt-3">
+                <RaceTimeline races={races} profile={profile} activities={activities} planOverrides={planOverrides} onAddRace={onAddRace} onRemoveRace={onRemoveRace} />
+              </div>
+            )}
           </div>
 
           </>)}
@@ -9549,14 +9558,9 @@
 
       return (
         <div className="space-y-3">
-          {/* Main fitness narrative */}
+          {/* Main fitness narrative — detail (trio + projections) lives on the same tab above */}
           <Insight tone={fitnessNarrative.tone} label={fitnessNarrative.label} title={fitnessNarrative.title}>
             {fitnessNarrative.body}
-            <div className="mt-3">
-              <button onClick={() => onTabChange('forme')} className="t-meta inline-flex items-center gap-1 hover:opacity-100" style={{ color: 'var(--compass)', opacity: 0.85 }}>
-                Voir le détail forme actuelle <IconArrowRight size={11} />
-              </button>
-            </div>
           </Insight>
 
           {/* ACWR narrative */}
@@ -9594,7 +9598,7 @@
     }
 
     function AnalyticsView({ activities, profile, checkins, planOverrides, races, onSaveProfile }) {
-      const [tab, setTab] = useState('apercu'); // apercu | forme | tendances | performance
+      const [tab, setTab] = useState('etat'); // etat | tendances | performance
 
       const activitiesWithTss = useMemo(() =>
         activities.map(a => ({ ...a, tss: computeTSS(a, profile.cp) })),
@@ -9779,8 +9783,7 @@
           {/* Tab navigation */}
           <div className="flex gap-1 mb-5 border-b overflow-x-auto" style={{ borderColor: 'var(--border)' }}>
             {[
-              { k: 'apercu', l: 'Aperçu' },
-              { k: 'forme', l: 'Forme actuelle' },
+              { k: 'etat', l: 'État' },
               { k: 'tendances', l: 'Tendances' },
               { k: 'performance', l: 'Performance' },
             ].map(t => (
@@ -9799,34 +9802,28 @@
             ))}
           </div>
 
-          {/* Tab content: Aperçu — narrative summary */}
-          {tab === 'apercu' && (
-            <AnalyticsOverview
-              activities={activities}
-              activitiesWithTss={activitiesWithTss}
-              fitness={fitness}
-              acwr={acwr}
-              weeklyTss={weeklyTss}
-              profile={profile}
-              hasPowerData={hasPowerData}
-              predictions={predictions}
-              onTabChange={setTab}
-            />
-          )}
-
-          {/* Tab content: Forme actuelle */}
-          {tab === 'forme' && (
+          {/* Tab content: État — trio/ACWR + projections + narrative insights, fused */}
+          {tab === 'etat' && (
             <>
               {hasPowerData && (
-                <>
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-4">
-                    <div className="lg:col-span-2"><FitnessTrioCard fitness={fitness} /></div>
-                    <div><ACWRCard acwr={acwr} /></div>
-                  </div>
-                </>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-4">
+                  <div className="lg:col-span-2"><FitnessTrioCard fitness={fitness} /></div>
+                  <div><ACWRCard acwr={acwr} /></div>
+                </div>
               )}
               <div className="mb-4"><FutureLoadProjectionCard activities={activities} profile={profile} planOverrides={planOverrides} /></div>
               <div className="mb-4"><ACWRProjectionCard activities={activities} profile={profile} planOverrides={planOverrides} /></div>
+              <AnalyticsOverview
+                activities={activities}
+                activitiesWithTss={activitiesWithTss}
+                fitness={fitness}
+                acwr={acwr}
+                weeklyTss={weeklyTss}
+                profile={profile}
+                hasPowerData={hasPowerData}
+                predictions={predictions}
+                onTabChange={setTab}
+              />
             </>
           )}
 
