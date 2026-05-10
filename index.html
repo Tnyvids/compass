@@ -328,6 +328,25 @@
     // ========================================================================
     // DEFAULT PROFILE — TONY
     // ========================================================================
+    // ========================================================================
+    // INJURY ZONES — universal list used by InjuryRiskCard, CheckinFlow, profile editor
+    // ========================================================================
+    const INJURY_ZONES = [
+      { key: 'knee_left',       label: 'Genou gauche',          short: 'Genou G' },
+      { key: 'knee_right',      label: 'Genou droit',           short: 'Genou D' },
+      { key: 'achilles_left',   label: "Tendon d'Achille gauche", short: 'Achille G' },
+      { key: 'achilles_right',  label: "Tendon d'Achille droit",  short: 'Achille D' },
+      { key: 'hip',             label: 'Hanche',                short: 'Hanche' },
+      { key: 'itband',          label: 'Bandelette IT',         short: 'IT' },
+      { key: 'plantar_left',    label: 'Plantaire gauche',      short: 'Plantaire G' },
+      { key: 'plantar_right',   label: 'Plantaire droit',       short: 'Plantaire D' },
+      { key: 'lower_back',      label: 'Lombaires',             short: 'Lombaires' },
+      { key: 'shin',            label: 'Tibia / périostite',    short: 'Tibia' },
+      { key: 'hamstring',       label: 'Ischio-jambier',        short: 'Ischio' },
+      { key: 'calf',            label: 'Mollet',                short: 'Mollet' },
+    ];
+    const INJURY_ZONE_MAP = INJURY_ZONES.reduce((m, z) => { m[z.key] = z; return m; }, {});
+
     const DEFAULT_PROFILE = {
       name: '',
       birthYear: null,
@@ -341,6 +360,7 @@
       cpHistory: [],
       prs: { '5k': null, '10k': null, semi: null, marathon: null },
       knee: { side: '', condition: '', lastFlare: '' },
+      injuryZones: [],         // array of INJURY_ZONES keys — drives InjuryRiskCard visibility/labels
       goals: {
         short: { event: '', date: '', target: '', aspiration: '' },
         mid: { event: '', target: '' },
@@ -362,7 +382,18 @@
 
     function getProfile() {
       const stored = storage.get(KEYS.profile);
-      return stored ? { ...DEFAULT_PROFILE, ...stored } : DEFAULT_PROFILE;
+      const merged = stored ? { ...DEFAULT_PROFILE, ...stored } : { ...DEFAULT_PROFILE };
+      // Auto-migration: if injuryZones missing and legacy knee.condition present, derive from knee.side
+      if (!Array.isArray(merged.injuryZones)) merged.injuryZones = [];
+      if (merged.injuryZones.length === 0 && merged.knee && merged.knee.condition) {
+        const side = String(merged.knee.side || '').toLowerCase();
+        const zones = [];
+        if (side === 'gauche' || side === 'les deux') zones.push('knee_left');
+        if (side === 'droit' || side === 'les deux') zones.push('knee_right');
+        if (zones.length === 0) zones.push('knee_left'); // sensible default when side is unspecified
+        merged.injuryZones = zones;
+      }
+      return merged;
     }
     function saveProfile(p) { storage.set(KEYS.profile, p); }
     function getAge(birthYear) { return new Date().getFullYear() - birthYear; }
@@ -2493,8 +2524,8 @@
             </div>
           )}
 
-          {/* KNEE RISK INDEX — combined daily score, action-oriented */}
-          {profile.cp && activities.length > 0 && (
+          {/* INJURY RISK INDEX — combined daily score, action-oriented. Hidden when user has no tracked zone. */}
+          {profile.cp && activities.length > 0 && Array.isArray(profile.injuryZones) && profile.injuryZones.length > 0 && (
             <KneeRiskCard
               profile={profile}
               activities={activities}
@@ -2601,6 +2632,18 @@
       // Always show — it's a permanent indicator. Even at score 0 it teaches what's tracked.
       const { total, driver, zone, zoneColor, zoneLabel } = data;
 
+      // Dynamic title from user's tracked zones (Profile > Santé). Empty means card shouldn't render
+      // (caller handles that), but we keep a defensive fallback here.
+      const zones = (profile && Array.isArray(profile.injuryZones)) ? profile.injuryZones : [];
+      const cardTitle = zones.length === 0
+        ? 'RISQUE BLESSURE'
+        : zones.length === 1
+          ? `RISQUE ${(INJURY_ZONE_MAP[zones[0]]?.short || INJURY_ZONE_MAP[zones[0]]?.label || 'BLESSURE').toUpperCase()}`
+          : 'RISQUE BLESSURE';
+      const zoneSubLabel = zones.length > 1
+        ? zones.map(k => INJURY_ZONE_MAP[k]?.short || k).join(' · ')
+        : null;
+
       let actionText = null, actionLabel = null, actionFn = null;
       if (zone === 'critical' || zone === 'high') {
         if (driver.key === 'pain') { actionText = 'Repos qualité 24-48h, pas de fractionné. Glaçage + étirement psoas.'; }
@@ -2610,7 +2653,7 @@
           actionFn = () => onStrengthStart && onStrengthStart('B');
         }
         else if (driver.key === 'acwr') { actionText = 'La charge monte trop vite. Allège la prochaine séance qualité de 25%.'; }
-        else if (driver.key === 'profile') { actionText = 'Profil à risque permanent — la talonnette + renfo régulier sont la seule défense durable.'; }
+        else if (driver.key === 'profile') { actionText = 'Profil à risque permanent — talonnette + renfo régulier sont la seule défense durable.'; }
       } else if (zone === 'moderate') {
         actionText = `Surveillé. Facteur principal : ${driver.label.toLowerCase()}.`;
         if (driver.key === 'renfo' && profile.showStrength !== false) {
@@ -2618,7 +2661,9 @@
           actionFn = () => onNav && onNav('plan');
         }
       } else {
-        actionText = 'Genou en zone safe. Continue exactement ce que tu fais.';
+        actionText = zones.length === 1
+          ? `${INJURY_ZONE_MAP[zones[0]]?.label || 'Zone surveillée'} en zone safe. Continue exactement ce que tu fais.`
+          : 'Tes zones surveillées sont en zone safe. Continue exactement ce que tu fais.';
       }
 
       return (
@@ -2626,7 +2671,8 @@
           <div className="flex items-center justify-between gap-4 flex-wrap">
             <div className="flex items-center gap-4 min-w-0">
               <div className="flex-shrink-0">
-                <div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>RISQUE GENOU</div>
+                <div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>{cardTitle}</div>
+                {zoneSubLabel && <div className="font-mono text-[9px] tabular" style={{ color: 'var(--text-faint)', opacity: 0.7 }}>{zoneSubLabel}</div>}
                 <div className="flex items-baseline gap-1">
                   <div className="font-display font-extrabold leading-none tabular" style={{ fontSize: 44, color: zoneColor }}>{total}</div>
                   <div className="font-mono text-xs" style={{ color: 'var(--text-faint)' }}>/100</div>
@@ -7217,20 +7263,62 @@
           <Card className="p-6 mb-4">
             <div className="font-display text-lg font-bold mb-4">Santé & antécédents</div>
             {!editing ? (
-              <div className="space-y-2 text-sm" style={{ color: 'var(--text-dim)' }}>
-                <div><span style={{ color: 'var(--text)' }}>Zone sensible :</span> {profile.knee.condition || profile.knee.side ? `${profile.knee.condition || ''} ${profile.knee.side ? '(côté ' + profile.knee.side + ')' : ''}`.trim() : '—'}</div>
-                <div><span style={{ color: 'var(--text)' }}>Dernière crise :</span> {profile.knee.lastFlare || '—'}</div>
+              <div className="space-y-3 text-sm" style={{ color: 'var(--text-dim)' }}>
+                <div>
+                  <span style={{ color: 'var(--text)' }}>Zones surveillées :</span>{' '}
+                  {(profile.injuryZones && profile.injuryZones.length > 0)
+                    ? profile.injuryZones.map(k => INJURY_ZONE_MAP[k]?.label || k).join(', ')
+                    : <span style={{ color: 'var(--text-faint)', fontStyle: 'italic' }}>Aucune (le risque blessure n'est pas affiché sur Today)</span>}
+                </div>
+                {(profile.knee?.condition || profile.knee?.lastFlare) && (
+                  <div className="pt-2 border-t" style={{ borderColor: 'var(--border)' }}>
+                    <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>DÉTAILS CLINIQUES</div>
+                    <div><span style={{ color: 'var(--text)' }}>Pathologie :</span> {profile.knee.condition || '—'}</div>
+                    <div><span style={{ color: 'var(--text)' }}>Dernière crise :</span> {profile.knee.lastFlare || '—'}</div>
+                  </div>
+                )}
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <EditField label="Pathologie (ex: Tendinite rotulienne)" type="text" value={draft.knee.condition || ''} onChange={(v) => setDraft({...draft, knee: {...draft.knee, condition: v}})} />
+              <div className="space-y-5">
                 <div>
-                  <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>CÔTÉ</div>
-                  <select className="input" value={draft.knee.side || ''} onChange={(e) => setDraft({...draft, knee: {...draft.knee, side: e.target.value}})}>
-                    <option value="">—</option><option value="gauche">Gauche</option><option value="droit">Droit</option><option value="les deux">Les deux</option>
-                  </select>
+                  <div className="font-mono text-[9px] tracking-widest mb-2" style={{ color: 'var(--text-faint)' }}>ZONES À SURVEILLER</div>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-1.5">
+                    {INJURY_ZONES.map(z => {
+                      const checked = (draft.injuryZones || []).includes(z.key);
+                      return (
+                        <label key={z.key} className="flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer" style={{ background: checked ? 'rgba(74,158,255,0.10)' : 'var(--bg-elev)', border: `1px solid ${checked ? 'var(--compass)' : 'var(--border)'}` }}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              const cur = Array.isArray(draft.injuryZones) ? draft.injuryZones : [];
+                              const next = checked ? cur.filter(k => k !== z.key) : [...cur, z.key];
+                              setDraft({ ...draft, injuryZones: next });
+                            }}
+                            style={{ accentColor: 'var(--compass)' }}
+                          />
+                          <span className="text-sm" style={{ color: checked ? 'var(--compass)' : 'var(--text-dim)' }}>{z.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <div className="text-xs mt-2 leading-relaxed" style={{ color: 'var(--text-faint)' }}>
+                    Coche les zones où tu as un historique de blessure ou douleur. Compass calcule un risque adapté et ajuste ses recommandations. Laisse vide si tu n'as rien à signaler — la card disparaît du Today.
+                  </div>
                 </div>
-                <EditField label="Dernière crise (YYYY-MM)" type="text" value={draft.knee.lastFlare || ''} onChange={(v) => setDraft({...draft, knee: {...draft.knee, lastFlare: v}})} />
+                <div className="pt-4 border-t" style={{ borderColor: 'var(--border)' }}>
+                  <div className="font-mono text-[9px] tracking-widest mb-3" style={{ color: 'var(--text-faint)' }}>DÉTAILS CLINIQUES (OPTIONNEL)</div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <EditField label="Pathologie (ex: Tendinite rotulienne)" type="text" value={draft.knee?.condition || ''} onChange={(v) => setDraft({...draft, knee: {...draft.knee, condition: v}})} />
+                    <div>
+                      <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>CÔTÉ</div>
+                      <select className="input" value={draft.knee?.side || ''} onChange={(e) => setDraft({...draft, knee: {...draft.knee, side: e.target.value}})}>
+                        <option value="">—</option><option value="gauche">Gauche</option><option value="droit">Droit</option><option value="les deux">Les deux</option>
+                      </select>
+                    </div>
+                    <EditField label="Dernière crise (YYYY-MM)" type="text" value={draft.knee?.lastFlare || ''} onChange={(v) => setDraft({...draft, knee: {...draft.knee, lastFlare: v}})} />
+                  </div>
+                </div>
               </div>
             )}
           </Card>
