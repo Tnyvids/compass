@@ -2057,23 +2057,23 @@
       single_leg_bridge: { sets: 3, reps: 10, rest: 45, perSide: true },
       clamshell: { sets: 3, reps: 15, rest: 45, perSide: true },
     };
-    function scaleEx(key, m) {
-      const b = STRENGTH_BASE[key]; const r = { ...b, key, type: b.type || 'reps' };
+    function scaleEx(key, m, base = STRENGTH_BASE) {
+      const b = base[key]; const r = { ...b, key, type: b.type || 'reps' };
       r.sets = Math.max(2, Math.round(b.sets * m));
       if (b.reps) r.reps = Math.max(6, Math.round(b.reps * m));
       if (b.duration) r.duration = Math.max(20, Math.round(b.duration * m));
       return r;
     }
-    function getStrengthPhase(startMs, offset = 0) {
-      if (!startMs) return STRENGTH_PHASES[0];
+    function getStrengthPhase(startMs, offset = 0, phases = STRENGTH_PHASES) {
+      if (!startMs) return phases[0];
       const days = Math.floor((Date.now() - startMs) / 86400000);
       const w = Math.floor(days / 7) + 1 + offset;
-      for (const p of STRENGTH_PHASES) if (w >= p.weeks[0] && w <= p.weeks[1]) return { ...p, currentWeek: w };
-      return { ...STRENGTH_PHASES[STRENGTH_PHASES.length - 1], currentWeek: w };
+      for (const p of phases) if (w >= p.weeks[0] && w <= p.weeks[1]) return { ...p, currentWeek: w };
+      return { ...phases[phases.length - 1], currentWeek: w };
     }
-    function buildStrengthSession(key, phase) {
-      const s = STRENGTH_SESSIONS[key];
-      return { ...s, exercises: s.exerciseKeys.map(k => scaleEx(k, phase.multiplier)) };
+    function buildStrengthSession(key, phase, sessions = STRENGTH_SESSIONS, base = STRENGTH_BASE) {
+      const s = sessions[key];
+      return { ...s, exercises: s.exerciseKeys.map(k => scaleEx(k, phase.multiplier, base)) };
     }
 
     // ========================================================================
@@ -2327,7 +2327,7 @@
       if (score >= 35) return {
         level: 'easy', title: 'Footing très cool ou repos actif', accent: '#FF8040', tag: 'RÉCUP NÉCESSAIRE', icon: IconMoon,
         action: 'Le corps demande de la récup. Pas de qualité aujourd\'hui.',
-        replacement: 'Footing 30 min en Z1 strict (160-180W max), ou marche active + Séance B de renfo. Pas de fractionné, pas de seuil.',
+        replacement: 'Footing 30 min en Z1 strict (160-180W max), ou marche active + une séance de renfo. Pas de fractionné, pas de seuil.',
       };
       return { level: 'rest', title: 'Repos complet', accent: '#FF5B5B', tag: 'VOYANTS ROUGES', icon: IconMoon, action: 'Forcer ici serait contre-productif et augmente le risque de blessure. Repos complet.', replacement: 'Sieste si possible, étirements doux, hydratation. Demain on évalue à nouveau.' };
     }
@@ -2810,12 +2810,16 @@
         ? zones.map(k => INJURY_ZONE_MAP[k]?.short || k).join(' · ')
         : null;
 
+      // Resolve the archetype's "B" session title so the CTA describes the actual program
+      const archetypeForCard = getActiveArchetype(profile);
+      const sessionBTitle = archetypeForCard.sessions?.B?.title || 'Séance B';
+
       let actionText = null, actionLabel = null, actionFn = null;
       if (zone === 'critical' || zone === 'high') {
         if (driver.key === 'pain') { actionText = 'Repos qualité 24-48h, pas de fractionné. Glaçage + étirement psoas.'; }
         else if (driver.key === 'renfo' && profile.showStrength !== false) {
-          actionText = '15 minutes de Séance B maintenant = score qui chute de 20 points.';
-          actionLabel = 'DÉMARRER SÉANCE B';
+          actionText = `15 minutes de ${sessionBTitle.toLowerCase()} maintenant = score qui chute de 20 points.`;
+          actionLabel = `DÉMARRER ${sessionBTitle.toUpperCase()}`;
           actionFn = () => onStrengthStart && onStrengthStart('B');
         }
         else if (driver.key === 'acwr') { actionText = 'La charge monte trop vite. Allège la prochaine séance qualité de 25%.'; }
@@ -5989,7 +5993,18 @@
       }
       function back() { if (step > 0) setStep(step - 1); }
 
+      // Map a list of injury zones to a sensible default strength archetype.
+      // Priority: knee → PFPS+LLD, achilles → achilles, itband → itband, otherwise generic prevention.
+      function suggestArchetype(zones) {
+        if (!Array.isArray(zones) || zones.length === 0) return 'generic_prevention';
+        if (zones.some(z => z === 'knee_left' || z === 'knee_right')) return 'pfps_lld';
+        if (zones.some(z => z === 'achilles_left' || z === 'achilles_right')) return 'achilles';
+        if (zones.includes('itband')) return 'itband';
+        return 'generic_prevention';
+      }
+
       function finish() {
+        const zonesArr = Array.isArray(draft.injuryZones) ? draft.injuryZones : [];
         const updates = {
           name: (draft.name || '').trim(),
           birthYear: draft.birthYear ? parseInt(draft.birthYear) : null,
@@ -5998,7 +6013,8 @@
           unitMode: draft.hasPowerMeter ? 'power' : 'pace',
           cp: draft.hasPowerMeter && draft.cp ? parseInt(draft.cp) : (initialProfile?.cp || null),
           easyPaceMinPerKm: !draft.hasPowerMeter && draft.easyPaceMinPerKm ? parseFloat(draft.easyPaceMinPerKm) : null,
-          injuryZones: Array.isArray(draft.injuryZones) ? draft.injuryZones : [],
+          injuryZones: zonesArr,
+          strengthArchetypes: [suggestArchetype(zonesArr)],
           onboardingDone: true,
         };
         onComplete(updates);
@@ -6210,8 +6226,9 @@
       const [confirmReset, setConfirmReset] = useState(false);
       const [confirmClear, setConfirmClear] = useState(false);
 
+      const archetype = getActiveArchetype(profile);
       const phaseOffset = computePhaseOffset(strengthSessions);
-      const phase = getStrengthPhase(strengthStart, phaseOffset);
+      const phase = getStrengthPhase(strengthStart, phaseOffset, archetype.phases);
       const lastSession = strengthSessions[0];
       const suggested = !lastSession ? 'A' : lastSession.type === 'A' ? 'B' : 'A';
 
@@ -6228,7 +6245,7 @@
               {phaseOffset !== 0 && <Tag color={phaseOffset > 0 ? 'var(--positive)' : 'var(--negative)'}>{phaseOffset > 0 ? '↑ ACCÉLÉRÉ' : '↓ RALENTI'}</Tag>}
             </div>
             <h2 className="t-h2 mb-1">Renforcement · {phase.sessionsTarget || 2}× / semaine</h2>
-            <div className="t-body-dim">Programme 12 mois en 6 phases — PFPS + LLD + dysmétrie patellaire</div>
+            <div className="t-body-dim">Programme 12 mois en 6 phases — {archetype.name}</div>
           </div>
 
           {/* Phase + Stats */}
@@ -6246,7 +6263,7 @@
                 {phase.theme && <div className="text-sm mb-4" style={{ color: 'var(--text-dim)' }}>{phase.theme}</div>}
                 {/* 6-phase progression bar */}
                 <div className="flex gap-1 mb-2">
-                  {STRENGTH_PHASES.map((p, i) => {
+                  {archetype.phases.map((p, i) => {
                     const reached = phase.id >= p.id;
                     const current = phase.id === p.id;
                     return (
@@ -6295,16 +6312,16 @@
                   <IconDumbbell size={24} style={{ color: 'var(--accent)' }} />
                 </div>
                 <div className="flex-1 min-w-[240px]">
-                  <div className="font-display text-xl font-bold mb-1">Bienvenue dans le programme Renfo</div>
+                  <div className="font-display text-xl font-bold mb-1">Bienvenue dans le programme {archetype.name}</div>
                   <div className="text-sm leading-relaxed mb-3" style={{ color: 'var(--text-dim)' }}>
-                    Deux séances de 15 minutes par semaine pour <span style={{ color: 'var(--text)' }}>contrôler ton PFPS</span> et améliorer ta foulée. Cible : moyen fessier, quadriceps en amplitude limitée, libération du psoas.
+                    {archetype.description}
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs" style={{ color: 'var(--text-dim)' }}>
                     <div className="p-2.5 rounded-lg" style={{ background: 'var(--bg-elev)' }}>
-                      <span style={{ color: 'var(--accent)' }} className="font-bold">Séance A</span> — Quadriceps (amplitude limitée pour PFPS) + soleus.
+                      <span style={{ color: 'var(--accent)' }} className="font-bold">Séance A</span> — {archetype.sessions.A.subtitle}
                     </div>
                     <div className="p-2.5 rounded-lg" style={{ background: 'var(--bg-elev)' }}>
-                      <span style={{ color: 'var(--accent)' }} className="font-bold">Séance B</span> — Moyen fessier + grand fessier + psoas. <span style={{ color: 'var(--accent)' }}>Le pilier rééducation PFPS</span>.
+                      <span style={{ color: 'var(--accent)' }} className="font-bold">Séance B</span> — {archetype.sessions.B.subtitle}
                     </div>
                   </div>
                   <div className="mt-3 font-mono text-[11px] italic" style={{ color: 'var(--text-faint)' }}>
@@ -6319,7 +6336,7 @@
           <div className="font-display text-xl font-bold mt-8 mb-4">Démarrer une séance</div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-8">
             {['A', 'B'].map(key => {
-              const s = STRENGTH_SESSIONS[key];
+              const s = archetype.sessions[key];
               const isSuggested = key === suggested;
               return (
                 <button key={key} onClick={() => onStartWorkout(key)} className="btn lift text-left p-7 rounded-2xl group relative overflow-hidden" style={{ background: isSuggested ? `${s.accent}15` : 'var(--bg-elev)', border: `1px solid ${isSuggested ? s.accent : 'var(--border)'}` }}>
@@ -6343,16 +6360,19 @@
             <div>
               <div className="font-display text-xl font-bold mb-4">Récent</div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-6">
-                {strengthSessions.slice(0, 4).map((s, i) => (
-                  <div key={i} className="flex items-center gap-3 p-4 rounded-xl" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
-                    <div className="w-10 h-10 rounded-full flex items-center justify-center font-mono text-sm font-bold text-black" style={{ background: STRENGTH_SESSIONS[s.type].accent }}>{s.type}</div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium truncate">{STRENGTH_SESSIONS[s.type].title}</div>
-                      <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>{fmtDayDate(s.date)}{typeof s.kneeScore === 'number' ? ` · K${s.kneeScore}` : ''}{s.feedback ? ` · ${s.feedback === 'easy' ? '😌' : s.feedback === 'perfect' ? '👌' : '😤'}` : ''}</div>
+                {strengthSessions.slice(0, 4).map((s, i) => {
+                  const ses = archetype.sessions[s.type] || STRENGTH_SESSIONS[s.type];
+                  return (
+                    <div key={i} className="flex items-center gap-3 p-4 rounded-xl" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
+                      <div className="w-10 h-10 rounded-full flex items-center justify-center font-mono text-sm font-bold text-black" style={{ background: ses.accent }}>{s.type}</div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium truncate">{ses.title}</div>
+                        <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>{fmtDayDate(s.date)}{typeof s.kneeScore === 'number' ? ` · K${s.kneeScore}` : ''}{s.feedback ? ` · ${s.feedback === 'easy' ? '😌' : s.feedback === 'perfect' ? '👌' : '😤'}` : ''}</div>
+                      </div>
+                      <div className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>{fmtDuration(s.duration)}</div>
                     </div>
-                    <div className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>{fmtDuration(s.duration)}</div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
@@ -6392,13 +6412,14 @@
     // STRENGTH WORKOUT FLOW (knee checkin → workout → feedback)
     // ========================================================================
     function StrengthFlow({ sessionKey, strengthStart, profile = null, onComplete, onCancel, onInfo }) {
+      const archetype = getActiveArchetype(profile);
       const trackedZones = (profile && Array.isArray(profile.injuryZones)) ? profile.injuryZones : [];
       // Skip the pre-workout pain checkin entirely when the user tracks no injury zone
       const initialStage = trackedZones.length > 0 ? 'knee' : 'workout';
       const [stage, setStage] = useState(initialStage);
       const [kneeScore, setKneeScore] = useState(null);
       const [duration, setDuration] = useState(0);
-      const phase = getStrengthPhase(strengthStart || Date.now());
+      const phase = getStrengthPhase(strengthStart || Date.now(), 0, archetype.phases);
 
       function onKneeValidate(score) { setKneeScore(score); setStage('workout'); }
       function onKneeSkip() { setKneeScore(null); setStage('workout'); }
@@ -6408,16 +6429,17 @@
         setStage('done');
       }
 
-      if (stage === 'knee') return <KneeCheckin sessionKey={sessionKey} profile={profile} onValidate={onKneeValidate} onSkip={onKneeSkip} onCancel={onCancel} />;
-      if (stage === 'workout') return <WorkoutFlow sessionKey={sessionKey} phase={phase} onFinish={onWorkoutDone} onQuit={onCancel} onInfo={onInfo} />;
-      if (stage === 'feedback') return <FeedbackScreen sessionKey={sessionKey} onSubmit={onFeedback} />;
-      if (stage === 'done') return <DoneScreen sessionKey={sessionKey} onClose={onCancel} />;
+      if (stage === 'knee') return <KneeCheckin sessionKey={sessionKey} profile={profile} archetype={archetype} onValidate={onKneeValidate} onSkip={onKneeSkip} onCancel={onCancel} />;
+      if (stage === 'workout') return <WorkoutFlow sessionKey={sessionKey} phase={phase} archetype={archetype} onFinish={onWorkoutDone} onQuit={onCancel} onInfo={onInfo} />;
+      if (stage === 'feedback') return <FeedbackScreen sessionKey={sessionKey} archetype={archetype} onSubmit={onFeedback} />;
+      if (stage === 'done') return <DoneScreen sessionKey={sessionKey} archetype={archetype} onClose={onCancel} />;
       return null;
     }
 
-    function KneeCheckin({ sessionKey, profile = null, onValidate, onSkip, onCancel }) {
+    function KneeCheckin({ sessionKey, profile = null, archetype = null, onValidate, onSkip, onCancel }) {
       const [score, setScore] = useState(0);
-      const accent = STRENGTH_SESSIONS[sessionKey].accent;
+      const sessions = (archetype && archetype.sessions) || STRENGTH_SESSIONS;
+      const accent = sessions[sessionKey].accent;
       const colorFor = (s) => s === 0 ? '#8FE86A' : s <= 3 ? '#D4FF00' : s <= 6 ? '#FF5B1F' : '#FF5B5B';
       const labelFor = (s) => s === 0 ? 'Aucune douleur' : s <= 2 ? 'Sensation légère' : s <= 4 ? 'Gêne modérée' : s <= 6 ? 'Douleur notable' : s <= 8 ? 'Douleur forte' : 'Douleur très forte';
       const zoneSummary = getInjuryZoneSummary(profile, 'long');
@@ -6455,8 +6477,11 @@
       );
     }
 
-    function WorkoutFlow({ sessionKey, phase, onFinish, onQuit, onInfo }) {
-      const session = buildStrengthSession(sessionKey, phase);
+    function WorkoutFlow({ sessionKey, phase, archetype = null, onFinish, onQuit, onInfo }) {
+      const sessions = (archetype && archetype.sessions) || STRENGTH_SESSIONS;
+      const base = (archetype && archetype.base) || STRENGTH_BASE;
+      const exercises = (archetype && archetype.exercises) || EXERCISES;
+      const session = buildStrengthSession(sessionKey, phase, sessions, base);
       const blocks = [];
       session.exercises.forEach((ex, exIdx) => {
         for (let s = 1; s <= ex.sets; s++) {
@@ -6471,7 +6496,7 @@
       const intRef = useRef(null);
       const block = blocks[blockIdx];
       const exercise = block ? session.exercises[block.exIdx] : null;
-      const exerciseData = exercise ? EXERCISES[exercise.key] : null;
+      const exerciseData = exercise ? exercises[exercise.key] : null;
       const isLast = blockIdx === blocks.length - 1;
 
       useEffect(() => {
@@ -6501,6 +6526,18 @@
       }, [ps, blockIdx]);
 
       if (!block) return null;
+      // Defensive: if archetype data is inconsistent (exerciseKey missing from exercises map),
+      // surface a clear error instead of crashing into a black screen.
+      if (!exerciseData) {
+        return (
+          <div className="min-h-screen flex flex-col items-center justify-center p-8 fade-in">
+            <div className="font-mono text-[10px] tracking-widest mb-3" style={{ color: 'var(--negative)' }}>ERREUR DE DONNÉES</div>
+            <div className="font-display text-xl font-bold mb-3 text-center">Cet exercice n'existe pas dans l'archétype actif.</div>
+            <div className="text-sm mb-6 text-center" style={{ color: 'var(--text-dim)' }}>Clé manquante : <span className="font-mono" style={{ color: 'var(--text)' }}>{exercise?.key || '—'}</span>. Va dans Profil &gt; Programme renfo et choisis un archétype.</div>
+            <button onClick={onQuit} className="btn-base btn-secondary">Retour</button>
+          </div>
+        );
+      }
       const progress = ((blockIdx + (ps === 'rest' ? 1 : 0)) / blocks.length) * 100;
       const nextEx = blocks[blockIdx + 1] ? session.exercises[blocks[blockIdx + 1].exIdx] : null;
 
@@ -6515,7 +6552,7 @@
               <div className="h-full transition-all duration-500" style={{ width: `${progress}%`, background: session.accent }} />
             </div>
             {ps === 'rest' ? (
-              <RestView elapsed={elapsed} total={exercise.rest} next={nextEx ? EXERCISES[nextEx.key] : null} onSkip={skipRest} accent={session.accent} />
+              <RestView elapsed={elapsed} total={exercise.rest} next={nextEx ? exercises[nextEx.key] : null} onSkip={skipRest} accent={session.accent} />
             ) : (
               <div className="flex-1 flex flex-col">
                 <div className="text-center mb-6">
@@ -6544,10 +6581,10 @@
                     <div className="font-mono text-xs tracking-widest" style={{ color: 'var(--text-faint)' }}>EN COURS…</div>
                   )}
                 </Card>
-                {nextEx && (
+                {nextEx && exercises[nextEx.key] && (
                   <div className="flex items-center gap-3 mt-3 px-5 py-3 rounded-xl" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
                     <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>SUIVANT</div>
-                    <div className="text-sm flex-1 truncate" style={{ color: 'var(--text-dim)' }}>{EXERCISES[nextEx.key].name}</div>
+                    <div className="text-sm flex-1 truncate" style={{ color: 'var(--text-dim)' }}>{exercises[nextEx.key].name}</div>
                     <IconChevronRight size={14} style={{ color: 'var(--text-faint)' }} />
                   </div>
                 )}
@@ -6584,8 +6621,9 @@
       );
     }
 
-    function FeedbackScreen({ sessionKey, onSubmit }) {
-      const session = STRENGTH_SESSIONS[sessionKey];
+    function FeedbackScreen({ sessionKey, archetype = null, onSubmit }) {
+      const sessions = (archetype && archetype.sessions) || STRENGTH_SESSIONS;
+      const session = sessions[sessionKey];
       const options = [
         { key: 'easy', label: 'Facile', sub: 'Je pouvais en faire plus', emoji: '😌', color: 'var(--go)' },
         { key: 'perfect', label: 'Parfait', sub: 'Bien dosé pour moi', emoji: '👌', color: session.accent },
@@ -6612,8 +6650,9 @@
       );
     }
 
-    function DoneScreen({ sessionKey, onClose }) {
-      const session = STRENGTH_SESSIONS[sessionKey];
+    function DoneScreen({ sessionKey, archetype = null, onClose }) {
+      const sessions = (archetype && archetype.sessions) || STRENGTH_SESSIONS;
+      const session = sessions[sessionKey];
       return (
         <div className="max-w-xl mx-auto px-5 md:px-8 py-8 md:py-12 min-h-screen flex flex-col items-center justify-center fade-in">
           <div className="w-28 h-28 rounded-full flex items-center justify-center mb-8 scale-in" style={{ background: session.accent }}><IconCheck size={56} style={{ color: '#000' }} strokeWidth={3} /></div>
@@ -6626,8 +6665,8 @@
       );
     }
 
-    function ExerciseModal({ exerciseKey, accent, onClose }) {
-      const ex = EXERCISES[exerciseKey];
+    function ExerciseModal({ exerciseKey, accent, exercises = EXERCISES, onClose }) {
+      const ex = exercises[exerciseKey];
       useEffect(() => { const h = (e) => { if (e.key === 'Escape') onClose(); }; window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h); }, [onClose]);
       return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -7560,22 +7599,59 @@
             )}
           </Card>
 
-          {/* Renfo toggle */}
+          {/* Renfo toggle + archetype picker */}
           <Card className="p-6 mb-4">
             <div className="font-display text-lg font-bold mb-2">Programme renfo</div>
             <div className="text-xs mb-4" style={{ color: 'var(--text-dim)' }}>Active si tu suis le programme de renforcement intégré (Séance A & B). Désactive pour cacher les CTAs, suggestions et l'onglet Renfo dans Plan — les données existantes sont conservées.</div>
             {!editing ? (
-              <div><Tag color={profile.showStrength !== false ? 'var(--positive)' : 'var(--text-dim)'}>{profile.showStrength !== false ? 'ACTIVÉ' : 'DÉSACTIVÉ'}</Tag></div>
+              <div className="space-y-3">
+                <div><Tag color={profile.showStrength !== false ? 'var(--positive)' : 'var(--text-dim)'}>{profile.showStrength !== false ? 'ACTIVÉ' : 'DÉSACTIVÉ'}</Tag></div>
+                {profile.showStrength !== false && (
+                  <div className="text-sm" style={{ color: 'var(--text-dim)' }}>
+                    <span style={{ color: 'var(--text)' }}>Archétype actif :</span>{' '}
+                    <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{getActiveArchetype(profile).name}</span>
+                  </div>
+                )}
+              </div>
             ) : (
-              <div className="grid grid-cols-2 gap-2">
-                <button onClick={() => setDraft({...draft, showStrength: true})} className="btn py-3 rounded-lg" style={{ background: draft.showStrength !== false ? 'var(--positive)' : 'var(--bg-elev-2)', color: draft.showStrength !== false ? '#000' : 'var(--text)', border: `1px solid ${draft.showStrength !== false ? 'var(--positive)' : 'var(--border)'}` }}>
-                  <div className="font-display font-bold text-sm">Activé</div>
-                  <div className="font-mono text-[9px] tracking-widest mt-1">RENFO VISIBLE</div>
-                </button>
-                <button onClick={() => setDraft({...draft, showStrength: false})} className="btn py-3 rounded-lg" style={{ background: draft.showStrength === false ? 'var(--text-faint)' : 'var(--bg-elev-2)', color: draft.showStrength === false ? '#000' : 'var(--text)', border: `1px solid ${draft.showStrength === false ? 'var(--text-faint)' : 'var(--border)'}` }}>
-                  <div className="font-display font-bold text-sm">Désactivé</div>
-                  <div className="font-mono text-[9px] tracking-widest mt-1">CTAS CACHÉS</div>
-                </button>
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => setDraft({...draft, showStrength: true})} className="btn py-3 rounded-lg" style={{ background: draft.showStrength !== false ? 'var(--positive)' : 'var(--bg-elev-2)', color: draft.showStrength !== false ? '#000' : 'var(--text)', border: `1px solid ${draft.showStrength !== false ? 'var(--positive)' : 'var(--border)'}` }}>
+                    <div className="font-display font-bold text-sm">Activé</div>
+                    <div className="font-mono text-[9px] tracking-widest mt-1">RENFO VISIBLE</div>
+                  </button>
+                  <button onClick={() => setDraft({...draft, showStrength: false})} className="btn py-3 rounded-lg" style={{ background: draft.showStrength === false ? 'var(--text-faint)' : 'var(--bg-elev-2)', color: draft.showStrength === false ? '#000' : 'var(--text)', border: `1px solid ${draft.showStrength === false ? 'var(--text-faint)' : 'var(--border)'}` }}>
+                    <div className="font-display font-bold text-sm">Désactivé</div>
+                    <div className="font-mono text-[9px] tracking-widest mt-1">CTAS CACHÉS</div>
+                  </button>
+                </div>
+                {draft.showStrength !== false && (
+                  <div className="pt-3 border-t" style={{ borderColor: 'var(--border)' }}>
+                    <div className="font-mono text-[9px] tracking-widest mb-2" style={{ color: 'var(--text-faint)' }}>ARCHÉTYPE DU PROGRAMME</div>
+                    <div className="space-y-1.5">
+                      {Object.values(STRENGTH_ARCHETYPES).map(arch => {
+                        const selected = (Array.isArray(draft.strengthArchetypes) ? draft.strengthArchetypes[0] : null) === arch.id;
+                        return (
+                          <button
+                            key={arch.id}
+                            onClick={() => setDraft({...draft, strengthArchetypes: [arch.id]})}
+                            className="btn w-full text-left p-3 rounded-lg"
+                            style={{ background: selected ? 'rgba(74,158,255,0.10)' : 'var(--bg-elev)', border: `1px solid ${selected ? 'var(--compass)' : 'var(--border)'}` }}
+                          >
+                            <div className="flex items-baseline gap-2 mb-1 flex-wrap">
+                              <span className="font-display font-bold text-sm" style={{ color: selected ? 'var(--compass)' : 'var(--text)' }}>{arch.name}</span>
+                              <span className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>{arch.shortName}</span>
+                            </div>
+                            <div className="text-xs leading-snug" style={{ color: 'var(--text-dim)' }}>{arch.description}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="text-xs mt-2 leading-relaxed" style={{ color: 'var(--text-faint)' }}>
+                      L'archétype définit les exercices, les sessions A/B et la progression sur 12 mois. Tu peux changer plus tard, mais ta progression actuelle reprend à la phase équivalente.
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </Card>
@@ -8235,7 +8311,7 @@
         return {
           status: 'low_activity', Icon: IconTrendingDown, title: "Peu d'activité récente", color: 'var(--text-dim)',
           summary: `${last14Acts.length} activité${last14Acts.length === 1 ? '' : 's'} en 14 jours. Si c'était volontaire → OK. Sinon, reviens doucement pour ne pas casser ta progression.`,
-          actions: ['3 footings faciles (30-40 min en Z1) cette semaine', '1 Séance A de renfo', 'Check-in readiness chaque matin pour voir tes signaux'],
+          actions: ['3 footings faciles (30-40 min en Z1) cette semaine', '1 séance de renfo', 'Check-in readiness chaque matin pour voir tes signaux'],
         };
       }
 
@@ -14132,10 +14208,13 @@
           const lastRenfoMs = strengthSessions[0] ? strengthSessions[0].date : 0;
           const daysSinceRenfo = lastRenfoMs ? (Date.now() - lastRenfoMs) / 86400000 : 999;
           if (isEasy && daysSinceRenfo >= 4) {
-            toast.push("Jambes chaudes. 15min de Séance B = ton genou tient la semaine.", {
+            const habitArchetype = getActiveArchetype(profile);
+            const habitSessionTitle = habitArchetype.sessions?.B?.title || 'Séance B';
+            const habitZoneLabel = getInjuryZoneSummary(profile, 'short') || 'ton corps';
+            toast.push(`Jambes chaudes. 15min de ${habitSessionTitle.toLowerCase()} = ${habitZoneLabel} tient la semaine.`, {
               kind: 'info',
               duration: 18000,
-              action: { label: 'DÉMARRER B', icon: IconDumbbell, onClick: () => handleStrengthStart('B') },
+              action: { label: `DÉMARRER ${habitSessionTitle.toUpperCase()}`, icon: IconDumbbell, onClick: () => handleStrengthStart('B') },
             });
           }
         }
@@ -14279,9 +14358,12 @@
               profile={profile}
               onComplete={(s) => { handleStrengthComplete(s); }}
               onCancel={() => setStrengthFlow(null)}
-              onInfo={(key) => setExerciseModal({ key, accent: STRENGTH_SESSIONS[strengthFlow].accent })}
+              onInfo={(key) => {
+                const arch = getActiveArchetype(profile);
+                setExerciseModal({ key, accent: arch.sessions[strengthFlow].accent, exercises: arch.exercises });
+              }}
             />
-            {exerciseModal && <ExerciseModal exerciseKey={exerciseModal.key} accent={exerciseModal.accent} onClose={() => setExerciseModal(null)} />}
+            {exerciseModal && <ExerciseModal exerciseKey={exerciseModal.key} accent={exerciseModal.accent} exercises={exerciseModal.exercises} onClose={() => setExerciseModal(null)} />}
           </>
         );
       }
