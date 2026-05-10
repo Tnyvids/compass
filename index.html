@@ -347,6 +347,19 @@
     ];
     const INJURY_ZONE_MAP = INJURY_ZONES.reduce((m, z) => { m[z.key] = z; return m; }, {});
 
+    // Helper: turn profile.injuryZones into a short human-readable summary for narratives.
+    // Returns null when no zone is tracked, so callers can fall back to generic phrasing.
+    function getInjuryZoneSummary(profile, format = 'long') {
+      const zones = (profile && Array.isArray(profile.injuryZones)) ? profile.injuryZones : [];
+      if (zones.length === 0) return null;
+      const labelFor = (k) => format === 'short'
+        ? (INJURY_ZONE_MAP[k]?.short || INJURY_ZONE_MAP[k]?.label || k)
+        : (INJURY_ZONE_MAP[k]?.label || k);
+      if (zones.length === 1) return labelFor(zones[0]);
+      if (zones.length === 2) return `${labelFor(zones[0])} et ${labelFor(zones[1])}`;
+      return zones.slice(0, -1).map(labelFor).join(', ') + ` et ${labelFor(zones[zones.length - 1])}`;
+    }
+
     const DEFAULT_PROFILE = {
       name: '',
       birthYear: null,
@@ -2146,10 +2159,14 @@
     }
 
     // Returns advice + suggested replacement when reduced
-    function readinessAdvice(score, kneeScore, plannedType) {
+    function readinessAdvice(score, kneeScore, plannedType, profile = null) {
       // plannedType: 'easy' | 'tempo' | 'intervals' | 'long' | 'rest' | 'unknown'
-      if (kneeScore >= 7) return { level: 'rest', title: 'Repos strict', accent: '#FF5B5B', tag: 'NE PAS COURIR', icon: IconAlert, action: "Genou trop douloureux. Repos complet aujourd'hui. Si ça persiste 2 jours → kiné.", replacement: 'Mobilité douce, marche 20 min max, glace si gonflement.' };
-      if (kneeScore >= 5) return { level: 'easy', title: 'Pas de course', accent: '#FF8040', tag: 'GENOU EN ALERTE', icon: IconAlert, action: "Le genou demande de l'attention. Pas de course aujourd'hui — la douleur fémoro-patellaire (PFPS) s'aggrave vite si on force.", replacement: 'Renfo hanches/fessiers (Séance B, sans charge directe sur le genou) ou vélo 30 min très doux.' };
+      const zoneSummary = getInjuryZoneSummary(profile, 'long') || 'la zone surveillée';
+      const tagAlert = profile && Array.isArray(profile.injuryZones) && profile.injuryZones.length === 1
+        ? `${(INJURY_ZONE_MAP[profile.injuryZones[0]]?.short || zoneSummary).toUpperCase()} EN ALERTE`
+        : 'DOULEUR EN ALERTE';
+      if (kneeScore >= 7) return { level: 'rest', title: 'Repos strict', accent: '#FF5B5B', tag: 'NE PAS COURIR', icon: IconAlert, action: `Douleur trop forte sur ${zoneSummary}. Repos complet aujourd'hui. Si ça persiste 2 jours → kiné.`, replacement: 'Mobilité douce, marche 20 min max, glace si gonflement.' };
+      if (kneeScore >= 5) return { level: 'easy', title: 'Pas de course', accent: '#FF8040', tag: tagAlert, icon: IconAlert, action: `${zoneSummary} demande de l'attention. Pas de course aujourd'hui — forcer aggrave généralement la douleur.`, replacement: 'Renfo prévention (hanches/fessiers, sans charge sur la zone douloureuse) ou vélo 30 min très doux.' };
 
       if (score >= 80) return { level: 'go', title: 'Feu vert total', accent: '#8FE86A', tag: 'PLEINE FORME', icon: IconZap, action: 'Corps et tête sont prêts. Fais ta séance prévue à 100%. Si tu te sens vraiment fort → tu peux pousser légèrement.', replacement: null };
       if (score >= 65) return { level: 'normal', title: 'Séance normale', accent: '#D4FF00', tag: 'TOUT EST OK', icon: IconActivity, action: 'Signaux dans la norme. Fais ta séance Stryd comme planifiée, pas de modification.', replacement: null };
@@ -2441,7 +2458,7 @@
       const dayLabel = DAYS_FR_LONG[now.getDay()];
       const dateLabel = `${String(now.getDate()).padStart(2, '0')} ${MONTHS_FR[now.getMonth()]}`;
 
-      const advice = todayCheckin ? readinessAdvice(todayCheckin.score, todayCheckin.inputs.soreness, plannedSession?.type) : null;
+      const advice = todayCheckin ? readinessAdvice(todayCheckin.score, todayCheckin.inputs.soreness, plannedSession?.type, profile) : null;
 
       // Find next race
       const nextRace = [...races].filter(r => new Date(r.date) >= now).sort((a, b) => new Date(a.date) - new Date(b.date))[0];
@@ -3811,14 +3828,32 @@
     // ========================================================================
     function CheckinFlow({ profile, onSubmit, onCancel }) {
       const [step, setStep] = useState(0);
-      const [inputs, setInputs] = useState({ sleep: 7, fatigue: 4, soreness: 2, motivation: 7, stress: 4 });
-      const questions = [
-        { key: 'sleep', icon: IconMoon, label: 'Qualité du sommeil', sub: 'La nuit dernière, comment as-tu dormi ?', scale: ['Horrible', 'Très mauvais', 'Mauvais', 'Passable', 'Moyen', 'Correct', 'Bien', 'Très bien', 'Excellent', 'Parfait'], color: '#4A9EFF', min: 1, max: 10, hint: 'Tu vises 7-8h. Tony, le bébé dort bien — utilise cet avantage.' },
+      const [inputs, setInputs] = useState({ sleep: 7, fatigue: 4, soreness: 0, motivation: 7, stress: 4 });
+      // Build the soreness question label/sub from the user's tracked injury zones.
+      const zoneSummary = getInjuryZoneSummary(profile, 'long');
+      const trackedZones = (profile && Array.isArray(profile.injuryZones)) ? profile.injuryZones : [];
+      const sorenessLabel = trackedZones.length === 0
+        ? 'Douleurs ou gêne'
+        : trackedZones.length === 1
+          ? zoneSummary
+          : 'Zones surveillées';
+      const sorenessSub = trackedZones.length === 0
+        ? 'Évalue honnêtement (0 = aucune douleur, 10 = max)'
+        : trackedZones.length === 1
+          ? `Évalue honnêtement la douleur ressentie (0 = aucune, 10 = max)`
+          : `Note la zone la plus douloureuse parmi ${zoneSummary} (0 = aucune, 10 = max)`;
+      const sorenessHint = trackedZones.length === 0
+        ? 'Toute gêne articulaire ou musculaire compte. Sois ultra-honnête — score ≥5 = repos auto.'
+        : `Sois ultra-honnête. Score ≥5 sur ${trackedZones.length === 1 ? 'cette zone' : 'l\'une de tes zones'} = repos auto.`;
+      const baseQuestions = [
+        { key: 'sleep', icon: IconMoon, label: 'Qualité du sommeil', sub: 'La nuit dernière, comment as-tu dormi ?', scale: ['Horrible', 'Très mauvais', 'Mauvais', 'Passable', 'Moyen', 'Correct', 'Bien', 'Très bien', 'Excellent', 'Parfait'], color: '#4A9EFF', min: 1, max: 10, hint: 'Tu vises 7-8h.' },
         { key: 'fatigue', icon: IconBattery, label: 'Fatigue physique', sub: 'À quel point te sens-tu fatigué ?', scale: ['Frais comme un gardon', 'Très en forme', 'En forme', 'Bien', 'Léger', 'Moyen', 'Un peu fatigué', 'Fatigué', 'Très fatigué', 'Épuisé'], color: '#FFB020', min: 1, max: 10, hint: '1 = comme un coureur frais le matin · 10 = jambes lourdes au réveil.' },
-        { key: 'soreness', icon: IconHeart, label: 'Genou gauche', sub: 'Évalue honnêtement (0 = aucune douleur, 10 = max)', scale: ['Aucune', 'Insignifiant', 'Très léger', 'Léger', 'Modéré', 'Notable', 'Gênant', 'Fort', 'Très fort', 'Sévère', 'Insupportable'], color: '#FF5B5B', min: 0, max: 10, hint: 'PFPS = douleur antérieure du genou, souvent en descente ou montée d\'escaliers. Sois ultra-honnête. Score ≥5 = repos auto.' },
+        { key: 'soreness', icon: IconHeart, label: sorenessLabel, sub: sorenessSub, scale: ['Aucune', 'Insignifiant', 'Très léger', 'Léger', 'Modéré', 'Notable', 'Gênant', 'Fort', 'Très fort', 'Sévère', 'Insupportable'], color: '#FF5B5B', min: 0, max: 10, hint: sorenessHint },
         { key: 'motivation', icon: IconSmile, label: 'Motivation', sub: "Envie de t'entraîner aujourd'hui ?", scale: ['Zéro envie', 'Presque rien', 'Très faible', 'Faible', 'Mitigée', 'Moyenne', 'Bonne', 'Très bonne', 'Excellente', 'À fond'], color: '#D4FF00', min: 1, max: 10, hint: 'Le mental est ta plus grande force — fais-toi confiance.' },
         { key: 'stress', icon: IconZap, label: 'Stress mental', sub: 'Niveau de stress global aujourd\'hui', scale: ['Zen total', 'Très calme', 'Calme', 'Tranquille', 'Léger', 'Moyen', 'Un peu tendu', 'Tendu', 'Très stressé', 'Submergé'], color: '#FF8040', min: 1, max: 10, hint: 'Stress chronique = cortisol = mauvaise récup. Compte aussi le mental, pas que le physique.' },
       ];
+      // Skip soreness entirely when no zone is tracked — saves a step in the wizard
+      const questions = trackedZones.length === 0 ? baseQuestions.filter(q => q.key !== 'soreness') : baseQuestions;
       const q = questions[step];
       const Icon = q.icon;
       const value = inputs[q.key];
@@ -3871,21 +3906,30 @@
     }
 
     function CheckinResultView({ checkin, profile, plannedSession, onClose }) {
-      const advice = readinessAdvice(checkin.score, checkin.inputs.soreness, plannedSession?.type);
+      const advice = readinessAdvice(checkin.score, checkin.inputs.soreness, plannedSession?.type, profile);
       const Icon = advice.icon;
+      const trackedZones = (profile && Array.isArray(profile.injuryZones)) ? profile.injuryZones : [];
+      const zoneSummaryShort = getInjuryZoneSummary(profile, 'short');
+      const sorenessLabel = trackedZones.length === 0 ? 'Douleurs' : trackedZones.length === 1 ? zoneSummaryShort : 'Zones';
       const breakdown = [
         { key: 'sleep', label: 'Sommeil', value: checkin.inputs.sleep, max: 10, icon: IconMoon, color: '#4A9EFF', text: checkin.inputs.sleep >= 7 ? 'Bon sommeil' : checkin.inputs.sleep >= 5 ? 'Sommeil moyen' : 'Sommeil insuffisant' },
         { key: 'fatigue', label: 'Fraîcheur', value: 11 - checkin.inputs.fatigue, max: 10, icon: IconBattery, color: '#FFB020', text: checkin.inputs.fatigue <= 3 ? 'Très frais' : checkin.inputs.fatigue <= 6 ? 'Fatigue modérée' : 'Fatigue importante' },
-        { key: 'soreness', label: 'Genou', value: 10 - checkin.inputs.soreness, max: 10, icon: IconHeart, color: '#FF5B5B', text: checkin.inputs.soreness === 0 ? 'Aucune douleur' : checkin.inputs.soreness <= 3 ? 'Léger, surveille' : checkin.inputs.soreness <= 5 ? 'Attention' : 'Douleur significative' },
+        // Skip soreness row entirely when no injury zone is tracked
+        ...(trackedZones.length > 0 ? [{ key: 'soreness', label: sorenessLabel, value: 10 - checkin.inputs.soreness, max: 10, icon: IconHeart, color: '#FF5B5B', text: checkin.inputs.soreness === 0 ? 'Aucune douleur' : checkin.inputs.soreness <= 3 ? 'Léger, surveille' : checkin.inputs.soreness <= 5 ? 'Attention' : 'Douleur significative' }] : []),
         { key: 'motivation', label: 'Motivation', value: checkin.inputs.motivation, max: 10, icon: IconSmile, color: '#D4FF00', text: checkin.inputs.motivation >= 7 ? 'Motivé' : checkin.inputs.motivation >= 4 ? 'Motivation correcte' : 'Envie limitée' },
         { key: 'stress', label: 'Calme', value: 11 - checkin.inputs.stress, max: 10, icon: IconZap, color: '#FF8040', text: checkin.inputs.stress <= 3 ? 'Très calme' : checkin.inputs.stress <= 6 ? 'Moyen' : 'Stressé' },
       ];
       const bottleneck = [...breakdown].sort((a, b) => a.value - b.value)[0];
+      const sorenessAdvice = trackedZones.length === 1
+        ? `${zoneSummaryShort} parle. Renfo prévention plutôt que course aujourd'hui.`
+        : trackedZones.length > 1
+          ? `Tes zones surveillées parlent. Renfo prévention plutôt que course aujourd'hui.`
+          : `Une douleur est apparue. Renfo prévention plutôt que course aujourd'hui.`;
       const bottleneckAdvice = {
-        sleep: 'Prioriser 8h de sommeil cette nuit, écran off 1h avant. Tony, profite que le bébé dort bien.',
+        sleep: 'Prioriser 8h de sommeil cette nuit, écran off 1h avant.',
         fatigue: "Tu accumules. Réduis l'intensité 24-48h ou prends une vraie journée off.",
-        soreness: "Le genou parle. Renfo Séance B (sans charge sur le genou) plutôt que course aujourd'hui.",
-        motivation: "Baisse temporaire normale. Ton mental est ton atout — fais juste 20 min easy si l'envie revient en route.",
+        soreness: sorenessAdvice,
+        motivation: "Baisse temporaire normale. Fais juste 20 min easy si l'envie revient en route.",
         stress: 'Sortie courte en nature, allure libre, sans montre. Le stress ronge la performance.',
       };
 
@@ -5751,7 +5795,7 @@
             <text x={W - padR} y={H - 8} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#555">aujourd'hui</text>
           </svg>
           {!hasAnyPain && (
-            <div className="mt-3 text-xs italic" style={{ color: 'var(--text-faint)' }}>Aucun check-in douleur encore. Après chaque course importée, l'app te demandera 3 secondes pour noter ton genou.</div>
+            <div className="mt-3 text-xs italic" style={{ color: 'var(--text-faint)' }}>Aucun check-in douleur encore. Après chaque course importée, l'app te demande 3 secondes pour noter tes zones surveillées.</div>
           )}
           {insight && (
             <div className="mt-3 rounded-lg p-3 text-sm leading-relaxed" style={{ background: insight.tone === 'positive' ? 'var(--positive-dim)' : 'var(--critical-dim)', border: `1px solid ${insight.tone === 'positive' ? 'var(--positive)' : 'var(--critical)'}40`, color: insight.tone === 'positive' ? 'var(--positive)' : 'var(--critical)' }}>
@@ -5767,7 +5811,7 @@
     // ========================================================================
     // Captures post-run knee pain so we can correlate it with renfo CTL over time.
     // Skipping is fine (score stays unset and we won't ask again on this activity).
-    function PainCheckinModal({ activity, onSubmit, onSkip }) {
+    function PainCheckinModal({ activity, profile, onSubmit, onSkip }) {
       const [hover, setHover] = useState(null);
       useEffect(() => { const h = (e) => { if (e.key === 'Escape') onSkip(); }; window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h); }, [onSkip]);
       if (!activity) return null;
@@ -5776,12 +5820,16 @@
       const colorFor = (n) => n === 0 ? 'var(--positive)' : n <= 3 ? 'var(--positive)' : n <= 5 ? 'var(--caution)' : n <= 7 ? 'var(--negative)' : 'var(--critical)';
       const labelFor = (n) => n === 0 ? 'Aucune' : n <= 2 ? 'Très léger' : n <= 4 ? 'Léger' : n <= 6 ? 'Modéré' : n <= 8 ? 'Fort' : 'Sévère';
       const display = hover != null ? hover : 0;
+      const zoneLong = getInjuryZoneSummary(profile, 'long');
+      const zoneShort = getInjuryZoneSummary(profile, 'short');
+      const headerSuffix = zoneShort ? ` · ${zoneShort.toUpperCase()}` : '';
+      const titleZone = zoneLong || 'la zone surveillée';
       return (
         <div onClick={onSkip} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)', zIndex: 250, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
           <div onClick={(e) => e.stopPropagation()} className="scale-in" style={{ background: 'var(--bg)', border: '1px solid var(--border-bright)', borderRadius: 16, width: '100%', maxWidth: 520, boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
             <div className="px-7 pt-6 pb-2">
-              <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--compass)' }}>CHECK-IN POST-COURSE · GENOU GAUCHE</div>
-              <div className="font-display text-lg font-bold mb-1">Comment réagit le genou après cette séance ?</div>
+              <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--compass)' }}>CHECK-IN POST-COURSE{headerSuffix}</div>
+              <div className="font-display text-lg font-bold mb-1">Comment réagit {titleZone} après cette séance ?</div>
               <div className="text-xs mb-4" style={{ color: 'var(--text-dim)' }}>{km} km · {min} min · 3 secondes pour rater la corrélation entre ton renfo et tes douleurs</div>
               <div className="rounded-lg p-3 mb-3" style={{ background: 'var(--bg-elev)', border: `1px solid ${colorFor(display)}40` }}>
                 <div className="flex items-baseline justify-between mb-2">
@@ -6000,8 +6048,11 @@
     // ========================================================================
     // STRENGTH WORKOUT FLOW (knee checkin → workout → feedback)
     // ========================================================================
-    function StrengthFlow({ sessionKey, strengthStart, onComplete, onCancel, onInfo }) {
-      const [stage, setStage] = useState('knee'); // knee | workout | feedback | done
+    function StrengthFlow({ sessionKey, strengthStart, profile = null, onComplete, onCancel, onInfo }) {
+      const trackedZones = (profile && Array.isArray(profile.injuryZones)) ? profile.injuryZones : [];
+      // Skip the pre-workout pain checkin entirely when the user tracks no injury zone
+      const initialStage = trackedZones.length > 0 ? 'knee' : 'workout';
+      const [stage, setStage] = useState(initialStage);
       const [kneeScore, setKneeScore] = useState(null);
       const [duration, setDuration] = useState(0);
       const phase = getStrengthPhase(strengthStart || Date.now());
@@ -6014,22 +6065,29 @@
         setStage('done');
       }
 
-      if (stage === 'knee') return <KneeCheckin sessionKey={sessionKey} onValidate={onKneeValidate} onSkip={onKneeSkip} onCancel={onCancel} />;
+      if (stage === 'knee') return <KneeCheckin sessionKey={sessionKey} profile={profile} onValidate={onKneeValidate} onSkip={onKneeSkip} onCancel={onCancel} />;
       if (stage === 'workout') return <WorkoutFlow sessionKey={sessionKey} phase={phase} onFinish={onWorkoutDone} onQuit={onCancel} onInfo={onInfo} />;
       if (stage === 'feedback') return <FeedbackScreen sessionKey={sessionKey} onSubmit={onFeedback} />;
       if (stage === 'done') return <DoneScreen sessionKey={sessionKey} onClose={onCancel} />;
       return null;
     }
 
-    function KneeCheckin({ sessionKey, onValidate, onSkip, onCancel }) {
+    function KneeCheckin({ sessionKey, profile = null, onValidate, onSkip, onCancel }) {
       const [score, setScore] = useState(0);
       const accent = STRENGTH_SESSIONS[sessionKey].accent;
       const colorFor = (s) => s === 0 ? '#8FE86A' : s <= 3 ? '#D4FF00' : s <= 6 ? '#FF5B1F' : '#FF5B5B';
       const labelFor = (s) => s === 0 ? 'Aucune douleur' : s <= 2 ? 'Sensation légère' : s <= 4 ? 'Gêne modérée' : s <= 6 ? 'Douleur notable' : s <= 8 ? 'Douleur forte' : 'Douleur très forte';
+      const zoneSummary = getInjuryZoneSummary(profile, 'long');
+      const zones = (profile && Array.isArray(profile.injuryZones)) ? profile.injuryZones : [];
+      const titleQuestion = zones.length === 0
+        ? 'Comment te sens-tu physiquement ?'
+        : zones.length === 1
+          ? `Comment va ${zoneSummary} ?`
+          : `Comment vont tes zones surveillées ?`;
       return (
         <div className="max-w-xl mx-auto px-5 md:px-8 py-8 md:py-12 min-h-screen flex flex-col justify-center fade-in">
           <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--text-dim)' }}>AVANT LA SÉANCE</div>
-          <div className="font-display text-3xl font-bold mb-3">Comment va ton genou gauche ?</div>
+          <div className="font-display text-3xl font-bold mb-3">{titleQuestion}</div>
           <div className="text-sm mb-8" style={{ color: 'var(--text-dim)' }}>Évalue honnêtement. Cette info trace ton historique pour prévenir une rechute.</div>
           <Card className="p-8 mb-4">
             <div className="text-center mb-6">
@@ -6416,7 +6474,7 @@
                   {item.kind === 'activity' ? (
                     <ActivityRow activity={item.data} cp={profile.cp} onView={() => onViewActivity(item.data)} onDelete={() => onDeleteActivity(item.data.id)} />
                   ) : (
-                    <CheckinRow checkin={item.data} />
+                    <CheckinRow checkin={item.data} profile={profile} />
                   )}
                 </div>
               ))}
@@ -6454,8 +6512,8 @@
       );
     }
 
-    function CheckinRow({ checkin }) {
-      const advice = readinessAdvice(checkin.score, checkin.inputs.soreness, null);
+    function CheckinRow({ checkin, profile = null }) {
+      const advice = readinessAdvice(checkin.score, checkin.inputs.soreness, null, profile);
       const dateLabel = isToday(checkin.date) ? "AUJOURD'HUI" : isYesterday(checkin.date) ? 'HIER' : fmtDate(checkin.date).toUpperCase();
       return (
         <div className="rounded-2xl p-4 flex items-center gap-4" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
@@ -7811,19 +7869,21 @@
       const kneeMax = kneeVals.length ? Math.max(...kneeVals) : 0;
       const kneeAvg = kneeVals.length ? kneeVals.reduce((s, k) => s + k, 0) / kneeVals.length : 0;
 
-      // Priority 1 — knee injury risk
+      // Priority 1 — injury risk (uses user's tracked zone label, falls back to generic when none)
+      const zoneLabel = getInjuryZoneSummary(profile, 'long') || 'la zone surveillée';
+      const zoneShort = getInjuryZoneSummary(profile, 'short') || 'cette zone';
       if (kneeMax >= 6) {
         return {
-          status: 'injury_risk', Icon: IconAlert, title: 'Signal genou fort', color: 'var(--danger)',
-          summary: `Ton genou a atteint ${kneeMax}/10 récemment. Avec ton PFPS (douleur fémoro-patellaire), c'est un signal à prendre au sérieux maintenant — pas dans 3 jours.`,
-          actions: ['Stop course 48-72h minimum', 'Renfo prioritaire fessiers + moyen fessier (Séance B) tous les 2 jours', 'Si la douleur persiste après 5 jours → kiné'],
+          status: 'injury_risk', Icon: IconAlert, title: `Signal ${zoneShort} fort`, color: 'var(--danger)',
+          summary: `${zoneLabel} a atteint ${kneeMax}/10 récemment. C'est un signal à prendre au sérieux maintenant — pas dans 3 jours.`,
+          actions: ['Stop course 48-72h minimum', 'Renfo prévention prioritaire (fessiers + moyen fessier) tous les 2 jours', 'Si la douleur persiste après 5 jours → kiné'],
         };
       }
       if (kneeMax >= 4 || kneeAvg >= 3) {
         return {
-          status: 'knee_warning', Icon: IconAlert, title: 'Genou à surveiller', color: 'var(--warn)',
-          summary: `Ton genou tire un peu en ce moment (pic à ${kneeMax}/10). Avec ton PFPS, c'est le moment d'être préventif sans dramatiser.`,
-          actions: ['Supprime le supra-seuil cette semaine, garde les footings faciles', 'Double la Séance B (fessiers/hanches) cette semaine', 'Glaçage 10 min après chaque course, étirement psoas 1×/jour'],
+          status: 'knee_warning', Icon: IconAlert, title: `${zoneShort} à surveiller`, color: 'var(--warn)',
+          summary: `${zoneLabel} tire un peu en ce moment (pic à ${kneeMax}/10). C'est le moment d'être préventif sans dramatiser.`,
+          actions: ['Supprime le supra-seuil cette semaine, garde les footings faciles', 'Double les séances de renfo prévention (fessiers/hanches) cette semaine', 'Glaçage 10 min après chaque course, étirement psoas 1×/jour'],
         };
       }
 
@@ -13711,12 +13771,13 @@
         const updated = [activity, ...activities].sort((a, b) => b.startMs - a.startMs);
         setActivities(updated);
 
-        // Trigger post-run knee pain check-in for non-trivial runs imported within 36h.
-        // Skip rest activities, very short jogs, or activities already rated.
+        // Trigger post-run pain check-in for non-trivial runs imported within 36h.
+        // Skip rest activities, very short jogs, activities already rated, or users without any tracked zone.
         const ageHours = (Date.now() - activity.startMs) / 3600000;
         const km = (activity.distanceMeters || 0) / 1000;
         const isRunLike = !activity.sport || /run|course/i.test(activity.sport);
-        if (isRunLike && km >= 2 && ageHours <= 36 && typeof activity.postRunKneePain !== 'number') {
+        const tracksZones = Array.isArray(profile.injuryZones) && profile.injuryZones.length > 0;
+        if (tracksZones && isRunLike && km >= 2 && ageHours <= 36 && typeof activity.postRunKneePain !== 'number') {
           setPendingPainCheckin(activity);
         }
 
@@ -13871,6 +13932,7 @@
             <StrengthFlow
               sessionKey={strengthFlow}
               strengthStart={strengthStart}
+              profile={profile}
               onComplete={(s) => { handleStrengthComplete(s); }}
               onCancel={() => setStrengthFlow(null)}
               onInfo={(key) => setExerciseModal({ key, accent: STRENGTH_SESSIONS[strengthFlow].accent })}
@@ -14042,7 +14104,7 @@
           {pendingDateActivity && <DateConfirmModal activity={pendingDateActivity} onConfirm={handleConfirmDate} onCancel={() => setPendingDateActivity(null)} />}
           {manualEntry && <ManualActivityModal onSave={(activity) => { doImport(activity); setManualEntry(false); }} onCancel={() => setManualEntry(false)} />}
           {pendingGraduation && <PhaseGraduationModal phase={pendingGraduation} onClose={acceptGraduation} />}
-          {pendingPainCheckin && <PainCheckinModal activity={pendingPainCheckin} onSubmit={savePainCheckin} onSkip={() => setPendingPainCheckin(null)} />}
+          {pendingPainCheckin && <PainCheckinModal activity={pendingPainCheckin} profile={profile} onSubmit={savePainCheckin} onSkip={() => setPendingPainCheckin(null)} />}
         </div>
       );
     }
