@@ -2866,17 +2866,22 @@
             );
           })()}
 
-          {/* LAST ACTIVITY — secondary, smaller */}
-          {lastAct && (
-            <div className="mb-3"><LastActivityCard activity={lastAct} cp={profile.cp} /></div>
-          )}
-
-          {/* QUICK ACTIONS — minimal, ghost-style */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-6">
-            <QuickAction icon={IconUpload} label="Importer activité" sublabel=".tcx · .gpx · .csv" onClick={onImport} />
-            {profile.showStrength !== false && <QuickAction icon={IconDumbbell} label="Séance de renfo" sublabel="A · B" onClick={() => onStrengthStart('suggest')} />}
-            <QuickAction icon={IconCalendar} label="Ajouter course" sublabel="Calendrier" onClick={onAddRace} />
-            <QuickAction icon={IconTarget} label="Profil" sublabel={`Seuil ${profile.cp}W`} onClick={() => onNav('profile')} />
+          {/* QUICK ACTIONS — discrete pill row, low visual weight */}
+          <div className="flex flex-wrap gap-2 mb-6">
+            <button onClick={onImport} className="btn flex items-center gap-1.5 px-3 py-2 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)', color: 'var(--text-dim)' }}>
+              <IconUpload size={12} /> IMPORTER
+            </button>
+            {profile.showStrength !== false && (
+              <button onClick={() => onStrengthStart('suggest')} className="btn flex items-center gap-1.5 px-3 py-2 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)', color: 'var(--text-dim)' }}>
+                <IconDumbbell size={12} /> RENFO
+              </button>
+            )}
+            <button onClick={onAddRace} className="btn flex items-center gap-1.5 px-3 py-2 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)', color: 'var(--text-dim)' }}>
+              <IconCalendar size={12} /> AJOUTER COURSE
+            </button>
+            <button onClick={() => onNav('profile')} className="btn flex items-center gap-1.5 px-3 py-2 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)', color: 'var(--text-dim)' }}>
+              <IconTarget size={12} /> PROFIL
+            </button>
           </div>
 
           {/* Footer signature */}
@@ -3130,10 +3135,19 @@
         return { date: d, planned, hasActivity, totalKm, isToday, isPast };
       });
 
+      // Weekly totals — done sessions and km (counts running activities only, not strength)
+      const doneCount = days.filter(d => d.hasActivity).length;
+      const weekKm = days.reduce((s, d) => s + (d.totalKm || 0), 0);
+
       return (
         <Card variant="elevated" className="p-4 md:p-5">
           <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-            <div className="t-meta">TA SEMAINE</div>
+            <div className="flex items-baseline gap-3 flex-wrap">
+              <div className="t-meta">TA SEMAINE</div>
+              <div className="font-mono text-[11px] tabular" style={{ color: 'var(--text-dim)' }}>
+                <span style={{ color: 'var(--positive)', fontWeight: 600 }}>{doneCount}</span> séance{doneCount > 1 ? 's' : ''} · <span style={{ color: 'var(--positive)', fontWeight: 600 }}>{weekKm.toFixed(1)}</span> km
+              </div>
+            </div>
             <button onClick={() => onNav('plan')} className="t-meta-dim hover:text-text transition flex items-center gap-1" style={{ color: 'var(--text-dim)' }}>
               Voir le plan complet <IconArrowRight size={11} />
             </button>
