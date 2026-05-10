@@ -2866,13 +2866,13 @@
             />
           )}
 
-          {/* QUICK ACTIONS — discrete pill row, low visual weight */}
+          {/* QUICK ACTIONS — discrete pill row, low visual weight, real actions (no Plan redirect) */}
           <div className="flex flex-wrap gap-2 mb-6">
             <button onClick={onImport} className="btn flex items-center gap-1.5 px-3 py-2 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)', color: 'var(--text-dim)' }}>
               <IconUpload size={12} /> IMPORTER
             </button>
             {profile.showStrength !== false && (
-              <button onClick={() => onStrengthStart('suggest')} className="btn flex items-center gap-1.5 px-3 py-2 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)', color: 'var(--text-dim)' }}>
+              <button onClick={() => onNav('renfo')} className="btn flex items-center gap-1.5 px-3 py-2 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)', color: 'var(--text-dim)' }}>
                 <IconDumbbell size={12} /> RENFO
               </button>
             )}
@@ -6062,6 +6062,54 @@
     // the minimum profile data Compass needs to generate useful narratives.
     // Triggered when profile.onboardingDone is false; legacy users skip via migration.
     // ========================================================================
+    // ========================================================================
+    // ADD RACE MODAL — quick race creation triggered from Today's quick actions
+    // ========================================================================
+    function AddRaceModal({ onSave, onCancel }) {
+      const [form, setForm] = useState({ name: '', distance: '10k', date: '', objective: '', priority: 'A' });
+      useEffect(() => { const h = (e) => { if (e.key === 'Escape') onCancel(); }; window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h); }, [onCancel]);
+      const canSave = form.name.trim().length > 0 && !!form.date;
+      function submit() {
+        if (!canSave) return;
+        onSave({ ...form, name: form.name.trim(), id: Date.now() });
+      }
+      return (
+        <div onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)', zIndex: 250, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div onClick={(e) => e.stopPropagation()} className="scale-in" style={{ background: 'var(--bg)', border: '1px solid var(--border-bright)', borderRadius: 16, width: '100%', maxWidth: 540, boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
+            <div className="px-6 py-5" style={{ borderBottom: '1px solid var(--border)' }}>
+              <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--accent)' }}>NOUVELLE COURSE</div>
+              <div className="font-display text-xl font-bold">Ajouter une course à ton calendrier</div>
+            </div>
+            <div className="p-6 space-y-3">
+              <input className="input" autoFocus placeholder="Nom de la course (ex: Foulées d'Erdeven)" value={form.name} onChange={(e) => setForm({...form, name: e.target.value})} />
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                <select className="input" value={form.distance} onChange={(e) => setForm({...form, distance: e.target.value})}>
+                  <option value="5k">5 km</option>
+                  <option value="10k">10 km</option>
+                  <option value="15k">15 km</option>
+                  <option value="Semi">Semi</option>
+                  <option value="Marathon">Marathon</option>
+                  <option value="Trail">Trail</option>
+                  <option value="Autre">Autre</option>
+                </select>
+                <input type="date" className="input" value={form.date} onChange={(e) => setForm({...form, date: e.target.value})} />
+                <select className="input" value={form.priority} onChange={(e) => setForm({...form, priority: e.target.value})}>
+                  <option value="A">Priorité A · Course objectif</option>
+                  <option value="B">Priorité B · Préparation</option>
+                  <option value="C">Priorité C · Test/Plaisir</option>
+                </select>
+              </div>
+              <input className="input" placeholder="Objectif chrono (ex: sub-40, 39:30, 1:30:00)" value={form.objective} onChange={(e) => setForm({...form, objective: e.target.value})} />
+            </div>
+            <div className="px-6 py-4 flex items-center justify-end gap-2" style={{ borderTop: '1px solid var(--border)' }}>
+              <button onClick={onCancel} className="btn-base btn-secondary">Annuler</button>
+              <button onClick={submit} disabled={!canSave} className="btn-base btn-primary" style={{ opacity: canSave ? 1 : 0.4, cursor: canSave ? 'pointer' : 'not-allowed' }}>Ajouter au calendrier</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     function OnboardingModal({ initialProfile, onComplete, onSkip }) {
       const [step, setStep] = useState(0);
       const [draft, setDraft] = useState({
@@ -14332,6 +14380,8 @@
       const [activityModal, setActivityModal] = useState(null);
       const [pendingDateActivity, setPendingDateActivity] = useState(null);
       const [manualEntry, setManualEntry] = useState(false);
+      const [showAddRaceModal, setShowAddRaceModal] = useState(false);
+      const importInputRef = useRef(null);
 
       // Derived
       const todayCheckin = useMemo(() => {
@@ -14667,9 +14717,9 @@
                 planOverrides={planOverrides}
                 onCheckinStart={() => setCheckinFlow(true)}
                 onCheckinView={() => setCheckinView(todayCheckin)}
-                onImport={() => setView('plan')}
+                onImport={() => importInputRef.current?.click()}
                 onStrengthStart={handleStrengthStart}
-                onAddRace={() => setView('plan')}
+                onAddRace={() => setShowAddRaceModal(true)}
                 onNav={setView}
                 coachVerdict={coachVerdict}
               />
@@ -14795,6 +14845,39 @@
           {manualEntry && <ManualActivityModal onSave={(activity) => { doImport(activity); setManualEntry(false); }} onCancel={() => setManualEntry(false)} />}
           {pendingGraduation && <PhaseGraduationModal phase={pendingGraduation} onClose={acceptGraduation} />}
           {pendingPainCheckin && <PainCheckinModal activity={pendingPainCheckin} profile={profile} onSubmit={savePainCheckin} onSkip={() => setPendingPainCheckin(null)} />}
+          {/* Hidden file input — triggered by Today's IMPORTER button (any view) */}
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".tcx,.gpx,.csv"
+            style={{ display: 'none' }}
+            onChange={async (e) => {
+              const f = e.target.files?.[0];
+              if (!f) return;
+              const text = await f.text();
+              const lower = f.name.toLowerCase();
+              let activity = null;
+              let parsed = false;
+              try {
+                if (lower.endsWith('.tcx')) { activity = parseTCX(text); parsed = true; }
+                else if (lower.endsWith('.gpx')) { activity = parseGPX(text); parsed = true; }
+                else if (lower.endsWith('.csv')) { activity = parseStrydCSV(text, f.name, profile.weightKg); parsed = true; }
+              } catch (err) {
+                toast.push(`Erreur de lecture : ${err.message || err}`, { kind: 'warn' });
+                if (importInputRef.current) importInputRef.current.value = '';
+                return;
+              }
+              if (activity) handleImportActivity(activity);
+              else if (!parsed) toast.push('Format non reconnu (.tcx, .gpx, .csv).', { kind: 'warn' });
+              if (importInputRef.current) importInputRef.current.value = '';
+            }}
+          />
+          {showAddRaceModal && (
+            <AddRaceModal
+              onSave={(race) => { handleAddRace(race); setShowAddRaceModal(false); toast.push(`Course "${race.name}" ajoutée au calendrier.`, { kind: 'info' }); }}
+              onCancel={() => setShowAddRaceModal(false)}
+            />
+          )}
           {!profile.onboardingDone && (
             <OnboardingModal
               initialProfile={profile}
