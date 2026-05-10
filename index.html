@@ -2794,24 +2794,7 @@
             </div>
           )}
 
-          {/* INJURY RISK INDEX — combined daily score, action-oriented. Hidden when user has no tracked zone. */}
-          {profile.cp && activities.length > 0 && Array.isArray(profile.injuryZones) && profile.injuryZones.length > 0 && (
-            <KneeRiskCard
-              profile={profile}
-              activities={activities}
-              checkins={checkins}
-              strengthSessions={strengthSessions}
-              onNav={onNav}
-              onStrengthStart={onStrengthStart}
-            />
-          )}
-
-          {/* WEEK STRIP — horizontal mini-timeline of the 7 days */}
-          <div className="mb-3">
-            <WeekStripCard profile={profile} planOverrides={planOverrides} activities={activities} onNav={onNav} />
-          </div>
-
-          {/* COACH VERDICT — narrative big-picture, less daily-actionable than knee risk above */}
+          {/* COACH VERDICT — narrative big-picture, contextualizes the week ahead */}
           {coachVerdict && <div className="mb-3"><CoachCard verdict={coachVerdict} compact onMore={() => onNav('analytics')} /></div>}
 
           {/* FITNESS NARRATIVE — fallback when no coach verdict (would be redundant).
@@ -2865,6 +2848,23 @@
               </Card>
             );
           })()}
+
+          {/* WEEK STRIP — horizontal mini-timeline of the 7 days */}
+          <div className="mb-3">
+            <WeekStripCard profile={profile} planOverrides={planOverrides} activities={activities} onNav={onNav} />
+          </div>
+
+          {/* INJURY RISK INDEX — compact in safe zone, full-card when ≥ moderate. Hidden when no zone tracked. */}
+          {profile.cp && activities.length > 0 && Array.isArray(profile.injuryZones) && profile.injuryZones.length > 0 && (
+            <KneeRiskCard
+              profile={profile}
+              activities={activities}
+              checkins={checkins}
+              strengthSessions={strengthSessions}
+              onNav={onNav}
+              onStrengthStart={onStrengthStart}
+            />
+          )}
 
           {/* QUICK ACTIONS — discrete pill row, low visual weight */}
           <div className="flex flex-wrap gap-2 mb-6">
@@ -2943,6 +2943,25 @@
         actionText = zones.length === 1
           ? `${INJURY_ZONE_MAP[zones[0]]?.label || 'Zone surveillée'} en zone safe. Continue exactement ce que tu fais.`
           : 'Tes zones surveillées sont en zone safe. Continue exactement ce que tu fais.';
+      }
+
+      // Compact one-line render in safe zone — keeps the indicator present without taking space
+      if (zone === 'low') {
+        return (
+          <Card className="p-3 mb-4" accent={zoneColor}>
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-baseline gap-2 min-w-0 flex-wrap">
+                <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>{cardTitle}</div>
+                <div className="flex items-baseline gap-1">
+                  <span className="font-display font-bold tabular text-base" style={{ color: zoneColor }}>{total}</span>
+                  <span className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>/100</span>
+                </div>
+                <div className="font-mono text-[10px] tracking-widest" style={{ color: zoneColor }}>· {zoneLabel}</div>
+              </div>
+              <div className="font-mono text-[9px] tracking-widest hidden sm:block" style={{ color: 'var(--text-faint)' }}>CONTINUE COMME ÇA</div>
+            </div>
+          </Card>
+        );
       }
 
       return (
