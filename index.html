@@ -2799,13 +2799,15 @@
       const days = dayKeys.map((dk, i) => {
         const d = new Date(wsStart); d.setDate(d.getDate() + i);
         const planned = getPlannedSession(profile, planOverrides, d);
-        const hasActivity = activities.some(a => {
+        const dayActs = activities.filter(a => {
           const aDate = new Date(a.startMs); aDate.setHours(0,0,0,0);
           return aDate.getTime() === d.getTime() && (a.distanceMeters || 0) > 500;
         });
+        const hasActivity = dayActs.length > 0;
+        const totalKm = dayActs.reduce((s, a) => s + (a.distanceMeters || 0), 0) / 1000;
         const isToday = d.getTime() === now.getTime();
         const isPast = d.getTime() < now.getTime();
-        return { date: d, planned, hasActivity, isToday, isPast };
+        return { date: d, planned, hasActivity, totalKm, isToday, isPast };
       });
 
       return (
@@ -2825,13 +2827,13 @@
               // Status-driven visual treatment — 5 states with distinct color coding
               let bg, borderColor, dayColor, iconColor, labelColor, label, IconNode, glow = '';
               if (d.isPast && d.hasActivity) {
-                // DONE — green theme, checkmark replaces type icon
+                // DONE — green confirmation, but type label keeps its identity color so user sees what was done
                 bg = 'linear-gradient(160deg, rgba(143,232,106,0.18), rgba(143,232,106,0.04))';
                 borderColor = 'rgba(143,232,106,0.45)';
                 dayColor = 'var(--positive)';
                 iconColor = 'var(--positive)';
-                labelColor = 'var(--positive)';
-                label = 'FAIT';
+                labelColor = !isRest ? type.color : 'var(--positive)';
+                label = !isRest ? (shortLabels[d.planned.type] || '').toUpperCase() : 'ACTIVITÉ';
                 IconNode = <IconCheck size={18} strokeWidth={2.5} style={{ color: 'var(--positive)' }} />;
               } else if (d.isToday) {
                 // TODAY — compass theme with glow, type icon if scheduled
@@ -2882,7 +2884,7 @@
                   style={{
                     background: bg,
                     border: `1px solid ${borderColor}`,
-                    minHeight: 100,
+                    minHeight: 115,
                     boxShadow: glow,
                   }}
                 >
@@ -2894,6 +2896,12 @@
                   <div className="leading-tight font-mono tracking-widest" style={{ color: labelColor, fontSize: 9, fontWeight: 600 }}>
                     {label}
                   </div>
+                  {/* km row when an activity was logged for that day */}
+                  {d.hasActivity && d.totalKm > 0 && (
+                    <div className="font-mono tabular mt-1 leading-none" style={{ color: 'var(--positive)', fontSize: 10, fontWeight: 700 }}>
+                      {d.totalKm.toFixed(1)} km
+                    </div>
+                  )}
                   {/* Today + already done: small check badge in corner */}
                   {d.isToday && d.hasActivity && (
                     <div className="absolute" style={{ top: 4, right: 4, width: 14, height: 14, borderRadius: '50%', background: 'var(--positive)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
