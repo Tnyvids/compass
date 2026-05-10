@@ -1998,8 +1998,28 @@
     };
 
     const STRENGTH_SESSIONS = {
-      A: { id: 'A', name: 'SÉANCE A', title: 'Jambes & Genou', subtitle: 'Quadriceps + soleus, amplitude limitée pour épargner la rotule', accent: '#D4FF00', duration: 15, exerciseKeys: ['squat_eccentric', 'dynamic_lunge', 'soleus_calf'] },
-      B: { id: 'B', name: 'SÉANCE B', title: 'Hanches & Fessiers', subtitle: 'Moyen fessier + psoas — la clé pour soulager le genou', accent: '#FF8040', duration: 15, exerciseKeys: ['hip_flexor_stretch', 'single_leg_bridge', 'clamshell'] },
+      A: {
+        id: 'A', name: 'SÉANCE A', title: 'Jambes & Genou',
+        subtitle: 'Quadriceps + soleus, amplitude limitée pour épargner la rotule',
+        accent: '#D4FF00', duration: 15,
+        exerciseKeys: ['squat_eccentric', 'dynamic_lunge', 'soleus_calf'],
+        benefits: [
+          'Renforce les quadriceps sans comprimer la rotule',
+          'Améliore le contrôle du genou en course (anti-valgus)',
+          "Muscle le soleus pour absorber les chocs au sol",
+        ],
+      },
+      B: {
+        id: 'B', name: 'SÉANCE B', title: 'Hanches & Fessiers',
+        subtitle: 'Moyen fessier + psoas — la clé pour soulager le genou',
+        accent: '#FF8040', duration: 15,
+        exerciseKeys: ['hip_flexor_stretch', 'single_leg_bridge', 'clamshell'],
+        benefits: [
+          'Active le moyen fessier qui empêche le genou de partir en dedans',
+          "Étire le psoas qui tire la rotule vers l'extérieur",
+          'Renforce le grand fessier pour orienter correctement le fémur',
+        ],
+      },
     };
     // 12-month progressive program for runners with anterior knee pain.
     // Each phase has a measurable graduation criterion that the user evaluates
@@ -2088,7 +2108,13 @@
         id: 'pfps_lld',
         name: 'Douleur avant du genou',
         shortName: 'GENOU AVANT',
-        description: "Pour ceux qui ressentent une douleur à l'avant ou autour de la rotule, surtout en descente d'escalier ou après une longue position assise. Cible : moyen fessier, quadriceps en amplitude limitée, mobilité du psoas.",
+        description: "Pour ceux qui ressentent une douleur à l'avant ou autour de la rotule, surtout en descente d'escalier ou après une longue position assise.",
+        mechanism: [
+          "Renforce le moyen fessier qui empêche le genou de partir en dedans (cause #1 de la douleur)",
+          "Limite l'amplitude du quadriceps pour ne pas comprimer la rotule sensible",
+          "Étire le psoas qui tire la rotule vers l'extérieur",
+          "Travail unilatéral pour corriger les compensations gauche/droite",
+        ],
         targetZones: ['knee_left', 'knee_right'],
         exercises: EXERCISES,
         sessions: STRENGTH_SESSIONS,
@@ -2100,7 +2126,13 @@
         id: 'generic_prevention',
         name: 'Prévention course',
         shortName: 'PRÉVENTION',
-        description: "Pour les coureurs sans douleur particulière qui veulent rester solides et éviter les blessures. Cible : chaîne postérieure, gainage, fessiers. La base de tout coureur.",
+        description: "Pour les coureurs sans douleur particulière qui veulent rester solides et éviter les blessures classiques du running.",
+        mechanism: [
+          "Renforce la chaîne postérieure (ischios, fessiers) — le moteur du coureur",
+          "Stabilise le tronc pour un transfert d'énergie efficace en course",
+          "Active le moyen fessier qui empêche le bassin de s'affaisser à chaque foulée",
+          "Construit la force unilatérale et l'équilibre proprioceptif",
+        ],
         targetZones: [],
         exercises: {
           goblet_squat: { name: 'Goblet squat', subtitle: 'Squat avec haltère devant la poitrine', videoId: 'MeIiIdhvXT4', why: "Force quadriceps + fessiers + gainage. Plus stable qu'un back squat pour démarrer.", steps: ["Tiens un haltère ou kettlebell contre la poitrine, coudes vers le bas.", "Pieds largeur épaules, descends jusqu'à 90° avec dos droit.", "Pousse sur les talons pour remonter."], keyPoint: "Garde la charge proche de la poitrine — ça force le tronc à rester droit.", avoid: "Décharger les talons ou laisser les genoux rentrer." },
@@ -2119,8 +2151,28 @@
           glute_bridge: { sets: 3, reps: 12, rest: 45 },
         },
         sessions: {
-          A: { id: 'A', name: 'SÉANCE A', title: 'Force chaîne postérieure', subtitle: 'Squat, soulevé de terre, mollets', accent: '#D4FF00', duration: 15, exerciseKeys: ['goblet_squat', 'single_leg_deadlift', 'calf_raise'] },
-          B: { id: 'B', name: 'SÉANCE B', title: 'Gainage et fessiers', subtitle: 'Planches, pont fessier — la stabilité du coureur', accent: '#FF8040', duration: 15, exerciseKeys: ['plank_front', 'side_plank', 'glute_bridge'] },
+          A: {
+            id: 'A', name: 'SÉANCE A', title: 'Force chaîne postérieure',
+            subtitle: 'Squat, soulevé de terre, mollets',
+            accent: '#D4FF00', duration: 15,
+            exerciseKeys: ['goblet_squat', 'single_leg_deadlift', 'calf_raise'],
+            benefits: [
+              "Renforce les quadriceps et la chaîne arrière (ischios + fessiers)",
+              "Construit la force unilatérale et l'équilibre proprioceptif",
+              'Prépare le mollet à absorber et propulser à chaque foulée',
+            ],
+          },
+          B: {
+            id: 'B', name: 'SÉANCE B', title: 'Gainage et fessiers',
+            subtitle: 'Planches, pont fessier — la stabilité du coureur',
+            accent: '#FF8040', duration: 15,
+            exerciseKeys: ['plank_front', 'side_plank', 'glute_bridge'],
+            benefits: [
+              "Stabilise le tronc pour un transfert d'énergie efficace",
+              "Active le moyen fessier (anti-bassin qui s'affaisse en course)",
+              'Développe les fessiers, sources principales de propulsion',
+            ],
+          },
         },
         phases: [
           { id: 1, name: 'Réactivation', shortName: 'PHASE 1', weeks: [1, 3], multiplier: 0.5, theme: "Réveiller la chaîne posterieure et le tronc", sessionsTarget: 2, criterion: 'Tenir la planche frontale 30 secondes sans tremblement.', graduationText: "Le tronc et la chaîne postérieure répondent à la commande. Place à la construction." },
@@ -2136,7 +2188,13 @@
         id: 'itband',
         name: 'Douleur latérale du genou',
         shortName: 'GENOU LATÉRAL',
-        description: "Pour ceux qui ressentent une douleur sur le côté du genou, souvent à la descente ou après quelques kilomètres. Cible : muscles stabilisateurs du bassin (moyen fessier) et souplesse de hanche.",
+        description: "Pour ceux qui ressentent une douleur sur le côté du genou, souvent à la descente ou après quelques kilomètres.",
+        mechanism: [
+          "Active le moyen fessier — sa faiblesse est la cause #1 de la douleur latérale",
+          "Détend la bandelette ilio-tibiale chronique tendue",
+          "Renforce le grand fessier sans charge axiale (hip thrust, pont fessier)",
+          "Travail unilatéral pour stabiliser le bassin sur chaque foulée",
+        ],
         targetZones: ['itband'],
         exercises: {
           clamshell: { name: 'Clamshell élastique', subtitle: 'Fessier moyen isolé', videoId: 'pR1AkgMmcpU', why: "Le moyen fessier empêche le genou de partir en dedans (valgus dynamique). Sa faiblesse est une cause fréquente de douleur latérale du genou chez le coureur.", steps: ["Sur le côté, genoux pliés à 45°, élastique au-dessus des genoux.", 'Pieds collés, écarte le genou du dessus sans bouger le bassin.', 'Contrôle la descente.'], keyPoint: 'Le bassin reste stable, ne roule pas en arrière.', avoid: 'Aller vite en perdant la tension.' },
@@ -2155,8 +2213,28 @@
           glute_bridge: { sets: 3, reps: 12, rest: 45 },
         },
         sessions: {
-          A: { id: 'A', name: 'SÉANCE A', title: 'Activation moyen fessier', subtitle: 'Clamshell, leg raise latéral, monster walk', accent: '#D4FF00', duration: 15, exerciseKeys: ['clamshell', 'side_lying_leg_raise', 'monster_walk'] },
-          B: { id: 'B', name: 'SÉANCE B', title: 'Force fessière + souplesse', subtitle: 'Étirement IT, hip thrust, pont fessier', accent: '#FF8040', duration: 15, exerciseKeys: ['it_band_stretch', 'hip_thrust', 'glute_bridge'] },
+          A: {
+            id: 'A', name: 'SÉANCE A', title: 'Activation moyen fessier',
+            subtitle: 'Clamshell, leg raise latéral, monster walk',
+            accent: '#D4FF00', duration: 15,
+            exerciseKeys: ['clamshell', 'side_lying_leg_raise', 'monster_walk'],
+            benefits: [
+              "Réveille le moyen fessier endormi (cause #1 de la douleur latérale)",
+              'Travaille la stabilité du bassin sous tous les angles',
+              "Prépare le geste de course en charge latérale (monster walk)",
+            ],
+          },
+          B: {
+            id: 'B', name: 'SÉANCE B', title: 'Force fessière + souplesse',
+            subtitle: 'Étirement IT, hip thrust, pont fessier',
+            accent: '#FF8040', duration: 15,
+            exerciseKeys: ['it_band_stretch', 'hip_thrust', 'glute_bridge'],
+            benefits: [
+              'Détend la bandelette ilio-tibiale chronique tendue',
+              'Développe la force du grand fessier sans charge axiale',
+              "Complément du travail moyen fessier — couvre toute la chaîne",
+            ],
+          },
         },
         phases: [
           { id: 1, name: 'Réactivation', shortName: 'PHASE 1', weeks: [1, 3], multiplier: 0.5, theme: "Réveiller le moyen fessier endormi", sessionsTarget: 2, criterion: 'Sentir la brûlure cible à 8 reps de clamshell sans bouger le bassin.', graduationText: "Tu as réactivé le moyen fessier — c'est lui qui empêche la bandelette de tirer." },
@@ -2172,7 +2250,13 @@
         id: 'achilles',
         name: "Tendon d'Achille",
         shortName: 'ACHILLE',
-        description: "Pour ceux qui ressentent une douleur ou raideur derrière la cheville (au-dessus du talon), surtout au démarrage à froid ou après une séance. Renforcement progressif du tendon par chargement excentrique (méthode reconnue) + travail du mollet en profondeur.",
+        description: "Pour ceux qui ressentent une douleur ou raideur derrière la cheville (au-dessus du talon), surtout au démarrage à froid ou après une séance.",
+        mechanism: [
+          "Stimule la réparation du tendon par chargement excentrique progressif (méthode reconnue)",
+          "Isole le soleus, muscle clé pour absorber les chocs et propulser sur les longues",
+          "Détend le mollet raide qui tire chroniquement sur le tendon",
+          "Renforce les fessiers pour décharger l'achille en course",
+        ],
         targetZones: ['achilles_left', 'achilles_right'],
         exercises: {
           heel_drop_eccentric: { name: 'Heel drop excentrique', subtitle: 'Protocole Alfredson, descente lente 3 sec', videoId: 'XTV8Y3LmEvo', why: "Le protocole gold standard pour la tendinopathie achilléenne. Le chargement excentrique stimule la réparation du tendon.", steps: ["Sur une marche, pointes des pieds sur le bord, talons dans le vide.", "Monte avec les deux pieds, transfère le poids sur la jambe douloureuse.", "Descends LENTEMENT (3 secondes) le talon en dessous du niveau de la marche."], keyPoint: "La douleur modérée est normale et fait partie du processus. Stop si elle dépasse 5/10.", avoid: "Descendre trop vite — c'est la lenteur qui soigne." },
@@ -2191,8 +2275,28 @@
           step_up: { sets: 3, reps: 10, rest: 60, perSide: true },
         },
         sessions: {
-          A: { id: 'A', name: 'SÉANCE A', title: 'Chargement excentrique', subtitle: 'Heel drop Alfredson, mollets ciblés', accent: '#D4FF00', duration: 15, exerciseKeys: ['heel_drop_eccentric', 'seated_calf_raise', 'single_leg_calf_raise'] },
-          B: { id: 'B', name: 'SÉANCE B', title: 'Souplesse + chaîne globale', subtitle: 'Étirement mollet, fessiers, step up', accent: '#FF8040', duration: 15, exerciseKeys: ['calf_stretch', 'glute_bridge', 'step_up'] },
+          A: {
+            id: 'A', name: 'SÉANCE A', title: 'Chargement excentrique',
+            subtitle: 'Heel drop Alfredson, mollets ciblés',
+            accent: '#D4FF00', duration: 15,
+            exerciseKeys: ['heel_drop_eccentric', 'seated_calf_raise', 'single_leg_calf_raise'],
+            benefits: [
+              "Stimule la réparation du tendon d'Achille (méthode reconnue)",
+              "Isole le soleus, muscle clé de l'endurance et de la course longue",
+              "Détecte et corrige les asymétries de force entre mollets",
+            ],
+          },
+          B: {
+            id: 'B', name: 'SÉANCE B', title: 'Souplesse + chaîne globale',
+            subtitle: 'Étirement mollet, fessiers, step up',
+            accent: '#FF8040', duration: 15,
+            exerciseKeys: ['calf_stretch', 'glute_bridge', 'step_up'],
+            benefits: [
+              'Détend le mollet raide qui tire chroniquement sur le tendon',
+              "Renforce les fessiers pour décharger l'achille en course",
+              "Travail unilatéral (step up) pour rééquilibrer la chaîne globale",
+            ],
+          },
         },
         phases: [
           { id: 1, name: 'Réactivation', shortName: 'PHASE 1', weeks: [1, 3], multiplier: 0.5, theme: "Tendon réagit en douceur", sessionsTarget: 2, criterion: 'Heel drop bilatéral 10 reps sans douleur > 4/10.', graduationText: "Le tendon supporte la charge initiale. La réparation a démarré." },
@@ -4248,7 +4352,6 @@
     function PlanView({ profile, races, checkins, activities, strengthSessions, strengthStart, planOverrides, sessionTemplates, onSaveTemplate, onApplyTemplate, onImportActivity, onViewActivity, onSavePlanWeek, onGeneratePlan, onAddRace, onRemoveRace, onSaveProfile, onStrengthStart, onResetStrengthStart, onClearStrengthHistory }) {
       const dialog = useDialog();
       const toast = useToast();
-      const [tab, setTab] = useState('calendar');
       const [editingWeek, setEditingWeek] = useState(null);  // legacy modal mode (kept as fallback)
       const [editingInlineDay, setEditingInlineDay] = useState(null);  // {wsKey, dayKey} when inline-editing
       const [weekOffset, setWeekOffset] = useState(0);
@@ -4347,32 +4450,6 @@
               </Button>
             </div>
           </div>
-
-          {/* Tab nav: Calendrier / Renfo */}
-          <div className="flex gap-1 mb-5 border-b" style={{ borderColor: 'var(--border)' }}>
-            {[
-              { k: 'calendar', l: 'Calendrier', icon: IconCalendar },
-              ...(profile.showStrength !== false ? [{ k: 'renfo', l: 'Renfo', icon: IconDumbbell }] : []),
-            ].map(it => {
-              const Ic = it.icon;
-              return (
-                <button
-                  key={it.k}
-                  onClick={() => setTab(it.k)}
-                  className="px-4 py-2.5 transition-all flex items-center gap-2 t-meta"
-                  style={{
-                    color: tab === it.k ? 'var(--compass)' : 'var(--text-dim)',
-                    borderBottom: tab === it.k ? '2px solid var(--compass)' : '2px solid transparent',
-                    marginBottom: '-1px',
-                  }}
-                >
-                  <Ic size={13} />{it.l.toUpperCase()}
-                </button>
-              );
-            })}
-          </div>
-
-          {tab === 'calendar' && (<>
 
           {/* Empty plan state — show only when nothing is planned anywhere */}
           {Object.keys(planOverrides || {}).length === 0 && (
@@ -4507,19 +4584,7 @@
             )}
           </div>
 
-          </>)}
-
-          {tab === 'renfo' && (
-            <StrengthSection
-              strengthSessions={strengthSessions}
-              strengthStart={strengthStart}
-              activities={activities}
-              profile={profile}
-              onStartWorkout={onStrengthStart}
-              onResetStart={onResetStrengthStart}
-              onClearHistory={onClearStrengthHistory}
-            />
-          )}
+          {/* Renfo lives in its own top-level tab now (see App view === 'renfo') */}
 
           {editingWeek && <WeekEditorModal key={editingWeek} wsKey={editingWeek} initial={editingWeekInitial} planOverrides={planOverrides} sessionTemplates={sessionTemplates} onSaveTemplate={onSaveTemplate} onApplyTemplate={onApplyTemplate} activities={activities} onImportActivity={onImportActivity} onViewActivity={onViewActivity} onSave={(week) => { onSavePlanWeek(editingWeek, week); setEditingWeek(null); }} onDelete={() => { onSavePlanWeek(editingWeek, buildDeletedWeek()); setEditingWeek(null); }} onClose={() => setEditingWeek(null)} weekContext={{ cp: profile.cp, weightKg: profile.weightKg, ppt: buildPowerPaceTable(activities || []) }} />}
           {generatorOpen && <PlanGeneratorModal profile={profile} races={races} activities={activities} sessionTemplates={sessionTemplates} onGenerate={(overrides, meta) => { onGeneratePlan(overrides, meta); setGeneratorOpen(false); }} onCancel={() => setGeneratorOpen(false)} />}
@@ -6239,14 +6304,37 @@
 
       return (
         <div className="fade-in">
-          <div className="mb-6">
-            <div className="flex items-center gap-3 mb-2">
-              <div className="t-meta" style={{ color: 'var(--signal)' }}>RENFO</div>
-              {phaseOffset !== 0 && <Tag color={phaseOffset > 0 ? 'var(--positive)' : 'var(--negative)'}>{phaseOffset > 0 ? '↑ ACCÉLÉRÉ' : '↓ RALENTI'}</Tag>}
+          {/* Context card — what is the pain/goal, and how the program addresses it. Visible permanently. */}
+          <Card className="p-6 md:p-7 mb-4" accent="var(--accent)">
+            <div className="flex items-start gap-4 flex-wrap">
+              <div className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(212, 255, 0, 0.12)' }}>
+                <IconDumbbell size={24} style={{ color: 'var(--accent)' }} />
+              </div>
+              <div className="flex-1 min-w-[260px]">
+                <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>PROGRAMME ACTIF</div>
+                <div className="font-display text-xl font-bold mb-1">{archetype.name}</div>
+                <div className="text-sm leading-relaxed mb-4" style={{ color: 'var(--text-dim)' }}>{archetype.description}</div>
+                {Array.isArray(archetype.mechanism) && archetype.mechanism.length > 0 && (
+                  <>
+                    <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--accent)' }}>COMMENT ÇA T'AIDE</div>
+                    <ul className="space-y-1.5">
+                      {archetype.mechanism.map((m, i) => (
+                        <li key={i} className="flex gap-2 text-sm leading-relaxed" style={{ color: 'var(--text)' }}>
+                          <span style={{ color: 'var(--accent)', flexShrink: 0 }}>·</span>
+                          <span>{m}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+              {phaseOffset !== 0 && (
+                <div className="flex-shrink-0">
+                  <Tag color={phaseOffset > 0 ? 'var(--positive)' : 'var(--negative)'}>{phaseOffset > 0 ? '↑ ACCÉLÉRÉ' : '↓ RALENTI'}</Tag>
+                </div>
+              )}
             </div>
-            <h2 className="t-h2 mb-1">Renforcement · {phase.sessionsTarget || 2}× / semaine</h2>
-            <div className="t-body-dim">Programme 12 mois en 6 phases — {archetype.name}</div>
-          </div>
+          </Card>
 
           {/* Phase + Stats */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-4">
@@ -6301,37 +6389,6 @@
             </div>
           </div>
 
-          {/* Pain vs Renfo CTL — visible feedback loop, the strongest motivator */}
-          <PainVsRenfoChart activities={activities} strengthSessions={strengthSessions} profile={profile} />
-
-          {/* Empty state — first-time onboarding */}
-          {strengthSessions.length === 0 && (
-            <Card className="p-6 md:p-7 mb-4" accent="var(--accent)">
-              <div className="flex items-start gap-4 flex-wrap">
-                <div className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(212, 255, 0, 0.12)' }}>
-                  <IconDumbbell size={24} style={{ color: 'var(--accent)' }} />
-                </div>
-                <div className="flex-1 min-w-[240px]">
-                  <div className="font-display text-xl font-bold mb-1">Bienvenue dans le programme {archetype.name}</div>
-                  <div className="text-sm leading-relaxed mb-3" style={{ color: 'var(--text-dim)' }}>
-                    {archetype.description}
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs" style={{ color: 'var(--text-dim)' }}>
-                    <div className="p-2.5 rounded-lg" style={{ background: 'var(--bg-elev)' }}>
-                      <span style={{ color: 'var(--accent)' }} className="font-bold">Séance A</span> — {archetype.sessions.A.subtitle}
-                    </div>
-                    <div className="p-2.5 rounded-lg" style={{ background: 'var(--bg-elev)' }}>
-                      <span style={{ color: 'var(--accent)' }} className="font-bold">Séance B</span> — {archetype.sessions.B.subtitle}
-                    </div>
-                  </div>
-                  <div className="mt-3 font-mono text-[11px] italic" style={{ color: 'var(--text-faint)' }}>
-                    Démarre par la séance A ci-dessous. Compass guide chaque exercice avec timer + vidéo de référence.
-                  </div>
-                </div>
-              </div>
-            </Card>
-          )}
-
           {/* Session selection */}
           <div className="font-display text-xl font-bold mt-8 mb-4">Démarrer une séance</div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-8">
@@ -6346,6 +6403,16 @@
                   </div>
                   <div className="font-display text-xl font-bold mb-1">{s.title}</div>
                   <div className="text-sm mb-4" style={{ color: 'var(--text-dim)' }}>{s.subtitle}</div>
+                  {Array.isArray(s.benefits) && s.benefits.length > 0 && (
+                    <ul className="space-y-1.5 mb-4">
+                      {s.benefits.map((b, i) => (
+                        <li key={i} className="flex gap-2 text-xs leading-relaxed" style={{ color: 'var(--text)' }}>
+                          <IconCheck size={11} style={{ color: s.accent, flexShrink: 0, marginTop: 3 }} />
+                          <span>{b}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   <div className="flex gap-3 font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>
                     <span>{s.exerciseKeys.length} EXERCICES</span>
                     <span>~{s.duration} MIN</span>
@@ -6516,6 +6583,20 @@
       function handleDone() { clearInterval(intRef.current); if (isLast) { const dur = Math.floor((Date.now() - sessionStart) / 1000); onFinish(dur); return; } setElapsed(0); setPs('rest'); }
       function nextBlock() { clearInterval(intRef.current); setBlockIdx(i => i + 1); setElapsed(0); setPs('ready'); }
       function skipRest() { clearInterval(intRef.current); nextBlock(); }
+      // Skip current exercise entirely — advance past every remaining block of the same exIdx
+      function handleSkipExercise() {
+        clearInterval(intRef.current);
+        let nextIdx = blockIdx + 1;
+        while (nextIdx < blocks.length && blocks[nextIdx].exIdx === block.exIdx) nextIdx++;
+        if (nextIdx >= blocks.length) {
+          const dur = Math.floor((Date.now() - sessionStart) / 1000);
+          onFinish(dur);
+          return;
+        }
+        setBlockIdx(nextIdx);
+        setElapsed(0);
+        setPs('ready');
+      }
 
       useEffect(() => {
         const h = (e) => {
@@ -6555,14 +6636,37 @@
               <RestView elapsed={elapsed} total={exercise.rest} next={nextEx ? exercises[nextEx.key] : null} onSkip={skipRest} accent={session.accent} />
             ) : (
               <div className="flex-1 flex flex-col">
-                <div className="text-center mb-6">
+                <div className="text-center mb-4">
                   <div className="font-mono text-[10px] tracking-widest mb-3" style={{ color: session.accent }}>{session.name} · EXERCICE {block.exIdx + 1}</div>
                   <div className="flex items-center justify-center gap-3 mb-2">
                     <h1 className="t-h1">{exerciseData.name}</h1>
-                    <button onClick={() => onInfo(exercise.key)} className="btn w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: 'var(--bg-elev)', border: `1px solid ${session.accent}40` }}><IconInfo size={16} style={{ color: session.accent }} /></button>
+                    <button onClick={() => onInfo(exercise.key)} title="Voir la fiche complète (vidéo, étapes, pourquoi)" className="btn w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: 'var(--bg-elev)', border: `1px solid ${session.accent}40` }}><IconInfo size={16} style={{ color: session.accent }} /></button>
                   </div>
                   <div className="text-sm" style={{ color: 'var(--text-dim)' }}>{exerciseData.subtitle}</div>
                 </div>
+                {/* Inline key technique cues — surfaced directly during the set so the user doesn't have to open the full sheet */}
+                {(exerciseData.keyPoint || exerciseData.avoid) && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-4 text-left">
+                    {exerciseData.keyPoint && (
+                      <div className="rounded-xl p-3 flex gap-2" style={{ background: 'rgba(143, 232, 106, 0.08)', border: '1px solid rgba(143, 232, 106, 0.25)' }}>
+                        <IconCheck size={14} style={{ color: 'var(--positive)', flexShrink: 0, marginTop: 2 }} />
+                        <div className="text-xs leading-relaxed">
+                          <div className="font-mono text-[9px] tracking-widest mb-0.5" style={{ color: 'var(--text-dim)' }}>À FAIRE</div>
+                          <div style={{ color: 'var(--text)' }}>{exerciseData.keyPoint}</div>
+                        </div>
+                      </div>
+                    )}
+                    {exerciseData.avoid && (
+                      <div className="rounded-xl p-3 flex gap-2" style={{ background: 'rgba(255, 91, 91, 0.08)', border: '1px solid rgba(255, 91, 91, 0.25)' }}>
+                        <IconX size={14} style={{ color: 'var(--danger)', flexShrink: 0, marginTop: 2 }} />
+                        <div className="text-xs leading-relaxed">
+                          <div className="font-mono text-[9px] tracking-widest mb-0.5" style={{ color: 'var(--text-dim)' }}>À ÉVITER</div>
+                          <div style={{ color: 'var(--text)' }}>{exerciseData.avoid}</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
                 <Card className="p-8 md:p-12 flex-1 flex flex-col items-center justify-center scale-in" accent={ps === 'active' ? session.accent : null}>
                   <div className="font-mono text-[10px] tracking-widest mb-5" style={{ color: 'var(--text-dim)' }}>SÉRIE {block.setNumber} / {exercise.sets}{block.side ? ` · CÔTÉ ${block.side.toUpperCase()}` : ''}{exercise.altOneSet ? ` · ${exercise.reps}/CÔTÉ` : ''}</div>
                   {exercise.type === 'time' ? (
@@ -6582,11 +6686,16 @@
                   )}
                 </Card>
                 {nextEx && exercises[nextEx.key] && (
-                  <div className="flex items-center gap-3 mt-3 px-5 py-3 rounded-xl" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
-                    <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>SUIVANT</div>
+                  <button
+                    onClick={handleSkipExercise}
+                    title="Passer cet exercice et aller au suivant"
+                    className="btn flex items-center gap-3 mt-3 px-5 py-3 rounded-xl w-full text-left transition hover:scale-[1.01]"
+                    style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}
+                  >
+                    <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>PASSER À</div>
                     <div className="text-sm flex-1 truncate" style={{ color: 'var(--text-dim)' }}>{exercises[nextEx.key].name}</div>
                     <IconChevronRight size={14} style={{ color: 'var(--text-faint)' }} />
-                  </div>
+                  </button>
                 )}
               </div>
             )}
@@ -10243,7 +10352,7 @@
       );
     }
 
-    function AnalyticsView({ activities, profile, checkins, planOverrides, races, onSaveProfile }) {
+    function AnalyticsView({ activities, profile, checkins, planOverrides, races, strengthSessions = [], onSaveProfile }) {
       const [tab, setTab] = useState('etat'); // etat | tendances | performance
 
       const activitiesWithTss = useMemo(() =>
@@ -10482,6 +10591,10 @@
                 {hasPowerData && <PowerCurveCard data={powerCurve} cp={profile.cp} />}
               </div>
               <div className="mb-4"><YearHeatmapCard activities={activities} profile={profile} /></div>
+              {/* Pain vs renfo chart — only relevant when the user has at least one tracked zone */}
+              {Array.isArray(profile.injuryZones) && profile.injuryZones.length > 0 && (
+                <div className="mb-4"><PainVsRenfoChart activities={activities} strengthSessions={strengthSessions} profile={profile} /></div>
+              )}
             </>
           )}
 
@@ -13881,12 +13994,14 @@
     const NAV_ITEMS = [
       { id: 'today', label: "Aujourd'hui", icon: IconHome, mobile: true },
       { id: 'plan', label: 'Plan', icon: IconCalendar, mobile: true },
+      { id: 'renfo', label: 'Renfo', icon: IconDumbbell, mobile: true, requires: (p) => p && p.showStrength !== false },
       { id: 'analytics', label: 'Analytics', icon: IconTrending, mobile: true },
       { id: 'profile', label: 'Profil', icon: IconUser, mobile: true },
       { id: 'library', label: 'Bibliothèque', icon: IconBookOpen, mobile: false },
     ];
 
-    function Sidebar({ view, onChange }) {
+    function Sidebar({ view, onChange, profile }) {
+      const items = NAV_ITEMS.filter(it => !it.requires || it.requires(profile));
       return (
         <aside className="hidden md:flex w-60 flex-col fixed left-0 top-0 bottom-0 px-4 py-6 z-30" style={{ background: 'var(--bg-elev)', borderRight: '1px solid var(--border)' }}>
           <div className="flex items-center gap-2 px-3 mb-10">
@@ -13899,7 +14014,7 @@
             </div>
           </div>
           <nav className="flex-1 space-y-1">
-            {NAV_ITEMS.map(item => {
+            {items.map(item => {
               const Icon = item.icon;
               const active = view === item.id;
               return (
@@ -13919,8 +14034,8 @@
       );
     }
 
-    function BottomNav({ view, onChange }) {
-      const items = NAV_ITEMS.filter(it => it.mobile);
+    function BottomNav({ view, onChange, profile }) {
+      const items = NAV_ITEMS.filter(it => it.mobile && (!it.requires || it.requires(profile)));
       return (
         <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 flex backdrop-blur-xl" style={{ background: 'rgba(10,10,10,0.95)', borderTop: '1px solid var(--border)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
           {items.map(item => {
@@ -14418,8 +14533,8 @@
             </div>
           )}
 
-          <Sidebar view={view} onChange={setView} />
-          <BottomNav view={view} onChange={setView} />
+          <Sidebar view={view} onChange={setView} profile={profile} />
+          <BottomNav view={view} onChange={setView} profile={profile} />
 
           <main className="md:ml-60 relative">
             {view === 'today' && (
@@ -14493,6 +14608,25 @@
                 onManualEntry={() => setManualEntry(true)}
               />
             )}
+            {view === 'renfo' && (
+              <div className="max-w-[1500px] mx-auto px-5 md:px-10 py-6 md:py-10 fade-in pb-nav">
+                <div className="flex items-end justify-between mb-8 flex-wrap gap-3">
+                  <div>
+                    <div className="t-meta mb-2" style={{ color: 'var(--accent)' }}>RENFO</div>
+                    <h1 className="t-h1">Ton programme de renforcement</h1>
+                  </div>
+                </div>
+                <StrengthSection
+                  strengthSessions={strengthSessions}
+                  strengthStart={strengthStart}
+                  activities={activities}
+                  profile={profile}
+                  onStartWorkout={handleStrengthStart}
+                  onResetStart={() => setStrengthStart(Date.now())}
+                  onClearHistory={() => setStrengthSessions([])}
+                />
+              </div>
+            )}
             {view === 'profile' && (
               <ProfileView
                 profile={profile}
@@ -14534,7 +14668,7 @@
                 onShowAllActivities={() => setView('log')}
               />
             )}
-            {view === 'analytics' && <AnalyticsView activities={activities} profile={profile} checkins={checkins} planOverrides={planOverrides} races={races} onSaveProfile={(np) => setProfile(np)} />}
+            {view === 'analytics' && <AnalyticsView activities={activities} profile={profile} checkins={checkins} planOverrides={planOverrides} races={races} strengthSessions={strengthSessions} onSaveProfile={(np) => setProfile(np)} />}
             {view === 'library' && <LibraryView sessionTemplates={sessionTemplates} onDeleteTemplate={handleDeleteTemplate} onRenameTemplate={handleRenameTemplate} profile={profile} />}
           </main>
 
