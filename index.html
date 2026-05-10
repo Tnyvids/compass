@@ -4827,7 +4827,7 @@
     // IMPORT FROM PLAN — small reusable button to import a TCX/GPX/CSV file
     // and auto-link it to a specific planned session day.
     // ========================================================================
-    function ImportFromPlanButton({ wsKey, dayKey, dayLabel, sessionType, sessionLabel, sessionDetail, alreadyImported, onImport, onView, compact = false }) {
+    function ImportFromPlanButton({ wsKey, dayKey, dayLabel, sessionType, sessionLabel, sessionDetail, alreadyImported, onImport, onView, weightKg = null, compact = false }) {
       const toast = useToast();
       const fileRef = useRef(null);
       async function handleFile(fileList) {
@@ -4839,7 +4839,7 @@
         try {
           if (lower.endsWith('.tcx')) activity = parseTCX(text);
           else if (lower.endsWith('.gpx')) activity = parseGPX(text);
-          else if (lower.endsWith('.csv')) activity = parseStrydCSV(text, f.name, null);
+          else if (lower.endsWith('.csv')) activity = parseStrydCSV(text, f.name, weightKg);
         } catch (err) {
           toast.push(`Erreur de lecture du fichier "${f.name}" : ${err.message || err}`, { kind: 'warn' });
           return;
@@ -5365,6 +5365,7 @@
                             sessionLabel={localDay.label}
                             sessionDetail={localDay.detail}
                             alreadyImported={!!linkedActivity}
+                            weightKg={weekContext?.weightKg ?? null}
                             onImport={(activity, forcedLink) => onImportActivity(activity, forcedLink)}
                             onView={() => { if (linkedActivity) onViewActivity(linkedActivity); }}
                           />
