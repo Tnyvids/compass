@@ -6290,12 +6290,19 @@
     function StrengthSection({ strengthSessions, strengthStart, activities = [], profile, onStartWorkout, onResetStart, onClearHistory }) {
       const [confirmReset, setConfirmReset] = useState(false);
       const [confirmClear, setConfirmClear] = useState(false);
+      // Selected phase for the interactive phase panel — null defaults to the current phase
+      const [selectedPhaseId, setSelectedPhaseId] = useState(null);
 
       const archetype = getActiveArchetype(profile);
       const phaseOffset = computePhaseOffset(strengthSessions);
       const phase = getStrengthPhase(strengthStart, phaseOffset, archetype.phases);
       const lastSession = strengthSessions[0];
       const suggested = !lastSession ? 'A' : lastSession.type === 'A' ? 'B' : 'A';
+      // Phase being focused in the interactive panel — current phase by default
+      const focusedPhase = selectedPhaseId
+        ? (archetype.phases.find(p => p.id === selectedPhaseId) || phase)
+        : phase;
+      const focusedPhaseStatus = focusedPhase.id < phase.id ? 'past' : focusedPhase.id > phase.id ? 'future' : 'current';
 
       const now = new Date();
       const weekStart = getWeekStart(now);
@@ -6336,7 +6343,7 @@
             </div>
           </Card>
 
-          {/* Phase + Stats */}
+          {/* Phase + Next session */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-4">
             <div className="lg:col-span-2">
               <Card className="p-6" accent="var(--accent)">
@@ -6347,45 +6354,91 @@
                   </div>
                   <div className="font-mono text-xs tabular" style={{ color: 'var(--text-dim)' }}>{Math.round(phase.multiplier * 100)}% du volume cible</div>
                 </div>
-                <div className="font-display text-2xl font-bold mb-1">{phase.name}</div>
-                {phase.theme && <div className="text-sm mb-4" style={{ color: 'var(--text-dim)' }}>{phase.theme}</div>}
-                {/* 6-phase progression bar */}
+                {/* Clickable 6-phase progression bar — switch the panel below to any phase */}
                 <div className="flex gap-1 mb-2">
-                  {archetype.phases.map((p, i) => {
+                  {archetype.phases.map((p) => {
                     const reached = phase.id >= p.id;
-                    const current = phase.id === p.id;
+                    const isCurrent = phase.id === p.id;
+                    const isFocused = focusedPhase.id === p.id;
                     return (
-                      <div key={p.id} className="flex-1 h-1.5 rounded-full" style={{
-                        background: current ? 'var(--accent)' : reached ? 'rgba(212,255,0,0.4)' : 'var(--border)',
-                      }} title={`${p.shortName} — ${p.name} (sem ${p.weeks[0]}-${p.weeks[1] === 999 ? '∞' : p.weeks[1]})`} />
+                      <button
+                        key={p.id}
+                        onClick={() => setSelectedPhaseId(p.id === phase.id ? null : p.id)}
+                        title={`${p.shortName} — ${p.name} (sem ${p.weeks[0]}-${p.weeks[1] === 999 ? '∞' : p.weeks[1]})`}
+                        className="btn flex-1 h-2 rounded-full transition"
+                        style={{
+                          background: isCurrent ? 'var(--accent)' : reached ? 'rgba(212,255,0,0.4)' : 'var(--border)',
+                          outline: isFocused && !isCurrent ? '2px solid var(--compass)' : 'none',
+                          outlineOffset: '2px',
+                        }}
+                      />
                     );
                   })}
                 </div>
-                <div className="flex justify-between font-mono text-[9px]" style={{ color: 'var(--text-faint)' }}>
+                <div className="flex justify-between font-mono text-[9px] mb-4" style={{ color: 'var(--text-faint)' }}>
                   <span>P1</span><span>P2</span><span>P3</span><span>P4</span><span>P5</span><span>P6</span>
                 </div>
-                {phase.criterion && (
-                  <div className="mt-4 pt-3 border-t" style={{ borderColor: 'var(--border)' }}>
-                    <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>OBJECTIF DE PASSAGE</div>
-                    <div className="text-sm" style={{ color: 'var(--text)' }}>{phase.criterion}</div>
+
+                {/* Focused phase panel — current by default, switches when user clicks a pill */}
+                <div className="rounded-xl p-4" style={{ background: 'var(--bg-elev)', border: `1px solid ${focusedPhaseStatus === 'current' ? 'var(--accent)' : 'var(--border)'}40` }}>
+                  <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                    <div className="font-display text-xl font-bold">{focusedPhase.name}</div>
+                    <Tag color={focusedPhaseStatus === 'current' ? 'var(--accent)' : focusedPhaseStatus === 'past' ? 'var(--positive)' : 'var(--text-dim)'}>
+                      {focusedPhaseStatus === 'current' ? 'PHASE ACTUELLE' : focusedPhaseStatus === 'past' ? '✓ FRANCHIE' : 'À VENIR'}
+                    </Tag>
                   </div>
+                  {focusedPhase.theme && <div className="text-sm mb-3" style={{ color: 'var(--text-dim)' }}>{focusedPhase.theme}</div>}
+                  <div className="flex flex-wrap gap-3 font-mono text-[10px] tracking-widest mb-3" style={{ color: 'var(--text-faint)' }}>
+                    <span>SEM. {focusedPhase.weeks[0]}-{focusedPhase.weeks[1] === 999 ? '∞' : focusedPhase.weeks[1]}</span>
+                    <span>{focusedPhase.sessionsTarget || 2}× / SEM</span>
+                    <span>{Math.round(focusedPhase.multiplier * 100)}% VOLUME</span>
+                  </div>
+                  {focusedPhase.criterion && (
+                    <div>
+                      <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>OBJECTIF DE PASSAGE</div>
+                      <div className="text-sm leading-relaxed" style={{ color: 'var(--text)' }}>{focusedPhase.criterion}</div>
+                    </div>
+                  )}
+                  {focusedPhaseStatus === 'past' && focusedPhase.graduationText && (
+                    <div className="mt-3 pt-3 border-t" style={{ borderColor: 'var(--border)' }}>
+                      <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--positive)' }}>CE QUE TU AS CONSTRUIT</div>
+                      <div className="text-sm leading-relaxed italic" style={{ color: 'var(--text-dim)' }}>{focusedPhase.graduationText}</div>
+                    </div>
+                  )}
+                </div>
+                {selectedPhaseId && selectedPhaseId !== phase.id && (
+                  <button onClick={() => setSelectedPhaseId(null)} className="btn font-mono text-[9px] tracking-widest mt-3" style={{ color: 'var(--text-faint)' }}>↩ REVENIR À LA PHASE ACTUELLE</button>
                 )}
               </Card>
             </div>
+            {/* Right column — Next session card (replaces 'Cette semaine') */}
             <div>
-              <Card className="p-6 h-full flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>CETTE SEMAINE</div>
-                    <IconFlame size={16} style={{ color: streak > 0 ? 'var(--accent)' : 'var(--text-faint)' }} />
-                  </div>
-                  <div className="flex items-baseline gap-2">
-                    <div className="font-display text-5xl font-extrabold tabular leading-none" style={{ color: thisWeekCount >= (phase.sessionsTarget || 2) ? 'var(--positive)' : 'var(--accent)' }}>{thisWeekCount}</div>
-                    <div className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>/{phase.sessionsTarget || 2}</div>
-                  </div>
-                </div>
-                <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>{streak} SEM. CONSÉCUTIVES</div>
-              </Card>
+              {(() => {
+                const nextS = archetype.sessions[suggested];
+                const targetSessions = phase.sessionsTarget || 2;
+                const onTrackThisWeek = thisWeekCount >= targetSessions;
+                return (
+                  <Card className="p-6 h-full flex flex-col" style={{ background: `${nextS.accent}10`, border: `1px solid ${nextS.accent}40` }}>
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>PROCHAINE SÉANCE</div>
+                      <IconFlame size={14} style={{ color: streak > 0 ? nextS.accent : 'var(--text-faint)' }} />
+                    </div>
+                    <div className="flex items-start gap-3 mb-3">
+                      <div className="font-display font-extrabold leading-none" style={{ fontSize: '3.5rem', color: nextS.accent }}>{suggested}</div>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-display font-bold text-base leading-tight">{nextS.title}</div>
+                        <div className="text-xs leading-snug mt-1" style={{ color: 'var(--text-dim)' }}>{nextS.subtitle}</div>
+                      </div>
+                    </div>
+                    <button onClick={() => onStartWorkout(suggested)} className="btn lift w-full px-4 py-2.5 rounded-lg font-mono text-[11px] tracking-widest flex items-center justify-center gap-2" style={{ background: nextS.accent, color: '#000' }}>
+                      <IconPlay size={12} /> DÉMARRER
+                    </button>
+                    <div className="mt-auto pt-3 font-mono text-[9px] tracking-widest" style={{ color: onTrackThisWeek ? 'var(--positive)' : 'var(--text-faint)' }}>
+                      {thisWeekCount}/{targetSessions} CETTE SEM · {streak} SEM CONSÉCUTIVES
+                    </div>
+                  </Card>
+                );
+              })()}
             </div>
           </div>
 
