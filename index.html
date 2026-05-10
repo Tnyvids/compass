@@ -2480,11 +2480,11 @@
               On rest days: just the next session card */}
           {plannedSession && plannedSession.type !== 'rest' ? (
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-3 mb-3">
-              <div className="lg:col-span-3">
-                {!todayCheckin ? <ReadinessEmpty onStart={onCheckinStart} /> : <ReadinessFilled checkin={todayCheckin} advice={advice} onView={onCheckinView} onRedo={onCheckinStart} />}
-              </div>
-              <div className="lg:col-span-2">
+              <div className="lg:col-span-3 lg:order-2">
                 <PlannedSessionCard session={nextPlannedInfo?.session} sessionDate={nextPlannedInfo?.date} daysAhead={nextPlannedInfo?.daysAhead} advice={advice} profile={profile} onStrengthStart={onStrengthStart} activities={activities} checkins={checkins} showWeather />
+              </div>
+              <div className="lg:col-span-2 lg:order-1">
+                {!todayCheckin ? <ReadinessEmpty onStart={onCheckinStart} /> : <ReadinessFilled checkin={todayCheckin} advice={advice} onView={onCheckinView} onRedo={onCheckinStart} />}
               </div>
             </div>
           ) : (
