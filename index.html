@@ -6691,13 +6691,10 @@
               <div className="flex-1 flex flex-col">
                 <div className="text-center mb-4">
                   <div className="font-mono text-[10px] tracking-widest mb-3" style={{ color: session.accent }}>{session.name} · EXERCICE {block.exIdx + 1}</div>
-                  <div className="flex items-center justify-center gap-3 mb-2">
-                    <h1 className="t-h1">{exerciseData.name}</h1>
-                    <button onClick={() => onInfo(exercise.key)} title="Voir la fiche complète (vidéo, étapes, pourquoi)" className="btn w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: 'var(--bg-elev)', border: `1px solid ${session.accent}40` }}><IconInfo size={16} style={{ color: session.accent }} /></button>
-                  </div>
+                  <h1 className="t-h1 mb-2">{exerciseData.name}</h1>
                   <div className="text-sm" style={{ color: 'var(--text-dim)' }}>{exerciseData.subtitle}</div>
                 </div>
-                {/* Inline key technique cues — surfaced directly during the set so the user doesn't have to open the full sheet */}
+                {/* Inline key technique cues — always visible so the user has them at a glance during the set */}
                 {(exerciseData.keyPoint || exerciseData.avoid) && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-4 text-left">
                     {exerciseData.keyPoint && (
@@ -6718,6 +6715,41 @@
                         </div>
                       </div>
                     )}
+                  </div>
+                )}
+                {/* Full exercise sheet — surfaced inline during 'ready' state so the user can read before starting.
+                    Hidden during 'active' to keep focus on the rep counter. */}
+                {ps === 'ready' && (
+                  <div className="rounded-xl p-4 mb-4" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
+                    {exerciseData.why && (
+                      <div className="mb-4">
+                        <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: session.accent }}>POURQUOI CET EXERCICE</div>
+                        <div className="text-sm leading-relaxed" style={{ color: 'var(--text)' }}>{exerciseData.why}</div>
+                      </div>
+                    )}
+                    {Array.isArray(exerciseData.steps) && exerciseData.steps.length > 0 && (
+                      <div className="mb-4">
+                        <div className="font-mono text-[9px] tracking-widest mb-2" style={{ color: 'var(--text-dim)' }}>ÉTAPES</div>
+                        <ol className="space-y-2">
+                          {exerciseData.steps.map((step, i) => (
+                            <li key={i} className="flex gap-3 text-sm leading-relaxed">
+                              <span className="font-mono text-[10px] font-bold flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center mt-0.5" style={{ background: session.accent, color: '#000' }}>{i + 1}</span>
+                              <span style={{ color: 'var(--text)' }}>{step}</span>
+                            </li>
+                          ))}
+                        </ol>
+                      </div>
+                    )}
+                    <a
+                      href={`https://www.youtube.com/results?search_query=${encodeURIComponent(`${exerciseData.name} exercice technique course`)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-lg font-mono text-[11px] tracking-widest"
+                      style={{ background: 'rgba(255,0,51,0.08)', border: '1px solid rgba(255,0,51,0.30)', color: '#FF0033', textDecoration: 'none' }}
+                    >
+                      <IconYoutube size={14} /> VOIR LA DÉMO SUR YOUTUBE
+                      <IconChevronRight size={11} />
+                    </a>
                   </div>
                 )}
                 <Card className="p-8 md:p-12 flex-1 flex flex-col items-center justify-center scale-in" accent={ps === 'active' ? session.accent : null}>
