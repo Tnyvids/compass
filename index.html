@@ -4214,7 +4214,7 @@
           )}
 
           {editingWeek && <WeekEditorModal key={editingWeek} wsKey={editingWeek} initial={editingWeekInitial} planOverrides={planOverrides} sessionTemplates={sessionTemplates} onSaveTemplate={onSaveTemplate} onApplyTemplate={onApplyTemplate} activities={activities} onImportActivity={onImportActivity} onViewActivity={onViewActivity} onSave={(week) => { onSavePlanWeek(editingWeek, week); setEditingWeek(null); }} onDelete={() => { onSavePlanWeek(editingWeek, buildDeletedWeek()); setEditingWeek(null); }} onClose={() => setEditingWeek(null)} weekContext={{ cp: profile.cp, weightKg: profile.weightKg, ppt: buildPowerPaceTable(activities || []) }} />}
-          {generatorOpen && <PlanGeneratorModal profile={profile} races={races} activities={activities} onGenerate={(overrides, meta) => { onGeneratePlan(overrides, meta); setGeneratorOpen(false); }} onCancel={() => setGeneratorOpen(false)} />}
+          {generatorOpen && <PlanGeneratorModal profile={profile} races={races} activities={activities} sessionTemplates={sessionTemplates} onGenerate={(overrides, meta) => { onGeneratePlan(overrides, meta); setGeneratorOpen(false); }} onCancel={() => setGeneratorOpen(false)} />}
           {editingInlineDay && (() => {
             const dayLabels = { lun: 'Lundi', mar: 'Mardi', mer: 'Mercredi', jeu: 'Jeudi', ven: 'Vendredi', sam: 'Samedi', dim: 'Dimanche' };
             const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
@@ -12742,11 +12742,30 @@
       return null;
     }
 
-    function buildPlan({ raceDate, totalWeeks, cp, weightKg, sessionsPerWeek, addStrength, raceDistance, powerPaceTable }) {
+    function buildPlan({ raceDate, totalWeeks, cp, weightKg, sessionsPerWeek, addStrength, raceDistance, powerPaceTable, userTemplates = [] }) {
       const phasePlan = getPhasePlan(totalWeeks);
       const weeks = [];
       const raceDay = new Date(raceDate);
       const firstWeekStart = getWeekStart(new Date(raceDay.getTime() - (totalWeeks - 1) * 7 * 86400000));
+
+      // Pick the user's preferred template for a given session type — most recently used first,
+      // fallback to most recently created. Returns null if no template matches.
+      function pickUserTemplate(type) {
+        const matches = (userTemplates || []).filter(t => t && t.type === type && Array.isArray(t.blocks) && t.blocks.length > 0);
+        if (matches.length === 0) return null;
+        matches.sort((a, b) => (b.lastUsed || b.createdAt || 0) - (a.lastUsed || a.createdAt || 0));
+        return matches[0];
+      }
+      function cloneBlocksWithFreshIds(blocks) {
+        if (!Array.isArray(blocks)) return null;
+        return blocks.map(b => {
+          const nb = { ...b, id: 'b_' + Math.random().toString(36).slice(2, 9) };
+          if (b.kind === 'group' && Array.isArray(b.children)) {
+            nb.children = b.children.map(c => ({ ...c, id: 'b_' + Math.random().toString(36).slice(2, 9) }));
+          }
+          return nb;
+        });
+      }
 
       function weeklyPattern(n) {
         if (n <= 3) return { mar: 'intervals', jeu: 'tempo', dim: 'long' };
@@ -12777,6 +12796,21 @@
             days[d] = { type: 'rest', label: 'Repos', detail: '' };
           });
           Object.entries(pat).forEach(([day, sessionType]) => {
+            // Silent replacement: if the user has a saved template for this type, use it
+            // (rescaled to current CP via the existing rescaleTemplateForCP flow on profile change).
+            const userTpl = pickUserTemplate(sessionType);
+            if (userTpl) {
+              days[day] = {
+                type: sessionType,
+                label: userTpl.name,
+                detail: userTpl.detail || '',
+                blocks: cloneBlocksWithFreshIds(userTpl.blocks),
+                plannedKm: userTpl.plannedKm ?? null,
+                plannedMin: userTpl.plannedMin ?? null,
+                fromUserTemplate: true,
+              };
+              return;
+            }
             const tplFn = SESSION_TEMPLATES[sessionType] && SESSION_TEMPLATES[sessionType][phase];
             if (!tplFn) return;
             const tpl = tplFn(cp, w);
@@ -12805,17 +12839,26 @@
         Object.values(days).forEach(d => {
           if (d.type === 'rest') return;
           sessionCount++;
-          const rawDur = estimateSessionDuration(d.detail, d.type);
-          // On recovery weeks: never boost, apply 0.7 factor on easy/long to ensure real deload
-          let boostedRaw;
-          if (isRecoveryWeek && (d.type === 'easy' || d.type === 'long')) {
-            boostedRaw = Math.round(rawDur * 0.70); // strict deload for easy/long
+          let dur, km;
+          // Trust explicit values from user templates rather than re-estimating from detail text.
+          if (d.fromUserTemplate && Number.isFinite(d.plannedMin) && d.plannedMin > 0) {
+            dur = d.plannedMin;
+            km = Number.isFinite(d.plannedKm) && d.plannedKm > 0
+              ? d.plannedKm
+              : estimateSessionKm(d.type, cp, weightKg, dur, d.detail, null, powerPaceTable);
           } else {
-            const shouldBoost = (d.type === 'easy' || d.type === 'long') && strongAthlete;
-            boostedRaw = shouldBoost ? Math.round(rawDur * volumeMultiplier) : rawDur;
+            const rawDur = estimateSessionDuration(d.detail, d.type);
+            // On recovery weeks: never boost, apply 0.7 factor on easy/long to ensure real deload
+            let boostedRaw;
+            if (isRecoveryWeek && (d.type === 'easy' || d.type === 'long')) {
+              boostedRaw = Math.round(rawDur * 0.70); // strict deload for easy/long
+            } else {
+              const shouldBoost = (d.type === 'easy' || d.type === 'long') && strongAthlete;
+              boostedRaw = shouldBoost ? Math.round(rawDur * volumeMultiplier) : rawDur;
+            }
+            dur = Math.max(boostedRaw, minDurByType[d.type] || 0);
+            km = estimateSessionKm(d.type, cp, weightKg, dur, d.detail, null, powerPaceTable);
           }
-          const dur = Math.max(boostedRaw, minDurByType[d.type] || 0);
-          const km = estimateSessionKm(d.type, cp, weightKg, dur, d.detail, null, powerPaceTable);
           d.plannedMin = dur;
           d.plannedKm = km;
           d.plannedTss = estimateSessionTSS(d.type, cp, dur);
@@ -12882,7 +12925,7 @@
     // ========================================================================
     // PLAN GENERATOR MODAL — UI for generating a new plan
     // ========================================================================
-    function PlanGeneratorModal({ profile, races, activities, onGenerate, onCancel }) {
+    function PlanGeneratorModal({ profile, races, activities, sessionTemplates = [], onGenerate, onCancel }) {
       const toast = useToast();
       const futureRaces = (races || []).filter(r => new Date(r.date) >= new Date()).sort((a, b) => new Date(a.date) - new Date(b.date));
       const [mode, setMode] = useState(futureRaces.length > 0 ? 'race' : 'custom');
@@ -12921,6 +12964,7 @@
           raceDate: targetDate, totalWeeks, cp: profile.cp, weightKg: profile.weightKg || 70,
           sessionsPerWeek, addStrength, raceDistance: targetDistance,
           powerPaceTable,
+          userTemplates: sessionTemplates,
         });
         setPreview(plan);
       }
@@ -13044,6 +13088,13 @@
       const totalTSS = preview.weeks.reduce((s, w) => s + (w.stats?.tss || 0), 0);
       const totalHours = preview.weeks.reduce((s, w) => s + (w.stats?.duration || 0), 0) / 60;
 
+      // Count sessions sourced from the user's saved templates (silent replacement)
+      let userTemplatedCount = 0;
+      const userTemplatedTypes = new Set();
+      preview.weeks.forEach(w => Object.values(w.days).forEach(d => {
+        if (d && d.fromUserTemplate) { userTemplatedCount++; userTemplatedTypes.add(d.type); }
+      }));
+
       return (
         <>
           <div className="text-sm mb-4 leading-relaxed" style={{ color: 'var(--text-dim)' }}>
@@ -13065,6 +13116,17 @@
               <div className="font-display text-2xl font-bold tabular" style={{ color: 'var(--accent)' }}>{totalTSS}<span className="font-mono text-[11px] ml-1" style={{ color: 'var(--text-dim)' }} title={TERMS.tss.tooltip}>de charge</span></div>
             </div>
           </div>
+
+          {userTemplatedCount > 0 && (
+            <div className="rounded-lg p-3 mb-4" style={{ background: 'rgba(74,158,255,0.06)', border: '1px solid rgba(74,158,255,0.25)' }}>
+              <div className="flex items-start gap-2">
+                <IconBookOpen size={14} style={{ color: 'var(--compass)', flexShrink: 0, marginTop: 2 }} />
+                <div className="text-xs leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+                  <span style={{ color: 'var(--compass)', fontWeight: 600 }}>{userTemplatedCount} séance{userTemplatedCount > 1 ? 's' : ''}</span> reprennent tes templates sauvegardés{userTemplatedTypes.size > 0 ? ` (${Array.from(userTemplatedTypes).map(t => (SESSION_TYPE_MAP[t]?.l || t).toLowerCase()).join(', ')})` : ''}. La périodisation par phase est conservée pour les types sans template.
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Weeks */}
           <div className="space-y-2 mb-5">
