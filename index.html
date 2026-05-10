@@ -393,6 +393,7 @@
       showStrength: true,     // toggle Renfo program visibility (CTA, suggestions, tab)
       onboardingDone: false,  // flips to true after the welcome wizard (or auto-true for legacy users)
       easyPaceMinPerKm: null, // captured from onboarding for users without a power meter
+      strengthArchetypes: ['pfps_lld'], // archetype IDs from STRENGTH_ARCHETYPES; first one drives the active program
     };
 
     function getProfile() {
@@ -411,6 +412,10 @@
       // Existing users (anyone who already typed a name) skip the welcome wizard.
       if (typeof merged.onboardingDone !== 'boolean') {
         merged.onboardingDone = !!(merged.name && merged.name.trim().length > 0);
+      }
+      // Strength archetype migration: anyone with showStrength enabled before D1 was on PFPS+LLD
+      if (!Array.isArray(merged.strengthArchetypes) || merged.strengthArchetypes.length === 0) {
+        merged.strengthArchetypes = ['pfps_lld'];
       }
       return merged;
     }
@@ -2069,6 +2074,144 @@
     function buildStrengthSession(key, phase) {
       const s = STRENGTH_SESSIONS[key];
       return { ...s, exercises: s.exerciseKeys.map(k => scaleEx(k, phase.multiplier)) };
+    }
+
+    // ========================================================================
+    // STRENGTH ARCHETYPES — modular library, picked from profile.strengthArchetypes
+    // ========================================================================
+    // For D1 we wrap the existing PFPS+LLD content as a single archetype. D2 adds more
+    // (generic_prevention, itband, achilles). Helpers below pick the active archetype's
+    // data; legacy globals (EXERCISES, STRENGTH_SESSIONS, etc.) remain functional for
+    // callers that haven't been routed through getActiveArchetype yet.
+    const STRENGTH_ARCHETYPES = {
+      pfps_lld: {
+        id: 'pfps_lld',
+        name: 'PFPS + LLD',
+        shortName: 'PFPS',
+        description: "Programme dédié à la douleur fémoro-patellaire avec compensation pour dysmétrie de longueur de jambes. Cible : moyen fessier, quadriceps en amplitude limitée, libération du psoas.",
+        targetZones: ['knee_left', 'knee_right'],
+        exercises: EXERCISES,
+        sessions: STRENGTH_SESSIONS,
+        phases: STRENGTH_PHASES,
+        base: STRENGTH_BASE,
+      },
+
+      generic_prevention: {
+        id: 'generic_prevention',
+        name: 'Prévention générique',
+        shortName: 'GÉNÉRIQUE',
+        description: "Renfo polyvalent pour le coureur sans pathologie spécifique. Cible : chaîne postérieure, gainage, fessiers. La base solide de tout coureur.",
+        targetZones: [],
+        exercises: {
+          goblet_squat: { name: 'Goblet squat', subtitle: 'Squat avec haltère devant la poitrine', videoId: 'MeIiIdhvXT4', why: "Force quadriceps + fessiers + gainage. Plus stable qu'un back squat pour démarrer.", steps: ["Tiens un haltère ou kettlebell contre la poitrine, coudes vers le bas.", "Pieds largeur épaules, descends jusqu'à 90° avec dos droit.", "Pousse sur les talons pour remonter."], keyPoint: "Garde la charge proche de la poitrine — ça force le tronc à rester droit.", avoid: "Décharger les talons ou laisser les genoux rentrer." },
+          single_leg_deadlift: { name: 'Soulevé de terre une jambe', subtitle: 'Bascule du tronc, jambe arrière tendue', videoId: 'BJ4y4M_Y2BU', why: "Renforce ischios + grand fessier + équilibre proprioceptif. Indispensable pour la stabilité de la chaîne postérieure du coureur.", steps: ["Debout sur une jambe, l'autre légèrement décollée derrière.", "Bascule le tronc vers l'avant en gardant le dos droit, la jambe arrière s'élève.", "Reviens à la verticale en serrant le fessier."], keyPoint: "Hanche, épaule et cheville arrière forment une ligne quand tu bascules.", avoid: "Plier la jambe arrière ou arrondir le dos." },
+          calf_raise: { name: 'Mollets debout', subtitle: 'Élévation talon, jambes tendues', videoId: 'gE1PJUrbmoM', why: "Travaille gastrocnémien + soleus. Mollets puissants = absorption choc + propulsion course.", steps: ["Debout, pieds largeur hanches, mains sur un appui pour équilibre.", "Monte sur la pointe des pieds, tiens 1 sec.", "Redescends lentement."], keyPoint: "Amplitude maximale en haut. Tempo : 1 sec montée, 1 sec hold, 2 sec descente.", avoid: "Rebondir ou tricher avec les bras." },
+          plank_front: { name: 'Planche frontale', subtitle: 'Gainage avant', videoId: 'pSHjTRCQxIw', why: "Stabilise le tronc, anti-extension lombaire. Un tronc fort = transfert de puissance jambes ↔ bras en course.", steps: ["Coudes au sol sous les épaules, jambes tendues, pointes des pieds.", "Aligne tête, dos, fessier, talons.", "Tiens en respirant calmement."], keyPoint: "Fessiers serrés, nombril rentré. Pas de creux au dos.", avoid: "Bassin qui descend ou monte. Tête qui tombe." },
+          side_plank: { name: 'Planche latérale', subtitle: 'Gainage latéral, active moyen fessier', videoId: 'NXr4Fw8q60o', why: "Active moyen fessier + obliques. Anti-flexion latérale = bassin stable en course unilatérale.", steps: ["Sur le côté, coude sous l'épaule, jambes tendues empilées.", "Soulève le bassin pour aligner cheville → épaule.", "Tiens, puis change de côté."], keyPoint: "Bassin qui monte le plus haut possible. Pas de rotation.", avoid: "Bassin qui s'affaisse vers le sol." },
+          glute_bridge: { name: 'Pont fessier', subtitle: 'Bilatéral, pieds au sol', videoId: 'wPM8icPu6H8', why: "Active grand fessier sans charger les genoux. Indispensable pour neutraliser un quadriceps dominant et un fessier sous-utilisé.", steps: ["Allongé, pieds au sol près des fesses, bras le long du corps.", "Pousse sur les talons pour décoller le bassin, serre les fessiers en haut.", "Redescends sans toucher complètement le sol."], keyPoint: "Le fessier fait le travail, pas les ischios. Sensation cible : haut de la fesse.", avoid: "Cambrer les lombaires en haut ou pousser sur les pointes." },
+        },
+        base: {
+          goblet_squat: { sets: 3, reps: 10, rest: 60 },
+          single_leg_deadlift: { sets: 3, reps: 8, rest: 60, perSide: true },
+          calf_raise: { sets: 3, reps: 15, rest: 30 },
+          plank_front: { sets: 3, duration: 30, rest: 30, type: 'time' },
+          side_plank: { sets: 2, duration: 30, rest: 30, perSide: true, type: 'time' },
+          glute_bridge: { sets: 3, reps: 12, rest: 45 },
+        },
+        sessions: {
+          A: { id: 'A', name: 'SÉANCE A', title: 'Force chaîne postérieure', subtitle: 'Squat, soulevé de terre, mollets', accent: '#D4FF00', duration: 15, exerciseKeys: ['goblet_squat', 'single_leg_deadlift', 'calf_raise'] },
+          B: { id: 'B', name: 'SÉANCE B', title: 'Gainage et fessiers', subtitle: 'Planches, pont fessier — la stabilité du coureur', accent: '#FF8040', duration: 15, exerciseKeys: ['plank_front', 'side_plank', 'glute_bridge'] },
+        },
+        phases: [
+          { id: 1, name: 'Réactivation', shortName: 'PHASE 1', weeks: [1, 3], multiplier: 0.5, theme: "Réveiller la chaîne posterieure et le tronc", sessionsTarget: 2, criterion: 'Tenir la planche frontale 30 secondes sans tremblement.', graduationText: "Le tronc et la chaîne postérieure répondent à la commande. Place à la construction." },
+          { id: 2, name: 'Adaptation', shortName: 'PHASE 2', weeks: [4, 6], multiplier: 0.7, theme: "Le corps absorbe la charge", sessionsTarget: 2, criterion: 'Goblet squat 10 reps fluides, contrôle complet à la descente.', graduationText: "Tendons et muscles ont absorbé la charge initiale. La technique est propre. On charge réellement." },
+          { id: 3, name: 'Construction', shortName: 'PHASE 3', weeks: [7, 12], multiplier: 1.0, theme: "Hypertrophie réelle, ajout d'isométriques", sessionsTarget: 3, criterion: '30 secondes de single-leg balance les yeux fermés sans poser le pied.', graduationText: "La force fonctionnelle est en place. Tu peux tenir un effort isométrique unilatéral. La proprioception suit." },
+          { id: 4, name: 'Unilatéral', shortName: 'PHASE 4', weeks: [13, 20], multiplier: 1.0, theme: "Casser les compensations gauche/droite", sessionsTarget: 3, criterion: 'Écart ressenti gauche/droite ≤ 2/5 sur les exos unilatéraux.', graduationText: "Les déséquilibres latéraux se compensent. Tu cours désormais avec une chaîne plus symétrique." },
+          { id: 5, name: 'Intégration course', shortName: 'PHASE 5', weeks: [21, 32], multiplier: 1.0, theme: "Transfert au geste de course", sessionsTarget: 2, criterion: 'Aucune douleur ou fatigue inhabituelle après sortie longue 3 semaines de suite.', graduationText: "La force se traduit en course : foulée stable, économie améliorée. Tu peux passer en maintenance." },
+          { id: 6, name: 'Maintenance', shortName: 'PHASE 6', weeks: [33, 999], multiplier: 0.9, theme: "Minimum efficace pour ne rien perdre", sessionsTarget: 2, criterion: 'Phase indéfinie — tu maintiens tant que tu cours.', graduationText: null },
+        ],
+      },
+
+      itband: {
+        id: 'itband',
+        name: 'Bandelette IT',
+        shortName: 'ITBS',
+        description: "Programme pour la bandelette ilio-tibiale (ITBS). Faiblesse moyen fessier + bandelette tendue = douleur latérale du genou. Cible : isoler glute med + souplesse hanche.",
+        targetZones: ['itband'],
+        exercises: {
+          clamshell: { name: 'Clamshell élastique', subtitle: 'Fessier moyen isolé', videoId: 'pR1AkgMmcpU', why: "Le moyen fessier empêche le genou de partir en dedans (valgus dynamique). Faiblesse de ce muscle = cause #1 de l'ITBS chez le coureur.", steps: ["Sur le côté, genoux pliés à 45°, élastique au-dessus des genoux.", 'Pieds collés, écarte le genou du dessus sans bouger le bassin.', 'Contrôle la descente.'], keyPoint: 'Le bassin reste stable, ne roule pas en arrière.', avoid: 'Aller vite en perdant la tension.' },
+          side_lying_leg_raise: { name: 'Élévation jambe en latéral', subtitle: 'Moyen fessier dynamique', videoId: 'jgh6sGwtTwk', why: "Isole le moyen fessier en chaîne ouverte. Faiblesse de ce muscle = ITBS classique chez le coureur.", steps: ["Sur le côté, jambe du dessous pliée, jambe du dessus tendue.", "Lève la jambe du dessus à 30-40°, contrôle.", "Redescends sans poser."], keyPoint: "Pied légèrement orienté vers le sol — engage moyen fessier vs. tenseur du fascia lata.", avoid: "Bassin qui bascule en arrière, abducteurs qui font le travail." },
+          monster_walk: { name: 'Monster walk', subtitle: 'Élastique aux genoux ou chevilles', videoId: '13TUgg6JzGw', why: "Active moyen fessier en mouvement latéral. Préparation directe au schéma de course.", steps: ["Élastique au-dessus des genoux, position semi-squat.", "Pas latéraux : 10 à droite, 10 à gauche, sans laisser les genoux se rapprocher.", "Variante avancée : 10 pas avant en zigzag."], keyPoint: "Tension dans l'élastique constante — genoux écartés.", avoid: "Se redresser entre chaque pas." },
+          it_band_stretch: { name: 'Étirement bandelette IT', subtitle: 'Croisement jambe + flexion latérale', videoId: 'qH9F0VOJNwg', why: "Détend la bandelette ilio-tibiale, chronique en cas d'ITBS. À combiner avec le renfo fessier (sans renfo, étirer seul ne marche pas).", steps: ["Debout, jambe douloureuse derrière, croise-la dans le dos.", "Pousse la hanche vers le côté de la jambe douloureuse, bras levé en flexion latérale.", "Tiens 30-45 sec."], keyPoint: "Tu dois sentir l'étirement sur la face latérale de la cuisse.", avoid: "Forcer ou rebondir." },
+          hip_thrust: { name: 'Hip thrust', subtitle: 'Pont fessier dos sur banc', videoId: 'EAm-pLGbNGY', why: "Variante avancée du glute bridge avec amplitude supérieure. Force grand fessier maximale sans charge axiale.", steps: ["Haut du dos appuyé sur un banc, pieds au sol largeur épaules.", "Charge possible sur les hanches (haltère, plaque).", "Pousse les hanches vers le haut jusqu'à aligner épaules-hanches-genoux."], keyPoint: "Menton rentré, regard fixe. Pause 1 sec en haut.", avoid: "Hyperextension lombaire en haut." },
+          glute_bridge: { name: 'Pont fessier', subtitle: 'Bilatéral, pieds au sol', videoId: 'wPM8icPu6H8', why: "Active grand fessier sans charger latéralement la hanche. Complément du travail de moyen fessier.", steps: ["Allongé, pieds au sol près des fesses, bras le long du corps.", "Pousse sur les talons pour décoller le bassin, serre les fessiers en haut.", "Redescends sans toucher complètement le sol."], keyPoint: "Le fessier fait le travail, pas les ischios.", avoid: "Cambrer les lombaires en haut." },
+        },
+        base: {
+          clamshell: { sets: 3, reps: 15, rest: 45, perSide: true },
+          side_lying_leg_raise: { sets: 3, reps: 15, rest: 45, perSide: true },
+          monster_walk: { sets: 2, reps: 10, rest: 60, perSide: true },
+          it_band_stretch: { sets: 2, duration: 45, rest: 15, perSide: true, type: 'time' },
+          hip_thrust: { sets: 3, reps: 12, rest: 60 },
+          glute_bridge: { sets: 3, reps: 12, rest: 45 },
+        },
+        sessions: {
+          A: { id: 'A', name: 'SÉANCE A', title: 'Activation moyen fessier', subtitle: 'Clamshell, leg raise latéral, monster walk', accent: '#D4FF00', duration: 15, exerciseKeys: ['clamshell', 'side_lying_leg_raise', 'monster_walk'] },
+          B: { id: 'B', name: 'SÉANCE B', title: 'Force fessière + souplesse', subtitle: 'Étirement IT, hip thrust, pont fessier', accent: '#FF8040', duration: 15, exerciseKeys: ['it_band_stretch', 'hip_thrust', 'glute_bridge'] },
+        },
+        phases: [
+          { id: 1, name: 'Réactivation', shortName: 'PHASE 1', weeks: [1, 3], multiplier: 0.5, theme: "Réveiller le moyen fessier endormi", sessionsTarget: 2, criterion: 'Sentir la brûlure cible à 8 reps de clamshell sans bouger le bassin.', graduationText: "Tu as réactivé le moyen fessier — c'est lui qui empêche la bandelette de tirer." },
+          { id: 2, name: 'Adaptation', shortName: 'PHASE 2', weeks: [4, 6], multiplier: 0.7, theme: "Tendons et bandelette s'adaptent à la charge", sessionsTarget: 2, criterion: 'Side-lying leg raise 15 reps sans à-coup, des deux côtés.', graduationText: "Le moyen fessier supporte la charge. La bandelette se relâche au repos. On construit." },
+          { id: 3, name: 'Construction', shortName: 'PHASE 3', weeks: [7, 12], multiplier: 1.0, theme: "Hypertrophie réelle du moyen fessier", sessionsTarget: 3, criterion: '30 secondes de single-leg balance avec genou stable, sans valgus.', graduationText: "Ton moyen fessier protège activement le genou. La bandelette ne tire plus à chaque foulée." },
+          { id: 4, name: 'Unilatéral', shortName: 'PHASE 4', weeks: [13, 20], multiplier: 1.0, theme: "Égalisation gauche/droite", sessionsTarget: 3, criterion: 'Écart de force gauche/droite ≤ 2/5 sur le hip thrust unilatéral.', graduationText: "L'asymétrie hanche se compense. Tu n'as plus un côté qui tire plus que l'autre." },
+          { id: 5, name: 'Intégration course', shortName: 'PHASE 5', weeks: [21, 32], multiplier: 1.0, theme: "Transfert au geste de course", sessionsTarget: 2, criterion: 'Aucune douleur ITB après sortie longue 3 semaines de suite.', graduationText: "La force se traduit en course : pas de douleur latérale. Tu peux passer en maintenance." },
+          { id: 6, name: 'Maintenance', shortName: 'PHASE 6', weeks: [33, 999], multiplier: 0.9, theme: "Minimum efficace pour ne rien perdre", sessionsTarget: 2, criterion: 'Phase indéfinie — tu maintiens tant que tu cours.', graduationText: null },
+        ],
+      },
+
+      achilles: {
+        id: 'achilles',
+        name: 'Tendinopathie achilléenne',
+        shortName: 'ACHILLE',
+        description: "Programme pour la tendinopathie d'Achille. Le chargement excentrique du tendon (protocole Alfredson) est le gold standard. Cible : soleus + chargement excentrique progressif.",
+        targetZones: ['achilles_left', 'achilles_right'],
+        exercises: {
+          heel_drop_eccentric: { name: 'Heel drop excentrique', subtitle: 'Protocole Alfredson, descente lente 3 sec', videoId: 'XTV8Y3LmEvo', why: "Le protocole gold standard pour la tendinopathie achilléenne. Le chargement excentrique stimule la réparation du tendon.", steps: ["Sur une marche, pointes des pieds sur le bord, talons dans le vide.", "Monte avec les deux pieds, transfère le poids sur la jambe douloureuse.", "Descends LENTEMENT (3 secondes) le talon en dessous du niveau de la marche."], keyPoint: "La douleur modérée est normale et fait partie du processus. Stop si elle dépasse 5/10.", avoid: "Descendre trop vite — c'est la lenteur qui soigne." },
+          seated_calf_raise: { name: 'Mollets assis', subtitle: 'Genoux à 90°, isole le soleus', videoId: 'gE1PJUrbmoM', why: "Avec genou plié, le gastrocnémien est inactif → seul le soleus travaille. Le soleus est le muscle clé pour la résistance et la course longue.", steps: ["Assis, genoux à 90°, charge sur les cuisses.", "Monte sur la pointe des pieds.", "Tiens 1 sec, redescends."], keyPoint: "Genou à 90° tout le long. Charge progressive — c'est un muscle qui supporte beaucoup.", avoid: "Étendre les jambes pendant la montée." },
+          single_leg_calf_raise: { name: 'Mollets une jambe', subtitle: 'Unilatéral, charge maximale', videoId: 'oeocf4iXz3M', why: "Charge unilatérale = force réelle de chaque côté. Détecte les asymétries dangereuses.", steps: ["Sur une marche, un pied sur le bord, autre jambe levée.", "Monte sur la pointe avec la jambe d'appui.", "Tiens 1 sec, redescends en contrôle."], keyPoint: "Si tu n'arrives pas à 10 reps d'un côté, prends ce côté pour rattraper.", avoid: "Sauter ou utiliser l'élan." },
+          calf_stretch: { name: 'Étirement mollet', subtitle: 'Wall stretch, gastro et soleus', videoId: 'LiI6XVOGpg0', why: "Mollet raide = traction chronique sur l'achille. Étirements quotidiens font partie du protocole tendinopathie.", steps: ["Mains contre le mur, jambe arrière tendue, talon au sol.", "Avance le bassin pour étirer le mollet — gastro version.", "Plie la jambe arrière sans décoller le talon — soleus version."], keyPoint: "30-45 sec par variante. Sensation d'étirement sans douleur aiguë.", avoid: "Décoller le talon — ça enlève l'étirement." },
+          glute_bridge: { name: 'Pont fessier', subtitle: 'Bilatéral, pieds au sol', videoId: 'wPM8icPu6H8', why: "Active grand fessier sans charger l'achille. Décharge la chaîne postérieure pendant que le tendon récupère.", steps: ["Allongé, pieds au sol près des fesses, bras le long du corps.", "Pousse sur les talons pour décoller le bassin, serre les fessiers en haut.", "Redescends sans toucher complètement le sol."], keyPoint: "Le fessier fait le travail, pas les ischios.", avoid: "Cambrer les lombaires en haut." },
+          step_up: { name: 'Step up', subtitle: 'Montée sur boîte, force unilatérale', videoId: 'WCFCdxzFBa4', why: "Force unilatérale + amplitude hanche. Renforce sans charger l'achille en plyo.", steps: ["Devant une marche ou boîte (genou à 90° quand le pied est dessus).", "Pose un pied dessus, pousse pour monter, sans aide de la jambe arrière.", "Redescends en contrôle."], keyPoint: "Garde le poids sur le talon de la jambe qui monte.", avoid: "Aide avec la jambe au sol — triche." },
+        },
+        base: {
+          heel_drop_eccentric: { sets: 3, reps: 15, rest: 60, perSide: true },
+          seated_calf_raise: { sets: 3, reps: 15, rest: 45 },
+          single_leg_calf_raise: { sets: 3, reps: 10, rest: 45, perSide: true },
+          calf_stretch: { sets: 3, duration: 45, rest: 15, perSide: true, type: 'time' },
+          glute_bridge: { sets: 3, reps: 12, rest: 45 },
+          step_up: { sets: 3, reps: 10, rest: 60, perSide: true },
+        },
+        sessions: {
+          A: { id: 'A', name: 'SÉANCE A', title: 'Chargement excentrique', subtitle: 'Heel drop Alfredson, mollets ciblés', accent: '#D4FF00', duration: 15, exerciseKeys: ['heel_drop_eccentric', 'seated_calf_raise', 'single_leg_calf_raise'] },
+          B: { id: 'B', name: 'SÉANCE B', title: 'Souplesse + chaîne globale', subtitle: 'Étirement mollet, fessiers, step up', accent: '#FF8040', duration: 15, exerciseKeys: ['calf_stretch', 'glute_bridge', 'step_up'] },
+        },
+        phases: [
+          { id: 1, name: 'Réactivation', shortName: 'PHASE 1', weeks: [1, 3], multiplier: 0.5, theme: "Tendon réagit en douceur", sessionsTarget: 2, criterion: 'Heel drop bilatéral 10 reps sans douleur > 4/10.', graduationText: "Le tendon supporte la charge initiale. La réparation a démarré." },
+          { id: 2, name: 'Adaptation', shortName: 'PHASE 2', weeks: [4, 6], multiplier: 0.7, theme: "Le tendon prend la charge", sessionsTarget: 2, criterion: 'Heel drop unilatéral 10 reps de chaque côté sans douleur > 4/10.', graduationText: "Le tendon absorbe le chargement excentrique sans flare-up. Place à la charge réelle." },
+          { id: 3, name: 'Construction', shortName: 'PHASE 3', weeks: [7, 12], multiplier: 1.0, theme: "Charge réelle, soleus dominant", sessionsTarget: 3, criterion: 'Single-leg calf raise 15 reps des deux côtés.', graduationText: "Le soleus travaille fort. La résistance long terme est en place. Le tendon a regagné en élasticité." },
+          { id: 4, name: 'Unilatéral', shortName: 'PHASE 4', weeks: [13, 20], multiplier: 1.0, theme: "Casser les asymétries gauche/droite", sessionsTarget: 3, criterion: 'Écart force entre les deux mollets ≤ 2 reps.', graduationText: "Le côté faible a rattrapé. Plus de risque d'asymétrie qui chargerait à nouveau l'achille." },
+          { id: 5, name: 'Intégration course', shortName: 'PHASE 5', weeks: [21, 32], multiplier: 1.0, theme: "Transfert au geste de course (incl. plyo légère)", sessionsTarget: 2, criterion: 'Aucune douleur tendineuse 3 semaines de suite, y compris descentes.', graduationText: "Le tendon supporte la course complète. Tu peux ajouter des séances rapides ou en descente sans flare-up." },
+          { id: 6, name: 'Maintenance', shortName: 'PHASE 6', weeks: [33, 999], multiplier: 0.9, theme: "Minimum efficace pour ne pas perdre", sessionsTarget: 2, criterion: 'Phase indéfinie — tu maintiens tant que tu cours.', graduationText: null },
+        ],
+      },
+    };
+
+    // Returns the active archetype object, falling back to pfps_lld if profile has
+    // no selection (matches the legacy default and Tony's existing setup).
+    function getActiveArchetype(profile) {
+      const ids = (profile && Array.isArray(profile.strengthArchetypes) && profile.strengthArchetypes.length > 0)
+        ? profile.strengthArchetypes
+        : ['pfps_lld'];
+      return STRENGTH_ARCHETYPES[ids[0]] || STRENGTH_ARCHETYPES.pfps_lld;
     }
 
     // ========================================================================
