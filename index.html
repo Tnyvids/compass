@@ -2821,28 +2821,85 @@
               const type = (d.planned && SESSION_TYPE_MAP[d.planned.type]) || SESSION_TYPE_MAP.rest;
               const TypeIcon = type.Icon;
               const isRest = !d.planned || d.planned.type === 'rest';
+
+              // Status-driven visual treatment — 5 states with distinct color coding
+              let bg, borderColor, dayColor, iconColor, labelColor, label, IconNode, glow = '';
+              if (d.isPast && d.hasActivity) {
+                // DONE — green theme, checkmark replaces type icon
+                bg = 'linear-gradient(160deg, rgba(143,232,106,0.18), rgba(143,232,106,0.04))';
+                borderColor = 'rgba(143,232,106,0.45)';
+                dayColor = 'var(--positive)';
+                iconColor = 'var(--positive)';
+                labelColor = 'var(--positive)';
+                label = 'FAIT';
+                IconNode = <IconCheck size={18} strokeWidth={2.5} style={{ color: 'var(--positive)' }} />;
+              } else if (d.isToday) {
+                // TODAY — compass theme with glow, type icon if scheduled
+                bg = 'linear-gradient(160deg, rgba(74,158,255,0.20), rgba(74,158,255,0.04))';
+                borderColor = 'var(--compass)';
+                dayColor = 'var(--compass)';
+                iconColor = isRest ? 'var(--text-dim)' : type.color;
+                labelColor = isRest ? 'var(--text-dim)' : type.color;
+                label = isRest ? 'REPOS' : (shortLabels[d.planned.type] || '').toUpperCase();
+                IconNode = isRest
+                  ? <span style={{ color: 'var(--text-faint)', fontSize: 18, lineHeight: 1 }}>·</span>
+                  : <TypeIcon size={18} style={{ color: type.color }} />;
+                glow = '0 0 0 1px var(--compass), 0 4px 18px rgba(74,158,255,0.22)';
+              } else if (d.isPast && !d.hasActivity && !isRest) {
+                // SKIPPED — dim, no tint
+                bg = 'var(--bg-elev)';
+                borderColor = 'var(--border)';
+                dayColor = 'var(--text-faint)';
+                iconColor = 'var(--text-faint)';
+                labelColor = 'var(--text-faint)';
+                label = (shortLabels[d.planned.type] || '').toUpperCase();
+                IconNode = <TypeIcon size={16} style={{ color: 'var(--text-faint)' }} />;
+              } else if (!isRest) {
+                // FUTURE SCHEDULED — type color tint
+                bg = `${type.color}10`;
+                borderColor = `${type.color}40`;
+                dayColor = 'var(--text)';
+                iconColor = type.color;
+                labelColor = type.color;
+                label = (shortLabels[d.planned.type] || '').toUpperCase();
+                IconNode = <TypeIcon size={16} style={{ color: type.color }} />;
+              } else {
+                // REST (past or future, no activity)
+                bg = 'var(--bg-elev)';
+                borderColor = 'var(--border)';
+                dayColor = 'var(--text-faint)';
+                iconColor = 'var(--text-faint)';
+                labelColor = 'var(--text-faint)';
+                label = 'REPOS';
+                IconNode = <span style={{ color: 'var(--text-faint)', fontSize: 18, lineHeight: 1 }}>·</span>;
+              }
+
               return (
                 <button
                   key={i}
                   onClick={() => onNav('plan')}
-                  className="rounded-lg p-2 md:p-2.5 flex flex-col items-center text-center transition hover:scale-105"
+                  className="rounded-lg p-2 md:p-2.5 flex flex-col items-center text-center transition hover:scale-105 relative overflow-hidden"
                   style={{
-                    background: d.isToday ? 'rgba(74, 158, 255, 0.10)' : 'var(--bg-elev)',
-                    border: `1px solid ${d.isToday ? 'var(--compass)' : 'var(--border)'}`,
-                    opacity: d.isPast && !d.hasActivity ? 0.5 : 1,
-                    minHeight: 90,
+                    background: bg,
+                    border: `1px solid ${borderColor}`,
+                    minHeight: 100,
+                    boxShadow: glow,
                   }}
                 >
-                  <div className="t-meta-dim mb-1" style={{ color: d.isToday ? 'var(--compass)' : 'var(--text-faint)', fontSize: 10 }}>
-                    {dayShort[i]} {d.date.getDate()}
+                  <div className="font-mono leading-none" style={{ color: dayColor, fontSize: 9, letterSpacing: '0.12em', fontWeight: 700 }}>{dayShort[i]}</div>
+                  <div className="font-display font-bold tabular leading-none mt-1" style={{ color: dayColor, fontSize: 18 }}>{d.date.getDate()}</div>
+                  <div className="mt-2 mb-1 flex items-center justify-center" style={{ height: 22 }}>
+                    {IconNode}
                   </div>
-                  <div className="mb-1 flex items-center justify-center" style={{ height: 18 }}>
-                    {isRest ? <span style={{ color: 'var(--text-faint)', fontSize: 14 }}>·</span> : <TypeIcon size={16} style={{ color: type.color }} />}
+                  <div className="leading-tight font-mono tracking-widest" style={{ color: labelColor, fontSize: 9, fontWeight: 600 }}>
+                    {label}
                   </div>
-                  <div className="leading-tight" style={{ color: type.color, fontSize: 10, fontWeight: 600 }}>
-                    {!isRest ? shortLabels[d.planned.type] : ''}
-                  </div>
-                  {d.hasActivity && <div className="mt-auto pt-1.5"><div className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--positive)' }} /></div>}
+                  {/* Today + already done: small check badge in corner */}
+                  {d.isToday && d.hasActivity && (
+                    <div className="absolute" style={{ top: 4, right: 4, width: 14, height: 14, borderRadius: '50%', background: 'var(--positive)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <IconCheck size={9} strokeWidth={3} style={{ color: '#000' }} />
+                    </div>
+                  )}
                 </button>
               );
             })}
