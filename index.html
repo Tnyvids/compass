@@ -208,6 +208,32 @@
     .lift { transition: transform 0.2s, background 0.2s, border-color 0.2s, box-shadow 0.2s; }
     .lift:hover { transform: translateY(-2px); }
 
+    /* PLAN VIEW — day cards: subtle lift on hover, tactile click */
+    .plan-day-card { transition: transform 0.2s ease, box-shadow 0.25s ease, border-color 0.2s ease, background 0.3s ease; will-change: transform; }
+    .plan-day-card:hover { transform: translateY(-3px) scale(1.015); box-shadow: 0 10px 28px rgba(0,0,0,0.28); }
+    .plan-day-card:active { transform: translateY(-1px) scale(0.99); transition-duration: 80ms; }
+    .plan-day-card:focus-visible { outline: 2px solid var(--compass); outline-offset: 2px; }
+
+    /* PLAN VIEW — mini-month: row highlight + per-day tap response */
+    .plan-mini-row { transition: background 0.2s ease, box-shadow 0.25s ease, border-color 0.2s ease; }
+    .plan-mini-day { transition: background 0.15s ease, transform 0.12s ease; border: 0; }
+    .plan-mini-day:hover { background: var(--bg-elev) !important; transform: scale(1.08); }
+    .plan-mini-day:active { transform: scale(0.94); }
+
+    /* PLAN VIEW — week pill scroller hides its scrollbar */
+    .plan-pill-scroll { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+    .plan-pill-scroll::-webkit-scrollbar { height: 6px; }
+    .plan-pill-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .plan-week-pill { transition: transform 0.15s ease, box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease; cursor: pointer; }
+    .plan-week-pill:hover { transform: translateY(-2px); border-color: var(--compass) !important; box-shadow: 0 6px 18px rgba(74,158,255,0.18); }
+    .plan-week-pill:active { transform: translateY(0); }
+
+    /* Plan grid — month rail collapses below the week card on narrow viewports */
+    @media (max-width: 1023px) {
+      .plan-grid-2col { grid-template-columns: 1fr !important; }
+      .plan-month-mini { position: relative !important; top: auto !important; }
+    }
+
     /* Removed: ambient orbs (too maximalist for clinical) */
     .orb { display: none !important; }
 
@@ -331,19 +357,21 @@
     // ========================================================================
     // INJURY ZONES — universal list used by InjuryRiskCard, CheckinFlow, profile editor
     // ========================================================================
+    // `base` is the side-agnostic noun used in headlines ("RISQUE GENOU"); `short` keeps the
+    // L/R suffix for places where side disambiguation matters (chip lists, multi-zone summaries).
     const INJURY_ZONES = [
-      { key: 'knee_left',       label: 'Genou gauche',          short: 'Genou G' },
-      { key: 'knee_right',      label: 'Genou droit',           short: 'Genou D' },
-      { key: 'achilles_left',   label: "Tendon d'Achille gauche", short: 'Achille G' },
-      { key: 'achilles_right',  label: "Tendon d'Achille droit",  short: 'Achille D' },
-      { key: 'hip',             label: 'Hanche',                short: 'Hanche' },
-      { key: 'itband',          label: 'Bandelette IT',         short: 'IT' },
-      { key: 'plantar_left',    label: 'Plantaire gauche',      short: 'Plantaire G' },
-      { key: 'plantar_right',   label: 'Plantaire droit',       short: 'Plantaire D' },
-      { key: 'lower_back',      label: 'Lombaires',             short: 'Lombaires' },
-      { key: 'shin',            label: 'Tibia / périostite',    short: 'Tibia' },
-      { key: 'hamstring',       label: 'Ischio-jambier',        short: 'Ischio' },
-      { key: 'calf',            label: 'Mollet',                short: 'Mollet' },
+      { key: 'knee_left',       label: 'Genou gauche',          short: 'Genou G',     base: 'Genou' },
+      { key: 'knee_right',      label: 'Genou droit',           short: 'Genou D',     base: 'Genou' },
+      { key: 'achilles_left',   label: "Tendon d'Achille gauche", short: 'Achille G', base: 'Achille' },
+      { key: 'achilles_right',  label: "Tendon d'Achille droit",  short: 'Achille D', base: 'Achille' },
+      { key: 'hip',             label: 'Hanche',                short: 'Hanche',      base: 'Hanche' },
+      { key: 'itband',          label: 'Bandelette IT',         short: 'IT',          base: 'Bandelette IT' },
+      { key: 'plantar_left',    label: 'Plantaire gauche',      short: 'Plantaire G', base: 'Plantaire' },
+      { key: 'plantar_right',   label: 'Plantaire droit',       short: 'Plantaire D', base: 'Plantaire' },
+      { key: 'lower_back',      label: 'Lombaires',             short: 'Lombaires',   base: 'Lombaires' },
+      { key: 'shin',            label: 'Tibia / périostite',    short: 'Tibia',       base: 'Tibia' },
+      { key: 'hamstring',       label: 'Ischio-jambier',        short: 'Ischio',      base: 'Ischio' },
+      { key: 'calf',            label: 'Mollet',                short: 'Mollet',      base: 'Mollet' },
     ];
     const INJURY_ZONE_MAP = INJURY_ZONES.reduce((m, z) => { m[z.key] = z; return m; }, {});
 
@@ -2706,7 +2734,7 @@
     // ========================================================================
     // TODAY VIEW — Readiness + planned session + quick actions
     // ========================================================================
-    function TodayView({ profile, checkins, todayCheckin, activities, strengthSessions = [], races, plannedSession, planOverrides, onCheckinStart, onCheckinView, onImport, onStrengthStart, onAddRace, onNav, coachVerdict }) {
+    function TodayView({ profile, checkins, todayCheckin, activities, strengthSessions = [], races, plannedSession, planOverrides, onCheckinStart, onCheckinView, onImport, onStrengthStart, onAddRace, onNav, onOpenPlanDay, coachVerdict }) {
       const now = new Date();
       const dayLabel = DAYS_FR_LONG[now.getDay()];
       const dateLabel = `${String(now.getDate()).padStart(2, '0')} ${MONTHS_FR[now.getMonth()]}`;
@@ -2782,7 +2810,7 @@
           {plannedSession && plannedSession.type !== 'rest' ? (
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-3 mb-3">
               <div className="lg:col-span-3 lg:order-2">
-                <PlannedSessionCard session={nextPlannedInfo?.session} sessionDate={nextPlannedInfo?.date} daysAhead={nextPlannedInfo?.daysAhead} advice={advice} profile={profile} onStrengthStart={onStrengthStart} activities={activities} checkins={checkins} showWeather />
+                <PlannedSessionCard session={nextPlannedInfo?.session} sessionDate={nextPlannedInfo?.date} daysAhead={nextPlannedInfo?.daysAhead} advice={advice} profile={profile} onStrengthStart={onStrengthStart} activities={activities} checkins={checkins} showWeather onOpenInPlan={onOpenPlanDay} />
               </div>
               <div className="lg:col-span-2 lg:order-1">
                 {!todayCheckin ? <ReadinessEmpty onStart={onCheckinStart} /> : <ReadinessFilled checkin={todayCheckin} advice={advice} onView={onCheckinView} onRedo={onCheckinStart} />}
@@ -2790,7 +2818,7 @@
             </div>
           ) : (
             <div className="mb-3">
-              <PlannedSessionCard session={nextPlannedInfo?.session} sessionDate={nextPlannedInfo?.date} daysAhead={nextPlannedInfo?.daysAhead} advice={advice} profile={profile} onStrengthStart={onStrengthStart} activities={activities} checkins={checkins} showWeather />
+              <PlannedSessionCard session={nextPlannedInfo?.session} sessionDate={nextPlannedInfo?.date} daysAhead={nextPlannedInfo?.daysAhead} advice={advice} profile={profile} onStrengthStart={onStrengthStart} activities={activities} checkins={checkins} showWeather onOpenInPlan={onOpenPlanDay} />
             </div>
           )}
 
@@ -2910,10 +2938,12 @@
       // Dynamic title from user's tracked zones (Profile > Santé). Empty means card shouldn't render
       // (caller handles that), but we keep a defensive fallback here.
       const zones = (profile && Array.isArray(profile.injuryZones)) ? profile.injuryZones : [];
+      // Title uses the side-agnostic `base` ("Genou", not "Genou G") so the headline reads
+      // cleanly. Side detail still surfaces in the sub-label / decomposition.
       const cardTitle = zones.length === 0
         ? 'RISQUE BLESSURE'
         : zones.length === 1
-          ? `RISQUE ${(INJURY_ZONE_MAP[zones[0]]?.short || INJURY_ZONE_MAP[zones[0]]?.label || 'BLESSURE').toUpperCase()}`
+          ? `RISQUE ${(INJURY_ZONE_MAP[zones[0]]?.base || INJURY_ZONE_MAP[zones[0]]?.short || INJURY_ZONE_MAP[zones[0]]?.label || 'BLESSURE').toUpperCase()}`
           : 'RISQUE BLESSURE';
       const zoneSubLabel = zones.length > 1
         ? zones.map(k => INJURY_ZONE_MAP[k]?.short || k).join(' · ')
@@ -2945,10 +2975,14 @@
           : 'Tes zones surveillées sont en zone safe. Continue exactement ce que tu fais.';
       }
 
+      // Card is clickable → opens the full ACWR projection / risk breakdown in Analytics.
+      // Inner buttons (action CTA + detail toggle) stopPropagation so they keep their own behavior.
+      const openDetails = () => onNav && onNav('analytics');
+
       // Compact one-line render in safe zone — keeps the indicator present without taking space
       if (zone === 'low') {
         return (
-          <Card className="p-3 mb-4" accent={zoneColor}>
+          <Card className="p-3 mb-4" accent={zoneColor} onClick={openDetails} style={{ cursor: 'pointer' }} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetails(); } }}>
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div className="flex items-baseline gap-2 min-w-0 flex-wrap">
                 <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>{cardTitle}</div>
@@ -2958,14 +2992,14 @@
                 </div>
                 <div className="font-mono text-[10px] tracking-widest" style={{ color: zoneColor }}>· {zoneLabel}</div>
               </div>
-              <div className="font-mono text-[9px] tracking-widest hidden sm:block" style={{ color: 'var(--text-faint)' }}>CONTINUE COMME ÇA</div>
+              <div className="font-mono text-[9px] tracking-widest hidden sm:block flex items-center gap-1" style={{ color: 'var(--text-faint)' }}>DÉTAILS <IconArrowRight size={10} /></div>
             </div>
           </Card>
         );
       }
 
       return (
-        <Card className="p-5 mb-4" accent={zoneColor}>
+        <Card className="p-5 mb-4" accent={zoneColor} onClick={openDetails} style={{ cursor: 'pointer' }} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetails(); } }}>
           <div className="flex items-center justify-between gap-4 flex-wrap">
             <div className="flex items-center gap-4 min-w-0">
               <div className="flex-shrink-0">
@@ -3232,7 +3266,7 @@
               return (
                 <button
                   key={i}
-                  onClick={() => onNav('plan')}
+                  onClick={() => onNav('plan', { date: d.date })}
                   className="rounded-lg p-2 md:p-2.5 flex flex-col items-center text-center transition hover:scale-105 relative overflow-hidden"
                   style={{
                     background: bg,
@@ -3314,10 +3348,12 @@
       );
     }
 
-    function PlannedSessionCard({ session, sessionDate, daysAhead, advice, profile, onStrengthStart, activities, checkins, showWeather = false }) {
+    function PlannedSessionCard({ session, sessionDate, daysAhead, advice, profile, onStrengthStart, activities, checkins, showWeather = false, onOpenInPlan = null }) {
       const [showZones, setShowZones] = useState(false);
       const [showAllInsights, setShowAllInsights] = useState(false);
       const [showDetail, setShowDetail] = useState(false);
+      // Stop click bubbling from internal interactive elements so the card-level open-in-plan handler doesn't fire
+      const stop = (e) => e.stopPropagation();
       if (!session) {
         return (
           <Card className="p-7 h-full min-h-[280px] flex flex-col justify-center items-center text-center">
@@ -4294,6 +4330,152 @@
     // ========================================================================
     // PLAN VIEW — Calendar, races, current week visualization, roadmap
     // ========================================================================
+    // ========================================================================
+    // PLAN MONTH MINI — compact month-grid navigator sitting next to the big
+    // week card. Each date is clickable; hovering a date previews the week it
+    // belongs to. The active week is highlighted as a full row pill so the
+    // user always sees where they are in the month.
+    // ========================================================================
+    function PlanMonthMini({ displayedWeekStart, baseWeekStart, planOverrides, profile, activities, onPickDate }) {
+      const [viewMonth, setViewMonth] = useState(() => {
+        const d = new Date(displayedWeekStart);
+        return new Date(d.getFullYear(), d.getMonth(), 1);
+      });
+      // Keep month in view when the displayed week moves to another month
+      useEffect(() => {
+        const ws = new Date(displayedWeekStart);
+        const start = new Date(viewMonth);
+        const end = new Date(viewMonth); end.setMonth(end.getMonth() + 1);
+        if (ws < start || ws >= end) setViewMonth(new Date(ws.getFullYear(), ws.getMonth(), 1));
+      }, [displayedWeekStart]);
+
+      const MONTHS = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
+      const today = new Date(); today.setHours(0,0,0,0);
+      const displayedWsTime = new Date(displayedWeekStart).getTime();
+
+      // Build 6 rows × 7 days starting from Monday of the week containing the 1st
+      const firstOfMonth = new Date(viewMonth);
+      const gridStart = getWeekStart(firstOfMonth);
+      const weeks = [];
+      for (let w = 0; w < 6; w++) {
+        const row = [];
+        for (let i = 0; i < 7; i++) {
+          const d = new Date(gridStart);
+          d.setDate(gridStart.getDate() + w * 7 + i);
+          row.push(d);
+        }
+        weeks.push(row);
+      }
+      // Trim trailing empty week if it spills entirely into next month and no session is planned
+      while (weeks.length > 4 && weeks[weeks.length - 1].every(d => d.getMonth() !== viewMonth.getMonth())) {
+        weeks.pop();
+      }
+
+      // Quick lookup: does this date have a planned session? Activity done?
+      const sessionColorOn = (d) => {
+        const planned = getPlannedSession(profile, planOverrides, d);
+        if (!planned || planned.type === 'rest') return null;
+        return SESSION_TYPE_MAP[planned.type]?.color || null;
+      };
+      const hasActivityOn = (d) => {
+        const ds = new Date(d); ds.setHours(0,0,0,0);
+        const de = new Date(ds); de.setDate(de.getDate() + 1);
+        return (activities || []).some(a => a.startMs >= ds.getTime() && a.startMs < de.getTime() && (a.distanceMeters || 0) > 500);
+      };
+
+      const goPrevMonth = () => setViewMonth(new Date(viewMonth.getFullYear(), viewMonth.getMonth() - 1, 1));
+      const goNextMonth = () => setViewMonth(new Date(viewMonth.getFullYear(), viewMonth.getMonth() + 1, 1));
+      const goToday = () => {
+        setViewMonth(new Date(today.getFullYear(), today.getMonth(), 1));
+        onPickDate(today);
+      };
+
+      return (
+        <Card className="p-5 md:p-6 plan-month-mini">
+          <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+            <div className="flex items-center gap-3">
+              <button onClick={goPrevMonth} className="btn lift w-9 h-9 rounded-full flex items-center justify-center" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }} aria-label="Mois précédent"><IconChevronLeft size={14} /></button>
+              <div>
+                <div className="font-mono text-[10px] tracking-widest mb-0.5" style={{ color: 'var(--text-faint)' }}>CALENDRIER</div>
+                <div className="font-display text-xl md:text-2xl font-bold leading-none">{MONTHS[viewMonth.getMonth()]} <span style={{ color: 'var(--text-dim)' }}>{viewMonth.getFullYear()}</span></div>
+              </div>
+              <button onClick={goNextMonth} className="btn lift w-9 h-9 rounded-full flex items-center justify-center" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }} aria-label="Mois suivant"><IconChevronRight size={14} /></button>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button onClick={goToday} className="btn lift px-3 py-2 rounded-lg font-mono text-[10px] tracking-widest flex items-center gap-1" style={{ background: 'var(--compass-dim)', color: 'var(--compass)', border: '1px solid rgba(74,158,255,0.3)' }}>
+                <IconTarget size={11} /> AUJOURD'HUI
+              </button>
+              <div className="flex items-center gap-3 font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>
+                <span className="flex items-center gap-1"><span style={{ width: 5, height: 5, borderRadius: 999, background: 'var(--positive)' }} />FAIT</span>
+                <span className="flex items-center gap-1"><span style={{ width: 5, height: 5, borderRadius: 999, background: 'var(--compass)' }} />PRÉVU</span>
+                <span className="hidden sm:flex items-center gap-1"><span style={{ width: 14, height: 8, borderRadius: 3, background: 'linear-gradient(160deg, rgba(74,158,255,0.45), rgba(74,158,255,0.1))', border: '1px solid var(--compass)' }} />SEMAINE EN COURS</span>
+              </div>
+            </div>
+          </div>
+          <div className="grid grid-cols-7 gap-1 mb-1.5">
+            {['LUN','MAR','MER','JEU','VEN','SAM','DIM'].map((dl, i) => (
+              <div key={i} className="font-mono text-[10px] text-center py-1" style={{ color: 'var(--text-faint)', letterSpacing: '0.14em' }}>{dl}</div>
+            ))}
+          </div>
+          <div className="flex flex-col gap-1.5">
+            {weeks.map((row, wi) => {
+              const rowWs = getWeekStart(row[0]).getTime();
+              const isActiveRow = rowWs === displayedWsTime;
+              return (
+                <button
+                  key={wi}
+                  type="button"
+                  onClick={() => onPickDate(row[0])}
+                  className="grid grid-cols-7 gap-1 rounded-xl p-1 plan-mini-row w-full text-left"
+                  style={{
+                    background: isActiveRow ? 'linear-gradient(160deg, rgba(74,158,255,0.22), rgba(74,158,255,0.04) 80%)' : 'transparent',
+                    border: isActiveRow ? '1px solid var(--compass)' : '1px solid transparent',
+                    boxShadow: isActiveRow ? '0 0 0 1px rgba(74,158,255,0.15), 0 6px 22px rgba(74,158,255,0.18)' : 'none',
+                    cursor: 'pointer',
+                  }}
+                  title={isActiveRow ? 'Semaine affichée ci-dessous' : 'Voir cette semaine en grand'}
+                >
+                  {row.map((d, i) => {
+                    const inMonth = d.getMonth() === viewMonth.getMonth();
+                    const isToday = d.getTime() === today.getTime();
+                    const sessColor = sessionColorOn(d);
+                    const done = hasActivityOn(d);
+                    return (
+                      <span
+                        key={i}
+                        onClick={(e) => { e.stopPropagation(); onPickDate(d); }}
+                        className="plan-mini-day relative rounded-lg flex flex-col items-center justify-center"
+                        style={{
+                          aspectRatio: '1.2/1',
+                          minHeight: 44,
+                          background: isToday ? 'var(--compass)' : (sessColor && inMonth ? `color-mix(in oklab, ${sessColor} 12%, transparent)` : 'transparent'),
+                          color: isToday ? '#000' : (inMonth ? 'var(--text)' : 'var(--text-faint)'),
+                          opacity: inMonth ? 1 : 0.4,
+                          fontWeight: isActiveRow || isToday ? 700 : 500,
+                          cursor: 'pointer',
+                        }}
+                        title={fmtDate(d, true)}
+                      >
+                        <span className="font-display tabular leading-none" style={{ fontSize: 15 }}>{d.getDate()}</span>
+                        {(sessColor || done) && (
+                          <span className="absolute flex items-center gap-0.5" style={{ bottom: 4 }}>
+                            <span style={{ width: 5, height: 5, borderRadius: 999, background: done ? 'var(--positive)' : sessColor, opacity: isToday ? 1 : 0.9 }} />
+                          </span>
+                        )}
+                      </span>
+                    );
+                  })}
+                </button>
+              );
+            })}
+          </div>
+          <div className="mt-3 pt-3 border-t font-mono text-[10px] tracking-widest text-center" style={{ borderColor: 'var(--border)', color: 'var(--text-faint)' }}>
+            CLIQUE UNE SEMAINE OU UN JOUR POUR L'AFFICHER EN GRAND ↓
+          </div>
+        </Card>
+      );
+    }
+
     function WeekStatsStrip({ weekDays, profile, activities }) {
       const powerPaceTable = useMemo(() => buildPowerPaceTable(activities || []), [activities]);
 
@@ -4375,20 +4557,31 @@
               <div className="font-mono text-xs mt-1" style={{ color: 'var(--text-faint)' }}>faites / prévues</div>
             </div>
           </div>
-          <div className="mt-3 pt-3 border-t text-xs font-mono leading-relaxed" style={{ borderColor: 'var(--border)', color: 'var(--text-faint)' }}>
-            Prévu = durée parsée depuis les détails (ou saisie dans l'éditeur) · km = durée × ton allure historique au niveau de watts ciblé · TSS = durée × intensité²
-          </div>
         </div>
       );
     }
 
-    function PlanView({ profile, races, checkins, activities, strengthSessions, strengthStart, planOverrides, sessionTemplates, onSaveTemplate, onApplyTemplate, onImportActivity, onViewActivity, onSavePlanWeek, onGeneratePlan, onAddRace, onRemoveRace, onSaveProfile, onStrengthStart, onResetStrengthStart, onClearStrengthHistory }) {
+    function PlanView({ profile, races, checkins, activities, strengthSessions, strengthStart, planOverrides, planJumpTarget, onConsumePlanJump, sessionTemplates, onSaveTemplate, onApplyTemplate, onImportActivity, onViewActivity, onSavePlanWeek, onGeneratePlan, onAddRace, onRemoveRace, onSaveProfile, onStrengthStart, onResetStrengthStart, onClearStrengthHistory }) {
       const dialog = useDialog();
       const toast = useToast();
       const [editingWeek, setEditingWeek] = useState(null);  // legacy modal mode (kept as fallback)
       const [editingInlineDay, setEditingInlineDay] = useState(null);  // {wsKey, dayKey} when inline-editing
       const [weekOffset, setWeekOffset] = useState(0);
       const [generatorOpen, setGeneratorOpen] = useState(false);
+      // Jump to a specific planned day when navigated from elsewhere (e.g. Aujourd'hui → week strip)
+      useEffect(() => {
+        if (!planJumpTarget) return;
+        const target = new Date(planJumpTarget.dateMs);
+        const targetWeekStart = getWeekStart(target);
+        const baseWS = getWeekStart(new Date());
+        const offset = Math.round((targetWeekStart.getTime() - baseWS.getTime()) / (7 * 24 * 3600 * 1000));
+        const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
+        const dayIdx = (target.getDay() + 6) % 7;
+        const tWsKey = `${targetWeekStart.getFullYear()}-${String(targetWeekStart.getMonth() + 1).padStart(2, '0')}-${String(targetWeekStart.getDate()).padStart(2, '0')}`;
+        setWeekOffset(offset);
+        setEditingInlineDay({ wsKey: tWsKey, dayKey: dayKeys[dayIdx] });
+        if (onConsumePlanJump) onConsumePlanJump();
+      }, [planJumpTarget]);
       const [showRaceTimeline, setShowRaceTimeline] = useState(false);
       const buildDeletedWeek = () => ({
         lun: { type: 'rest', label: 'Repos', detail: '', strengthToday: null, plannedKm: null, plannedMin: null },
@@ -4509,91 +4702,235 @@
             </Card>
           )}
 
-          {/* Current week */}
-          <Card className="p-6 md:p-8 mb-4">
-            <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
-              <div className="flex items-center gap-3">
-                <button onClick={() => setWeekOffset(weekOffset - 1)} className="btn w-9 h-9 rounded-full flex items-center justify-center" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}><IconChevronLeft size={16} /></button>
-                <div>
-                  <div className="font-display text-xl md:text-2xl font-bold">{weekOffset === 0 ? 'Cette semaine' : weekOffset === -1 ? 'Semaine dernière' : weekOffset === 1 ? 'Semaine prochaine' : `Semaine ${weekOffset > 0 ? '+' : ''}${weekOffset}`}</div>
-                  <div className="text-xs mt-1 font-mono tabular" style={{ color: 'var(--text-dim)' }}>{fmtDate(displayedWeekStart)} → {fmtDate(new Date(displayedWeekStart.getTime() + 6*86400000))} {weekIdx ? `· Semaine ${weekIdx}/${profile.planTotalWeeks}` : ''}</div>
-                </div>
-                <button onClick={() => setWeekOffset(weekOffset + 1)} className="btn w-9 h-9 rounded-full flex items-center justify-center" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}><IconChevronRight size={16} /></button>
-              </div>
-              <div className="flex gap-2">
-                {weekOffset !== 0 && <button onClick={() => setWeekOffset(0)} className="btn px-3 py-2 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)' }}>AUJOURD'HUI</button>}
-                <button
-                  onClick={async () => {
-                    const ok = await dialog.confirm({ title: 'Supprimer toutes les séances prévues de cette semaine ?', danger: true, confirmLabel: 'Supprimer' });
-                    if (ok) onSavePlanWeek(wsKey, buildDeletedWeek());
-                  }}
-                  className="btn-base btn-danger btn-sm"
-                >
-                  <IconTrash size={12} /> Supprimer la semaine
-                </button>
-                <div className="flex items-center gap-1.5 px-3 py-2 rounded-lg t-meta" style={{ background: 'var(--compass-dim)', color: 'var(--compass)', border: '1px solid rgba(74, 158, 255, 0.3)' }}>
-                  <IconSettings size={12} /> CLIQUE SUR UN JOUR POUR ÉDITER
-                </div>
-              </div>
-            </div>
-            <WeekStatsStrip weekDays={weekDays} profile={profile} activities={activities} />
-            <div className="grid grid-cols-2 md:grid-cols-7 gap-2 md:gap-3">
-              {weekDays.map((d, i) => {
-                const planned = d.planned;
-                const typeColor = planned ? ({ rest: 'var(--text-faint)', easy: 'var(--go)', tempo: 'var(--warn)', intervals: 'var(--alert)', long: 'var(--compass)', test: 'var(--danger)' }[planned.type] || 'var(--text-dim)') : 'var(--text-faint)';
-                const hasActivity = d.activities.length > 0;
-                const hasStrength = d.strength.length > 0;
-                const plannedStrength = planned?.strengthToday;
-                const totalKm = d.activities.reduce((s, a) => s + (a.distanceMeters || 0), 0) / 1000;
-                return (
-                  <button
-                    key={i}
-                    onClick={() => {
-                      // Compute dayKey from the date (mon=lun, tue=mar...)
-                      const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
-                      const dayIdx = (d.date.getDay() + 6) % 7;
-                      setEditingInlineDay({ wsKey, dayKey: dayKeys[dayIdx] });
-                    }}
-                    className="rounded-lg p-3 md:p-4 min-h-[140px] flex flex-col text-left transition-all hover:scale-[1.02]"
-                    style={{ background: d.isToday ? 'rgba(74, 158, 255, 0.08)' : 'var(--bg-elev)', border: d.isToday ? '1px solid var(--compass)' : '1px solid var(--border)', cursor: 'pointer' }}
-                    title="Cliquer pour éditer cette séance"
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="font-mono text-[10px] tracking-widest" style={{ color: d.isToday ? 'var(--compass)' : 'var(--text-faint)' }}>{DAYS_FR[d.date.getDay()].toUpperCase()} {String(d.date.getDate()).padStart(2, '0')}</div>
-                      <div className="flex items-center gap-1">
-                        {hasActivity && <div className="w-4 h-4 rounded-full flex items-center justify-center" title={`${totalKm.toFixed(1)}km couru`} style={{ background: 'var(--go)', color: '#000' }}><IconCheck size={10} strokeWidth={3} /></div>}
-                        {hasStrength && d.strength.map((s, si) => (<div key={si} className="w-4 h-4 rounded-full flex items-center justify-center font-mono text-[8px] font-bold" title={`Renfo ${s.type} réalisé`} style={{ background: STRENGTH_SESSIONS[s.type].accent, color: '#000' }}>{s.type}</div>))}
-                        {!hasStrength && plannedStrength && <div className="w-4 h-4 rounded flex items-center justify-center font-mono text-[8px] font-bold" title={`Renfo ${plannedStrength} prévu`} style={{ border: `1px dashed ${STRENGTH_SESSIONS[plannedStrength].accent}`, color: STRENGTH_SESSIONS[plannedStrength].accent }}>{plannedStrength}</div>}
+          {/* Plan grid — big week card on the left, month mini-calendar on the right.
+              The mini-cal exposes 4-6 weeks at once; clicking any date jumps the big card
+              to that week. Arrows are kept as a fallback but the calendar is the primary nav. */}
+          <div className="mb-4">
+            <Card className="p-5 md:p-7 plan-week-card" style={{ position: 'relative', overflow: 'hidden' }}>
+              {/* Ambient glow — picks up the dominant session color of the displayed week */}
+              {(() => {
+                const planned = weekDays.map(d => d.planned).filter(p => p && p.type !== 'rest');
+                const dominant = planned[0]?.type || 'easy';
+                const c = SESSION_TYPE_MAP[dominant]?.color || 'var(--compass)';
+                return <div className="pointer-events-none absolute inset-0" style={{ background: `radial-gradient(900px 240px at 0% 0%, ${c}14, transparent 60%)` }} />;
+              })()}
+              <div className="relative">
+                <div className="flex items-end justify-between mb-5 flex-wrap gap-3">
+                  <div className="flex items-center gap-3">
+                    <button onClick={() => setWeekOffset(weekOffset - 1)} className="btn lift w-10 h-10 rounded-full flex items-center justify-center" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }} aria-label="Semaine précédente"><IconChevronLeft size={16} /></button>
+                    <div>
+                      <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--compass)' }}>
+                        {weekOffset === 0 ? 'EN COURS' : weekOffset < 0 ? `IL Y A ${-weekOffset} SEM` : `DANS ${weekOffset} SEM`}
+                        {weekIdx ? ` · SEMAINE ${weekIdx}/${profile.planTotalWeeks}` : ''}
                       </div>
+                      <div className="font-display text-2xl md:text-3xl font-bold leading-tight">{weekOffset === 0 ? 'Cette semaine' : weekOffset === -1 ? 'Semaine dernière' : weekOffset === 1 ? 'Semaine prochaine' : `Semaine ${weekOffset > 0 ? '+' : ''}${weekOffset}`}</div>
+                      <div className="text-xs mt-1 font-mono tabular" style={{ color: 'var(--text-dim)' }}>{fmtDate(displayedWeekStart)} → {fmtDate(new Date(displayedWeekStart.getTime() + 6*86400000))}</div>
                     </div>
-                    {planned && planned.type !== 'rest' ? (
-                      <>
-                        <div className="w-2 h-2 rounded-full mb-2" style={{ background: typeColor }} />
-                        <div className="font-display text-sm font-bold leading-tight mb-1">{planned.label}</div>
-                        {planned.detail && <div className="text-[11px] leading-snug" style={{ color: 'var(--text-dim)' }}>{planned.detail}</div>}
-                        {(planned.plannedMin || planned.plannedKm) && (
-                          <div className="font-mono text-[11px] mt-1.5 tabular" style={{ color: typeColor }}>
-                            {planned.plannedMin ? `${planned.plannedMin} min` : ''}
-                            {planned.plannedMin && planned.plannedKm ? ' · ' : ''}
-                            {planned.plannedKm ? `${planned.plannedKm} km` : ''}
+                    <button onClick={() => setWeekOffset(weekOffset + 1)} className="btn lift w-10 h-10 rounded-full flex items-center justify-center" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }} aria-label="Semaine suivante"><IconChevronRight size={16} /></button>
+                  </div>
+                  <div className="flex gap-2 flex-wrap">
+                    {weekOffset !== 0 && <button onClick={() => setWeekOffset(0)} className="btn px-3 py-2 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--compass-dim)', color: 'var(--compass)', border: '1px solid rgba(74,158,255,0.3)' }}>← AUJOURD'HUI</button>}
+                    <button
+                      onClick={async () => {
+                        const ok = await dialog.confirm({ title: 'Supprimer toutes les séances prévues de cette semaine ?', danger: true, confirmLabel: 'Supprimer' });
+                        if (ok) onSavePlanWeek(wsKey, buildDeletedWeek());
+                      }}
+                      className="btn-base btn-danger btn-sm"
+                    >
+                      <IconTrash size={12} /> Vider la semaine
+                    </button>
+                  </div>
+                </div>
+                <WeekStatsStrip weekDays={weekDays} profile={profile} activities={activities} />
+                {/* WEEK PILL TIMELINE — horizontal strip of adjacent weeks, "today" centered.
+                    Range extends forward to whichever is later: +8 weeks, or the last week with any planned
+                    session — so the user can scroll all the way to the end of their plan. */}
+                <div className="mb-4 -mx-1 px-1 overflow-x-auto plan-pill-scroll" ref={(el) => {
+                  // On first mount, scroll so "today" (off=0, 5th pill) is centered.
+                  // No auto-scroll on click — strip stays static so the user keeps their bearings.
+                  if (el && !el.dataset.centered) {
+                    el.dataset.centered = '1';
+                    const target = el.querySelector('[data-week-anchor="0"]');
+                    if (target) {
+                      const left = target.offsetLeft - (el.clientWidth / 2) + (target.clientWidth / 2);
+                      el.scrollLeft = Math.max(0, left);
+                    }
+                  }
+                }}>
+                  <div className="flex items-stretch gap-2 min-w-min">
+                    {/* Anchored to the real "today" week (off=0), not to the displayed week,
+                        so clicking a pill never shifts the strip — the user keeps their bearings.
+                        Range: -4 weeks → max(+8, last planned week, current weekOffset+1). */}
+                    {(() => {
+                      let maxPlanOff = 8;
+                      Object.keys(planOverrides || {}).forEach((k) => {
+                        const d = new Date(k + 'T00:00:00');
+                        if (isNaN(d.getTime())) return;
+                        const off = Math.round((d.getTime() - baseWeekStart.getTime()) / (7 * 86400000));
+                        // Only count weeks that actually have at least one non-rest session
+                        const hasSession = Object.values(planOverrides[k] || {}).some(s => s && s.type && s.type !== 'rest');
+                        if (hasSession && off > maxPlanOff) maxPlanOff = off;
+                      });
+                      // Always include the currently-displayed week + 1 buffer
+                      const maxOff = Math.max(maxPlanOff, weekOffset + 1);
+                      const minOff = Math.min(-4, weekOffset - 1);
+                      const total = maxOff - minOff + 1;
+                      return Array.from({ length: total }, (_, k) => minOff + k);
+                    })().map((off) => {
+                      const ws = new Date(baseWeekStart); ws.setDate(baseWeekStart.getDate() + off * 7);
+                      const isCurrent = off === weekOffset;
+                      const isThisWeek = off === 0;
+                      const delta = off - weekOffset;
+                      const dayKeys = ['lun','mar','mer','jeu','ven','sam','dim'];
+                      // Collect session-type dots for this week
+                      const dots = dayKeys.map((dk, i) => {
+                        const d = new Date(ws); d.setDate(ws.getDate() + i);
+                        const p = getPlannedSession(profile, planOverrides, d);
+                        if (!p || p.type === 'rest') return null;
+                        return SESSION_TYPE_MAP[p.type]?.color || null;
+                      });
+                      const label = delta === 0
+                        ? (isThisWeek ? 'CETTE SEMAINE' : (off > 0 ? `+${off} SEM` : `${off} SEM`))
+                        : `${ws.getDate()}/${ws.getMonth()+1}`;
+                      return (
+                        <button
+                          key={off}
+                          data-week-anchor={off}
+                          onClick={() => setWeekOffset(off)}
+                          className="plan-week-pill flex-shrink-0 rounded-xl px-3 py-2 text-left"
+                          style={{
+                            minWidth: isCurrent ? 150 : 88,
+                            background: isCurrent
+                              ? 'linear-gradient(160deg, rgba(74,158,255,0.22), rgba(74,158,255,0.04) 80%)'
+                              : 'var(--bg-elev)',
+                            border: isCurrent ? '1px solid var(--compass)' : '1px solid var(--border)',
+                            boxShadow: isCurrent ? '0 0 0 1px rgba(74,158,255,0.15), 0 6px 22px rgba(74,158,255,0.18)' : 'none',
+                          }}
+                          title={`${fmtDate(ws)} → ${fmtDate(new Date(ws.getTime() + 6*86400000))}`}
+                        >
+                          <div className="font-mono text-[9px] tracking-widest" style={{ color: isCurrent ? 'var(--compass)' : 'var(--text-faint)' }}>
+                            {isCurrent ? label : (off === 0 ? 'AUJ.' : (off === -1 ? 'SEM. -1' : off === 1 ? 'SEM. +1' : `SEM. ${off > 0 ? '+' : ''}${off}`))}
                           </div>
+                          <div className="font-display font-bold tabular leading-none mt-1" style={{ fontSize: isCurrent ? 16 : 13, color: isCurrent ? 'var(--text)' : 'var(--text-dim)' }}>
+                            {ws.getDate()} {MONTHS_FR[ws.getMonth()].toLowerCase()}
+                          </div>
+                          <div className="flex items-center gap-0.5 mt-1.5" style={{ height: 6 }}>
+                            {dots.map((c, i) => (
+                              <span key={i} style={{
+                                flex: 1,
+                                height: 4,
+                                borderRadius: 2,
+                                background: c || 'transparent',
+                                opacity: c ? (isCurrent ? 0.95 : 0.6) : 0,
+                                border: c ? 'none' : '1px dashed var(--border)',
+                              }} />
+                            ))}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-7 gap-2 md:gap-3">
+                  {weekDays.map((d, i) => {
+                    const planned = d.planned;
+                    const typeMeta = planned ? (SESSION_TYPE_MAP[planned.type] || SESSION_TYPE_MAP.rest) : SESSION_TYPE_MAP.rest;
+                    const typeColor = typeMeta.color;
+                    const TypeIcon = typeMeta.Icon;
+                    const isRest = !planned || planned.type === 'rest';
+                    const hasActivity = d.activities.length > 0;
+                    const hasStrength = d.strength.length > 0;
+                    const plannedStrength = planned?.strengthToday;
+                    const totalKm = d.activities.reduce((s, a) => s + (a.distanceMeters || 0), 0) / 1000;
+                    const isPast = d.date.getTime() < new Date(now).setHours(0,0,0,0);
+
+                    // 5 status states with distinct gradient treatments — mirrors WeekStripCard's vocabulary
+                    let bg, borderColor, glow = 'none', accentDot = null;
+                    if (d.isToday) {
+                      // Today: strong compass tint + glow
+                      bg = 'linear-gradient(160deg, rgba(74,158,255,0.22), rgba(74,158,255,0.04) 70%)';
+                      borderColor = 'var(--compass)';
+                      glow = '0 0 0 1px var(--compass), 0 6px 22px rgba(74,158,255,0.22)';
+                    } else if (isPast && hasActivity) {
+                      // Done: green confirmation gradient
+                      bg = 'linear-gradient(160deg, rgba(143,232,106,0.18), rgba(143,232,106,0.03) 70%)';
+                      borderColor = 'rgba(143,232,106,0.45)';
+                    } else if (isPast && !hasActivity && !isRest) {
+                      // Skipped: muted
+                      bg = 'var(--bg-elev)';
+                      borderColor = 'var(--border)';
+                    } else if (!isRest) {
+                      // Future scheduled: diagonal type-color tint
+                      bg = `linear-gradient(160deg, ${typeColor.replace('var(', 'color-mix(in oklab, var(').replace(')', ') 22%, transparent)')}, transparent 75%)`;
+                      // Fallback for browsers without color-mix: layered rgba via accent
+                      borderColor = `color-mix(in oklab, ${typeColor} 45%, var(--border))`;
+                    } else {
+                      // Rest day
+                      bg = 'var(--bg-elev)';
+                      borderColor = 'var(--border)';
+                    }
+
+                    return (
+                      <button
+                        key={i}
+                        onClick={() => {
+                          const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
+                          const dayIdx = (d.date.getDay() + 6) % 7;
+                          setEditingInlineDay({ wsKey, dayKey: dayKeys[dayIdx] });
+                        }}
+                        className="plan-day-card rounded-xl p-3 md:p-4 min-h-[150px] flex flex-col text-left relative overflow-hidden"
+                        style={{ background: bg, border: `1px solid ${borderColor}`, boxShadow: glow, cursor: 'pointer' }}
+                        title="Cliquer pour éditer cette séance"
+                      >
+                        {/* Type-color corner accent on scheduled days */}
+                        {!isRest && !d.isToday && (
+                          <div className="pointer-events-none absolute -top-6 -right-6 w-16 h-16 rounded-full" style={{ background: typeColor, opacity: 0.12, filter: 'blur(8px)' }} />
                         )}
-                        {hasActivity && <div className="mt-auto pt-2 font-mono text-[10px] tabular" style={{ color: 'var(--go)' }}>✓ {totalKm.toFixed(1)}km réalisés</div>}
-                      </>
-                    ) : planned && planned.type === 'rest' ? (
-                      <div className="flex-1 flex flex-col items-center justify-center">
-                        <div className="font-mono text-[10px] tracking-widest" style={{ color: plannedStrength ? STRENGTH_SESSIONS[plannedStrength].accent : 'var(--text-faint)' }}>
-                          {hasStrength ? 'RENFO ✓' : hasActivity ? `${totalKm.toFixed(1)}KM` : plannedStrength ? `RENFO ${plannedStrength}` : 'REPOS'}
+                        <div className="relative flex items-center justify-between mb-2">
+                          <div className="font-mono text-[10px] tracking-widest" style={{ color: d.isToday ? 'var(--compass)' : 'var(--text-faint)' }}>{DAYS_FR[d.date.getDay()].toUpperCase()} {String(d.date.getDate()).padStart(2, '0')}</div>
+                          <div className="flex items-center gap-1">
+                            {hasActivity && <div className="w-4 h-4 rounded-full flex items-center justify-center" title={`${totalKm.toFixed(1)}km couru`} style={{ background: 'var(--go)', color: '#000' }}><IconCheck size={10} strokeWidth={3} /></div>}
+                            {hasStrength && d.strength.map((s, si) => (<div key={si} className="w-4 h-4 rounded-full flex items-center justify-center font-mono text-[8px] font-bold" title={`Renfo ${s.type} réalisé`} style={{ background: STRENGTH_SESSIONS[s.type].accent, color: '#000' }}>{s.type}</div>))}
+                            {!hasStrength && plannedStrength && <div className="w-4 h-4 rounded flex items-center justify-center font-mono text-[8px] font-bold" title={`Renfo ${plannedStrength} prévu`} style={{ border: `1px dashed ${STRENGTH_SESSIONS[plannedStrength].accent}`, color: STRENGTH_SESSIONS[plannedStrength].accent }}>{plannedStrength}</div>}
+                          </div>
                         </div>
-                      </div>
-                    ) : (
-                      <div className="flex-1 flex items-center justify-center"><div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>+ Ajouter</div></div>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </Card>
+                        {planned && planned.type !== 'rest' ? (
+                          <div className="relative flex-1 flex flex-col">
+                            <div className="flex items-center gap-1.5 mb-1.5">
+                              <TypeIcon size={13} style={{ color: typeColor }} />
+                              <div className="font-mono text-[9px] tracking-widest" style={{ color: typeColor }}>{(typeMeta.l || '').toUpperCase()}</div>
+                            </div>
+                            <div className="font-display text-sm font-bold leading-tight mb-1">{planned.label}</div>
+                            {planned.detail && <div className="text-[11px] leading-snug" style={{ color: 'var(--text-dim)' }}>{planned.detail}</div>}
+                            {(planned.plannedMin || planned.plannedKm) && (
+                              <div className="font-mono text-[11px] mt-1.5 tabular" style={{ color: typeColor }}>
+                                {planned.plannedMin ? `${planned.plannedMin} min` : ''}
+                                {planned.plannedMin && planned.plannedKm ? ' · ' : ''}
+                                {planned.plannedKm ? `${planned.plannedKm} km` : ''}
+                              </div>
+                            )}
+                            {hasActivity && <div className="mt-auto pt-2 font-mono text-[10px] tabular" style={{ color: 'var(--go)' }}>✓ {totalKm.toFixed(1)}km réalisés</div>}
+                          </div>
+                        ) : planned && planned.type === 'rest' ? (
+                          <div className="relative flex-1 flex flex-col items-center justify-center gap-1">
+                            <IconBed size={16} style={{ color: plannedStrength ? STRENGTH_SESSIONS[plannedStrength].accent : 'var(--text-faint)' }} />
+                            <div className="font-mono text-[10px] tracking-widest" style={{ color: plannedStrength ? STRENGTH_SESSIONS[plannedStrength].accent : 'var(--text-faint)' }}>
+                              {hasStrength ? 'RENFO ✓' : hasActivity ? `${totalKm.toFixed(1)}KM` : plannedStrength ? `RENFO ${plannedStrength}` : 'REPOS'}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="relative flex-1 flex items-center justify-center"><div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>+ AJOUTER</div></div>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="mt-4 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-full t-meta mx-auto" style={{ background: 'var(--bg-elev)', color: 'var(--text-dim)', border: '1px solid var(--border)', width: 'fit-content' }}>
+                  <IconSettings size={11} /> CLIQUE SUR UN JOUR POUR ÉDITER
+                </div>
+              </div>
+            </Card>
+          </div>
 
           {/* Races timeline (graphic) — collapsed by default since the next race is already on Today's hero */}
           <div className="mt-8">
@@ -5030,54 +5367,88 @@
       const totals = computeTotals(blocks, ctx.cp, ctx.weightKg, ctx.ppt);
       const kindLabels = { warmup: 'Échauffement', work: 'Travail', recovery: 'Récup', cooldown: 'Retour calme' };
       const kindColors = { warmup: 'var(--text-dim)', work: 'var(--compass)', recovery: 'var(--text-dim)', cooldown: 'var(--text-dim)' };
+      // Distinct colored accents for timeline + card stripe — gives the editor visual rhythm.
+      const kindAccents = {
+        warmup:   { stripe: '#8AE16A', bg: 'rgba(138,225,106,0.10)' },
+        work:     { stripe: 'var(--compass)', bg: 'rgba(74,158,255,0.10)' },
+        recovery: { stripe: '#9C9C9C', bg: 'rgba(156,156,156,0.10)' },
+        cooldown: { stripe: '#C9A45A', bg: 'rgba(201,164,90,0.10)' },
+      };
+      // Flatten blocks → ordered (kind, durMin) tuples for the timeline strip.
+      // Groups are expanded so the bar mirrors actual time spent in each zone.
+      const timelineSegments = [];
+      blocks.forEach((b, i) => {
+        if (b.kind === 'single' && b.durMin > 0) timelineSegments.push({ kind: b.blockKind, durMin: b.durMin, topIdx: i });
+        else if (b.kind === 'group' && Array.isArray(b.children)) {
+          for (let r = 0; r < (b.reps || 1); r++) {
+            b.children.forEach(c => { if (c.durMin > 0) timelineSegments.push({ kind: c.blockKind, durMin: c.durMin, topIdx: i }); });
+          }
+        }
+      });
+      const editorRef = useRef(null);
+      const focusBlock = (idx) => {
+        const root = editorRef.current; if (!root) return;
+        const el = root.querySelector(`[data-block-idx="${idx}"]`);
+        if (!el) return;
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+        // Flash highlight so the user sees which block was just targeted
+        el.style.transition = 'box-shadow 0.25s ease';
+        el.style.boxShadow = '0 0 0 2px var(--compass)';
+        setTimeout(() => { el.style.boxShadow = ''; }, 900);
+      };
+      const timelineTotal = timelineSegments.reduce((s, x) => s + x.durMin, 0);
 
       function applySuggestion() {
         const suggested = suggestSessionFromType(day.type, day.plannedKm, day.plannedMin);
         if (suggested.length > 0) commitBlocks(suggested);
       }
 
-      // Render a single block (used both top-level and as group child)
+      // Render a single block — card with colored left stripe matching the timeline.
       function renderSingle(b, onUpdate, onRemove, onMoveUp, onMoveDown, { canMoveUp, canMoveDown, isChild }) {
-        // Decompose durMin into minutes + seconds components for the UI
         const totalSecondsRaw = Math.round((b.durMin || 0) * 60);
         const minPart = Math.floor(totalSecondsRaw / 60);
         const secPart = totalSecondsRaw % 60;
+        const accent = kindAccents[b.blockKind] || kindAccents.work;
         return (
-          <div className="flex items-center gap-2 flex-wrap p-2 rounded" style={{ background: isChild ? 'var(--bg)' : 'var(--bg-elev-2)' }}>
-            <select value={b.blockKind} onChange={(e) => onUpdate({ blockKind: e.target.value })} className="input font-display font-bold" style={{ padding: '0.4rem 0.6rem', minWidth: 125, color: kindColors[b.blockKind], fontSize: 14 }}>
-              {Object.entries(kindLabels).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-            </select>
-            <div className="flex items-center gap-1">
-              <input type="number" min="0" step="1" className="input input-mono w-16" style={{ padding: '0.4rem 0.5rem', fontSize: 14 }} placeholder="min" value={minPart || ''} onChange={(e) => {
-                const m = parseInt(e.target.value) || 0;
-                onUpdate({ durMin: m + secPart / 60 });
-              }} />
-              <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 13 }}>min</span>
-              <input type="number" min="0" max="59" step="1" className="input input-mono w-16" style={{ padding: '0.4rem 0.5rem', fontSize: 14 }} placeholder="sec" value={secPart || ''} onChange={(e) => {
-                let s = parseInt(e.target.value) || 0;
-                if (s >= 60) s = 59;
-                onUpdate({ durMin: minPart + s / 60 });
-              }} />
-              <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 13 }}>sec</span>
-            </div>
-            <div className="flex items-center gap-1">
-              <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 13 }}>à</span>
-              <input type="number" className="input input-mono w-20" style={{ padding: '0.4rem 0.5rem', fontSize: 14 }} placeholder="min" value={b.powerLow ?? ''} onChange={(e) => onUpdate({ powerLow: e.target.value ? parseInt(e.target.value) : null })} />
-              <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 13 }}>-</span>
-              <input type="number" className="input input-mono w-20" style={{ padding: '0.4rem 0.5rem', fontSize: 14 }} placeholder="max" value={b.powerHigh ?? ''} onChange={(e) => onUpdate({ powerHigh: e.target.value ? parseInt(e.target.value) : null })} />
-              <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 13 }}>W</span>
-            </div>
-            <div className="flex items-center gap-1 ml-auto">
-              <button onClick={onMoveUp} disabled={!canMoveUp} className="btn w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--bg-elev)', opacity: canMoveUp ? 1 : 0.3 }}><IconChevronUp size={14} /></button>
-              <button onClick={onMoveDown} disabled={!canMoveDown} className="btn w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--bg-elev)', opacity: canMoveDown ? 1 : 0.3 }}><IconChevronDown size={14} /></button>
-              <button onClick={onRemove} className="btn w-8 h-8 rounded flex items-center justify-center" style={{ background: 'rgba(255,91,91,0.1)', color: 'var(--danger)' }}><IconX size={14} /></button>
+          <div className="rounded-lg flex" style={{ background: isChild ? 'var(--bg)' : 'var(--bg-elev)', border: '1px solid var(--border)', overflow: 'hidden' }}>
+            {/* Colored stripe — same palette as timeline above for visual continuity */}
+            <div style={{ width: 4, background: accent.stripe, flexShrink: 0 }} />
+            <div className="flex-1 min-w-0 p-3">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <select value={b.blockKind} onChange={(e) => onUpdate({ blockKind: e.target.value })} className="font-mono tracking-widest" style={{ background: 'transparent', border: 'none', padding: 0, fontSize: 11, color: accent.stripe, fontWeight: 600, cursor: 'pointer', outline: 'none' }}>
+                  {Object.entries(kindLabels).map(([v, l]) => <option key={v} value={v} style={{ background: 'var(--bg)', color: 'var(--text)' }}>{l.toUpperCase()}</option>)}
+                </select>
+                <div className="flex items-center gap-1">
+                  <button onClick={onMoveUp} disabled={!canMoveUp} className="btn w-7 h-7 rounded flex items-center justify-center" style={{ background: 'transparent', color: 'var(--text-faint)', opacity: canMoveUp ? 1 : 0.25 }}><IconChevronUp size={13} /></button>
+                  <button onClick={onMoveDown} disabled={!canMoveDown} className="btn w-7 h-7 rounded flex items-center justify-center" style={{ background: 'transparent', color: 'var(--text-faint)', opacity: canMoveDown ? 1 : 0.25 }}><IconChevronDown size={13} /></button>
+                  <button onClick={onRemove} className="btn w-7 h-7 rounded flex items-center justify-center" style={{ background: 'transparent', color: 'var(--danger)' }}><IconX size={13} /></button>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 flex-wrap">
+                {/* Duration */}
+                <div className="flex items-center gap-1">
+                  <div className="t-meta-dim mr-1" style={{ color: 'var(--text-faint)' }}>DURÉE</div>
+                  <input type="number" min="0" step="1" className="input input-mono" style={{ padding: '0.35rem 0.4rem', fontSize: 14, width: 50, textAlign: 'center' }} placeholder="0" value={minPart || ''} onChange={(e) => { const m = parseInt(e.target.value) || 0; onUpdate({ durMin: m + secPart / 60 }); }} />
+                  <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 12 }}>min</span>
+                  <input type="number" min="0" max="59" step="1" className="input input-mono" style={{ padding: '0.35rem 0.4rem', fontSize: 14, width: 50, textAlign: 'center' }} placeholder="0" value={secPart || ''} onChange={(e) => { let s = parseInt(e.target.value) || 0; if (s >= 60) s = 59; onUpdate({ durMin: minPart + s / 60 }); }} />
+                  <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 12 }}>sec</span>
+                </div>
+                {/* Power */}
+                <div className="flex items-center gap-1">
+                  <div className="t-meta-dim mr-1" style={{ color: 'var(--text-faint)' }}>PUISSANCE</div>
+                  <input type="number" className="input input-mono" style={{ padding: '0.35rem 0.4rem', fontSize: 14, width: 56, textAlign: 'center' }} placeholder="min" value={b.powerLow ?? ''} onChange={(e) => onUpdate({ powerLow: e.target.value ? parseInt(e.target.value) : null })} />
+                  <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 12 }}>–</span>
+                  <input type="number" className="input input-mono" style={{ padding: '0.35rem 0.4rem', fontSize: 14, width: 56, textAlign: 'center' }} placeholder="max" value={b.powerHigh ?? ''} onChange={(e) => onUpdate({ powerHigh: e.target.value ? parseInt(e.target.value) : null })} />
+                  <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 12 }}>W</span>
+                </div>
+              </div>
             </div>
           </div>
         );
       }
 
       return (
-        <div className="ml-5 md:ml-32 rounded-lg p-3" style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}>
+        <div ref={editorRef} className="rounded-xl p-4" style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}>
           <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
             <div className="font-mono tracking-widest" style={{ color: 'var(--text-faint)', fontSize: 12 }}>BLOCS DE LA SÉANCE</div>
             <div className="font-mono tabular" style={{ color: 'var(--text-dim)', fontSize: 13 }}>
@@ -5086,6 +5457,37 @@
               </span> · <span style={{ color: 'var(--compass)' }}>{totals.totalKm} km</span>
             </div>
           </div>
+
+          {/* Visual timeline strip — horizontal bar segmented by block kind, widths proportional
+              to duration. Lets the user *see* the structure (warmup → reps → cooldown) at a glance. */}
+          {timelineSegments.length > 0 && (
+            <div className="mb-4">
+              <div className="flex w-full rounded-md overflow-hidden" style={{ height: 14, background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
+                {timelineSegments.map((seg, i) => (
+                  <div key={i} onClick={() => focusBlock(seg.topIdx)} style={{
+                    flex: seg.durMin / timelineTotal,
+                    background: kindAccents[seg.kind]?.stripe || 'var(--border)',
+                    borderRight: i < timelineSegments.length - 1 ? '1px solid rgba(0,0,0,0.25)' : 'none',
+                    cursor: 'pointer',
+                  }} title={`${kindLabels[seg.kind]} · ${Math.round(seg.durMin)} min — clic pour cibler`} />
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2">
+                {['warmup','work','recovery','cooldown'].map(k => {
+                  const totalForKind = timelineSegments.filter(s => s.kind === k).reduce((s, x) => s + x.durMin, 0);
+                  if (totalForKind === 0) return null;
+                  return (
+                    <div key={k} className="flex items-center gap-1.5">
+                      <span style={{ width: 8, height: 8, borderRadius: 2, background: kindAccents[k].stripe, display: 'inline-block' }} />
+                      <span className="font-mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>
+                        {kindLabels[k].toUpperCase()} <span style={{ color: 'var(--text-dim)' }}>{Math.round(totalForKind)}'</span>
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {blocks.length === 0 && (
             <div className="italic mb-3" style={{ color: 'var(--text-faint)', fontSize: 14 }}>
@@ -5097,7 +5499,7 @@
             {blocks.map((b, i) => {
               if (b.kind === 'single') {
                 return (
-                  <div key={b.id}>
+                  <div key={b.id} data-block-idx={i} style={{ borderRadius: 8 }}>
                     {renderSingle(b,
                       (patch) => updateTopLevel(i, patch),
                       () => removeTopLevel(i),
@@ -5109,20 +5511,20 @@
               }
               // Group
               return (
-                <div key={b.id} className="rounded-lg p-3" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--compass)40' }}>
-                  <div className="flex items-center gap-2 mb-3 flex-wrap">
-                    <div className="font-display font-bold" style={{ color: 'var(--compass)', fontSize: 14 }}>GROUPE RÉPÉTÉ</div>
+                <div key={b.id} data-block-idx={i} className="rounded-xl" style={{ background: 'var(--bg-elev)', border: '1px solid var(--compass)', overflow: 'hidden' }}>
+                  <div className="flex items-center gap-3 flex-wrap px-3 py-2.5" style={{ background: 'rgba(74,158,255,0.08)', borderBottom: '1px solid var(--compass)40' }}>
+                    <div className="font-mono tracking-widest" style={{ color: 'var(--compass)', fontSize: 11, fontWeight: 600 }}>SÉRIE RÉPÉTÉE</div>
                     <div className="flex items-center gap-1">
-                      <input type="number" min="1" className="input input-mono w-16" style={{ padding: '0.4rem 0.5rem', fontSize: 14 }} value={b.reps || 1} onChange={(e) => updateTopLevel(i, { reps: parseInt(e.target.value) || 1 })} />
-                      <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 13 }}>× série</span>
+                      <input type="number" min="1" className="input input-mono" style={{ padding: '0.3rem 0.4rem', fontSize: 14, width: 48, textAlign: 'center', fontWeight: 600 }} value={b.reps || 1} onChange={(e) => updateTopLevel(i, { reps: parseInt(e.target.value) || 1 })} />
+                      <span className="font-mono" style={{ color: 'var(--compass)', fontSize: 13, fontWeight: 600 }}>× FOIS</span>
                     </div>
                     <div className="flex items-center gap-1 ml-auto">
-                      <button onClick={() => moveTopLevel(i, -1)} disabled={i === 0} className="btn w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--bg-elev)', opacity: i === 0 ? 0.3 : 1 }}><IconChevronUp size={14} /></button>
-                      <button onClick={() => moveTopLevel(i, 1)} disabled={i === blocks.length - 1} className="btn w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--bg-elev)', opacity: i === blocks.length - 1 ? 0.3 : 1 }}><IconChevronDown size={14} /></button>
-                      <button onClick={() => removeTopLevel(i)} className="btn w-8 h-8 rounded flex items-center justify-center" style={{ background: 'rgba(255,91,91,0.1)', color: 'var(--danger)' }}><IconX size={14} /></button>
+                      <button onClick={() => moveTopLevel(i, -1)} disabled={i === 0} className="btn w-7 h-7 rounded flex items-center justify-center" style={{ background: 'transparent', color: 'var(--text-faint)', opacity: i === 0 ? 0.25 : 1 }}><IconChevronUp size={13} /></button>
+                      <button onClick={() => moveTopLevel(i, 1)} disabled={i === blocks.length - 1} className="btn w-7 h-7 rounded flex items-center justify-center" style={{ background: 'transparent', color: 'var(--text-faint)', opacity: i === blocks.length - 1 ? 0.25 : 1 }}><IconChevronDown size={13} /></button>
+                      <button onClick={() => removeTopLevel(i)} className="btn w-7 h-7 rounded flex items-center justify-center" style={{ background: 'transparent', color: 'var(--danger)' }}><IconX size={13} /></button>
                     </div>
                   </div>
-                  <div className="ml-0 md:ml-4 space-y-1.5 pl-0 md:pl-3" style={{ borderLeft: '2px solid var(--compass)40' }}>
+                  <div className="space-y-2 p-3">
                     {b.children.map((c, ci) => (
                       <div key={c.id}>
                         {renderSingle(c,
@@ -5133,9 +5535,9 @@
                           { canMoveUp: ci > 0, canMoveDown: ci < b.children.length - 1, isChild: true })}
                       </div>
                     ))}
-                    <div className="flex flex-wrap gap-2 mt-2">
-                      <button onClick={() => addChildToGroup(i, 'work')} className="btn px-2.5 py-1 rounded font-mono tracking-widest" style={{ background: 'rgba(74,158,255,0.15)', color: 'var(--compass)', fontSize: 12 }}>+ TRAVAIL</button>
-                      <button onClick={() => addChildToGroup(i, 'recovery')} className="btn px-2.5 py-1 rounded font-mono tracking-widest" style={{ background: 'rgba(138,138,138,0.15)', color: 'var(--text-dim)', fontSize: 12 }}>+ RÉCUP</button>
+                    <div className="flex flex-wrap gap-2">
+                      <button onClick={() => addChildToGroup(i, 'work')} className="btn px-2.5 py-1.5 rounded-md font-mono tracking-widest" style={{ background: 'transparent', color: 'var(--compass)', border: '1px dashed var(--compass)40', fontSize: 11 }}>+ TRAVAIL</button>
+                      <button onClick={() => addChildToGroup(i, 'recovery')} className="btn px-2.5 py-1.5 rounded-md font-mono tracking-widest" style={{ background: 'transparent', color: 'var(--text-dim)', border: '1px dashed var(--border-bright)', fontSize: 11 }}>+ RÉCUP</button>
                     </div>
                   </div>
                 </div>
@@ -5594,7 +5996,7 @@
             className="scale-in"
             style={{
               background: 'var(--bg)', border: '1px solid var(--border-bright)',
-              borderRadius: 16, width: '100%', maxWidth: isRest ? 640 : 1040,
+              borderRadius: 16, width: '100%', maxWidth: isRest ? 640 : 1180,
               maxHeight: 'calc(100vh - 32px)', display: 'flex', flexDirection: 'column',
               boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
               borderLeft: !isRest ? `3px solid ${t.color}` : '1px solid var(--border-bright)',
@@ -5668,44 +6070,124 @@
               )}
 
               {!isRest ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-6">
-                  <div className="space-y-6">
-                  {/* SECTION 3 — Identity (name + planned dur/dist) */}
-                  <section>
-                    <div className="t-meta mb-3" style={{ color: 'var(--text-faint)' }}>SÉANCE</div>
-                    <div className="space-y-3">
+                <div className="flex flex-col md:flex-row gap-6">
+                  {/* LEFT IDENTITY RAIL — fixed ~340px on desktop. The card that tells the user
+                      WHAT this session is at a glance: name, planned dur/km, computed stats, renfo.
+                      Editor for the structure (blocks) lives in the right column where it has room. */}
+                  <div className="md:w-[340px] md:flex-shrink-0 space-y-5">
+                  {/* Identity card — name + dur/km + computed stats */}
+                  <section className="rounded-xl p-4 space-y-4" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
+                    <div>
+                      <div className="t-meta mb-2" style={{ color: 'var(--text-faint)' }}>NOM DE LA SÉANCE</div>
                       <input
                         type="text"
                         value={localDay.label || ''}
                         onChange={(e) => setField('label', e.target.value)}
-                        placeholder="Nom de la séance (ex: 6×800m, Tempo 30min)"
+                        placeholder="ex : 6×800m, Tempo 30min"
                         className="input"
+                        style={{ fontSize: 15, fontWeight: 500 }}
                       />
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="t-meta-dim mb-1 block" style={{ color: 'var(--text-faint)' }}>DURÉE (MIN)</label>
-                          <input
-                            type="number"
-                            value={localDay.plannedMin || ''}
-                            onChange={(e) => setField('plannedMin', e.target.value ? parseInt(e.target.value) : null)}
-                            placeholder="60"
-                            className="input"
-                          />
-                        </div>
-                        <div>
-                          <label className="t-meta-dim mb-1 block" style={{ color: 'var(--text-faint)' }}>DISTANCE (KM)</label>
-                          <input
-                            type="number"
-                            step="0.1"
-                            value={localDay.plannedKm || ''}
-                            onChange={(e) => setField('plannedKm', e.target.value ? parseFloat(e.target.value) : null)}
-                            placeholder="10"
-                            className="input"
-                          />
-                        </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="t-meta-dim mb-1 block" style={{ color: 'var(--text-faint)' }}>DURÉE (MIN)</label>
+                        <input
+                          type="number"
+                          value={localDay.plannedMin || ''}
+                          onChange={(e) => setField('plannedMin', e.target.value ? parseInt(e.target.value) : null)}
+                          placeholder="60"
+                          className="input input-mono"
+                          style={{ fontSize: 16, textAlign: 'center', fontWeight: 600 }}
+                        />
+                      </div>
+                      <div>
+                        <label className="t-meta-dim mb-1 block" style={{ color: 'var(--text-faint)' }}>DISTANCE (KM)</label>
+                        <input
+                          type="number"
+                          step="0.1"
+                          value={localDay.plannedKm || ''}
+                          onChange={(e) => setField('plannedKm', e.target.value ? parseFloat(e.target.value) : null)}
+                          placeholder="10"
+                          className="input input-mono"
+                          style={{ fontSize: 16, textAlign: 'center', fontWeight: 600 }}
+                        />
                       </div>
                     </div>
+                    {/* Computed stats preview — only renders when we have blocks + CP to compute from.
+                        Gives the user a sense of the planned load (TSS / IF / avg watts) without
+                        having to scroll to the right column. */}
+                    {weekContext?.cp && Array.isArray(localDay.blocks) && localDay.blocks.length > 0 && (() => {
+                      // Inline-compute weighted avg power + duration from blocks (no recursion deeper than groups)
+                      let totalSec = 0, weightedPwr = 0;
+                      const acc = (b, mult = 1) => {
+                        if (!b.durMin) return;
+                        const sec = b.durMin * 60 * mult;
+                        const pwr = b.powerLow != null ? (b.powerLow + (b.powerHigh ?? b.powerLow)) / 2 : null;
+                        if (pwr) { totalSec += sec; weightedPwr += pwr * sec; }
+                      };
+                      localDay.blocks.forEach(b => {
+                        if (b.kind === 'single') acc(b, 1);
+                        else if (b.kind === 'group') (b.children || []).forEach(c => acc(c, b.reps || 1));
+                      });
+                      if (totalSec === 0) return null;
+                      const avgPwr = Math.round(weightedPwr / totalSec);
+                      const IF = avgPwr / weekContext.cp;
+                      const TSS = Math.round((totalSec * avgPwr * IF) / (weekContext.cp * 3600) * 100);
+                      return (
+                        <div className="grid grid-cols-3 gap-2 pt-3" style={{ borderTop: '1px solid var(--border)' }}>
+                          <div>
+                            <div className="t-meta-dim" style={{ color: 'var(--text-faint)' }}>WATTS MOY.</div>
+                            <div className="font-display font-bold tabular" style={{ fontSize: 18, color: 'var(--text)' }}>{avgPwr}<span className="font-mono" style={{ fontSize: 11, color: 'var(--text-faint)', marginLeft: 2 }}>W</span></div>
+                          </div>
+                          <div>
+                            <div className="t-meta-dim" style={{ color: 'var(--text-faint)' }}>IF</div>
+                            <div className="font-display font-bold tabular" style={{ fontSize: 18, color: IF >= 0.95 ? 'var(--danger)' : IF >= 0.85 ? 'var(--signal)' : 'var(--compass)' }}>{IF.toFixed(2)}</div>
+                          </div>
+                          <div>
+                            <div className="t-meta-dim" style={{ color: 'var(--text-faint)' }}>TSS</div>
+                            <div className="font-display font-bold tabular" style={{ fontSize: 18, color: 'var(--text)' }}>{TSS}</div>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </section>
+
+                  {/* Renfo lives in the rail — it's an identity decision (which strength session
+                      today?), not part of the running-block structure. */}
+                  <section>
+                    <div className="t-meta mb-2" style={{ color: 'var(--text-faint)' }}>RENFO</div>
+                    <div className="flex flex-col gap-2">
+                      {strengthOptions.map(s => {
+                        const active = localDay.strengthToday === s.v;
+                        return (
+                          <button
+                            key={s.v || 'none'}
+                            onClick={() => setField('strengthToday', s.v)}
+                            className="btn-base"
+                            style={{
+                              justifyContent: 'flex-start',
+                              padding: '0.625rem 0.875rem', minHeight: 40, fontSize: 13,
+                              background: active ? 'var(--signal-dim)' : 'var(--bg-elev)',
+                              border: `1px solid ${active ? 'var(--signal)' : 'var(--border-bright)'}`,
+                              color: active ? 'var(--signal)' : 'var(--text-dim)',
+                              fontWeight: active ? 600 : 500,
+                            }}
+                          >
+                            <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{
+                              background: active ? 'var(--signal)' : 'transparent',
+                              border: `1.5px solid ${active ? 'var(--signal)' : 'var(--text-faint)'}`,
+                            }}></span>
+                            <span className="truncate">{s.l}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+                  </div>
+
+                  {/* RIGHT MAIN COLUMN — the editor surface for the session structure.
+                      Blocks get full width here, so the visual timeline + block cards can breathe. */}
+                  <div className="flex-1 min-w-0 space-y-6">
 
                   {/* SECTION 4 — Library + import — collapsible row of small actions */}
                   <section>
@@ -5783,9 +6265,8 @@
                   </div>
 
                   <div className="space-y-6">
-                  {/* SECTION 5 — Structured blocks editor */}
+                  {/* SECTION 5 — Structured blocks editor — now full-width in right column */}
                   <section>
-                    <div className="t-meta mb-3" style={{ color: 'var(--text-faint)' }}>BLOCS DE LA SÉANCE</div>
                     <SessionBlocksEditor
                       day={localDay}
                       onChange={(patch) => setMulti(patch)}
@@ -5822,9 +6303,6 @@
                       )}
                     </section>
                   )}
-
-                  {/* SECTION 8 — Strength (in right col when not rest) */}
-                  {renfoSection}
                   </div>
                 </div>
               ) : (
@@ -14224,6 +14702,13 @@
     function App() {
       // State
       const [view, setView] = useState('today');
+      const [planJumpTarget, setPlanJumpTarget] = useState(null);
+      const handleNav = (target, opts) => {
+        if (target === 'plan' && opts && opts.date) {
+          setPlanJumpTarget({ dateMs: opts.date.getTime(), ts: Date.now() });
+        }
+        setView(target);
+      };
       const [profile, setProfile] = useState(getProfile());
       const toast = useToast();
       const dialog = useDialog();
@@ -14720,7 +15205,7 @@
                 onImport={() => importInputRef.current?.click()}
                 onStrengthStart={handleStrengthStart}
                 onAddRace={() => setShowAddRaceModal(true)}
-                onNav={setView}
+                onNav={handleNav}
                 coachVerdict={coachVerdict}
               />
             )}
@@ -14732,6 +15217,8 @@
                 activities={activities}
                 strengthSessions={strengthSessions}
                 planOverrides={planOverrides}
+                planJumpTarget={planJumpTarget}
+                onConsumePlanJump={() => setPlanJumpTarget(null)}
                 sessionTemplates={sessionTemplates}
                 onSaveTemplate={handleSaveTemplate}
                 onApplyTemplate={handleApplyTemplate}
