@@ -14665,6 +14665,14 @@
       const totalKm = preview.weeks.reduce((s, w) => s + (w.stats?.km || 0), 0);
       const totalTSS = preview.weeks.reduce((s, w) => s + (w.stats?.tss || 0), 0);
       const totalHours = preview.weeks.reduce((s, w) => s + (w.stats?.duration || 0), 0) / 60;
+      const maxWeekTSS = Math.max(1, ...preview.weeks.map(w => w.stats?.tss || 0));
+
+      const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
+      const dayLetters = { lun: 'LUN', mar: 'MAR', mer: 'MER', jeu: 'JEU', ven: 'VEN', sam: 'SAM', dim: 'DIM' };
+      const dayFull = { lun: 'Lundi', mar: 'Mardi', mer: 'Mercredi', jeu: 'Jeudi', ven: 'Vendredi', sam: 'Samedi', dim: 'Dimanche' };
+      const SHORT_TYPE = { easy: 'EASY', tempo: 'SEUIL', intervals: 'VMA', long: 'LONG', test: 'COURSE' };
+      const gridCols = 'minmax(44px, 58px) repeat(7, minmax(0, 1fr))';
+      const tint = (c, pct) => `color-mix(in oklab, ${c} ${pct}%, transparent)`;
 
       // Count sessions sourced from the user's saved templates (silent replacement)
       let userTemplatedCount = 0;
@@ -14673,25 +14681,60 @@
         if (d && d.fromUserTemplate) { userTemplatedCount++; userTemplatedTypes.add(d.type); }
       }));
 
+      const phaseOrder = [['base', phaseSummary.base], ['build', phaseSummary.build], ['peak', phaseSummary.peak], ['taper', phaseSummary.taper]].filter(([, n]) => n > 0);
+      const lastDate = preview.weeks.length ? new Date(preview.weeks[preview.weeks.length - 1].weekStart.getTime() + 6 * 86400000) : null;
+
       return (
         <>
-          <div className="text-sm mb-4 leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-            <span style={{ color: 'var(--text)' }}>{preview.weeks.length} semaines</span> · CP {cp}W · Base {phaseSummary.base} / Build {phaseSummary.build} / Peak {phaseSummary.peak} / Taper {phaseSummary.taper}
+          {/* Summary line */}
+          <div className="font-mono text-[11px] tracking-widest mb-4" style={{ color: 'var(--text-dim)' }}>
+            {preview.weeks.length} SEMAINES · CP {cp}W{lastDate ? ` · JUSQU'AU ${fmtDate(lastDate, true).toUpperCase()}` : ''}
           </div>
 
-          {/* Plan totals */}
+          {/* Phase ribbon — periodization at a glance */}
+          <div className="flex w-full rounded-lg overflow-hidden mb-5" style={{ height: 30, border: '1px solid var(--border)' }}>
+            {phaseOrder.map(([k, n], i) => {
+              const info = PHASE_INFO[k];
+              return (
+                <div key={k} className="flex items-center justify-center min-w-0" title={`Phase ${info.label} — ${n} semaine${n > 1 ? 's' : ''} · ${info.focus}`}
+                  style={{ flex: n, background: tint(info.color, 20), borderRight: i < phaseOrder.length - 1 ? '1px solid var(--bg-elev)' : 'none' }}>
+                  <span className="font-mono text-[9px] tracking-widest truncate px-1.5" style={{ color: info.color }}>{info.label.toUpperCase()} · {n}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Totals */}
           <div className="grid grid-cols-3 gap-2 mb-5">
             <div className="rounded-lg p-3 text-center" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--border)' }}>
-              <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>VOLUME TOTAL</div>
+              <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>VOLUME</div>
               <div className="font-display text-2xl font-bold tabular" style={{ color: 'var(--compass)' }}>{Math.round(totalKm)}<span className="font-mono text-[11px] ml-1" style={{ color: 'var(--text-dim)' }}>km</span></div>
             </div>
             <div className="rounded-lg p-3 text-center" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--border)' }}>
-              <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>HEURES TOTALES</div>
+              <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>DURÉE</div>
               <div className="font-display text-2xl font-bold tabular" style={{ color: 'var(--text)' }}>{totalHours.toFixed(0)}<span className="font-mono text-[11px] ml-1" style={{ color: 'var(--text-dim)' }}>h</span></div>
             </div>
             <div className="rounded-lg p-3 text-center" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--border)' }}>
-              <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>CHARGE TOTALE</div>
-              <div className="font-display text-2xl font-bold tabular" style={{ color: 'var(--accent)' }}>{totalTSS}<span className="font-mono text-[11px] ml-1" style={{ color: 'var(--text-dim)' }} title={TERMS.tss.tooltip}>de charge</span></div>
+              <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>CHARGE</div>
+              <div className="font-display text-2xl font-bold tabular" style={{ color: 'var(--accent)' }} title={TERMS.tss.tooltip}>{totalTSS}</div>
+            </div>
+          </div>
+
+          {/* Weekly load chart — shows the periodization shape (ramp + recovery dips + taper) */}
+          <div className="mb-5">
+            <div className="font-mono text-[9px] tracking-widest mb-2" style={{ color: 'var(--text-faint)' }}>CHARGE HEBDOMADAIRE</div>
+            <div className="flex items-end gap-[3px]" style={{ height: 56 }}>
+              {preview.weeks.map((w, i) => {
+                const tss = w.stats?.tss || 0;
+                const h = Math.max(6, Math.round((tss / maxWeekTSS) * 100));
+                const c = PHASE_INFO[w.phase].color;
+                const isOpen = openWeek === i;
+                return (
+                  <button key={i} onClick={() => setOpenWeek(isOpen ? null : i)} className="flex-1 rounded-t transition-opacity hover:opacity-80"
+                    title={`S${w.weekIdx} · ${tss} de charge · ${w.stats?.km || 0} km${w.isRecoveryWeek ? ' · récup' : ''}${w.isRaceWeek ? ' · course' : ''}`}
+                    style={{ height: `${h}%`, background: tint(c, w.isRecoveryWeek ? 32 : (isOpen ? 95 : 70)), border: isOpen ? `1px solid ${c}` : 'none' }} />
+                );
+              })}
             </div>
           </div>
 
@@ -14706,96 +14749,118 @@
             </div>
           )}
 
-          {/* Weeks */}
-          <div className="space-y-2 mb-5">
-            {preview.weeks.map((w, i) => {
-              const info = PHASE_INFO[w.phase];
-              const isOpen = openWeek === i;
-              return (
-                <div key={i} className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-elev-2)', border: `1px solid ${info.color}30` }}>
-                  <button onClick={() => setOpenWeek(isOpen ? null : i)} className="w-full p-3 md:p-4 text-left">
-                    <div className="flex items-center gap-3 mb-2 flex-wrap">
-                      <div className="font-display font-bold text-sm w-14 flex-shrink-0">S{w.weekIdx}</div>
-                      <Tag color={info.color}>{info.label.toUpperCase()}</Tag>
-                      {w.isRecoveryWeek && <Tag color="var(--text-dim)">RÉCUP</Tag>}
-                      {w.isRaceWeek && <Tag color="var(--accent)">COURSE</Tag>}
-                      <div className="text-xs font-mono tabular flex-1 text-right" style={{ color: 'var(--text-faint)' }}>{fmtDate(w.weekStart)}</div>
-                    </div>
-                    {w.stats && (
-                      <div className="flex gap-4 mb-2 font-mono text-[11px] tabular flex-wrap" style={{ color: 'var(--text-dim)' }}>
-                        <span><span style={{ color: 'var(--compass)' }}>{w.stats.km}</span> km</span>
-                        <span><span style={{ color: 'var(--text)' }}>{Math.floor(w.stats.duration / 60)}h{String(w.stats.duration % 60).padStart(2, '0')}</span></span>
-                        <span><span style={{ color: 'var(--accent)' }}>{w.stats.tss}</span> TSS</span>
-                        <span>{w.stats.sessionCount} séances</span>
+          {/* Calendar — one row per week, click a week to expand its details */}
+          <div className="rounded-xl p-2 md:p-3 mb-4" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--border)' }}>
+            {/* Day-of-week headers */}
+            <div className="grid gap-1 mb-1.5" style={{ gridTemplateColumns: gridCols }}>
+              <div className="font-mono text-[8px] tracking-widest flex items-end pb-1 pl-0.5" style={{ color: 'var(--text-faint)' }}>SEM</div>
+              {dayKeys.map(d => <div key={d} className="font-mono text-[8px] tracking-widest text-center pb-1" style={{ color: 'var(--text-faint)' }}>{dayLetters[d]}</div>)}
+            </div>
+            {(() => {
+              let lastPhase = null;
+              return preview.weeks.map((w, i) => {
+                const info = PHASE_INFO[w.phase];
+                const isOpen = openWeek === i;
+                const showPhaseHeader = w.phase !== lastPhase;
+                lastPhase = w.phase;
+                return (
+                  <React.Fragment key={i}>
+                    {showPhaseHeader && (
+                      <div className="flex items-center gap-2 mb-1 px-0.5" style={{ marginTop: i > 0 ? 8 : 2, borderTop: i > 0 ? '1px solid var(--border)' : 'none', paddingTop: i > 0 ? 8 : 0 }}>
+                        <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: info.color }} />
+                        <span className="font-mono text-[9px] tracking-widest flex-shrink-0" style={{ color: info.color }}>PHASE {info.label.toUpperCase()}</span>
+                        <span className="font-mono text-[9px] truncate" style={{ color: 'var(--text-faint)' }}>· {info.focus}</span>
                       </div>
                     )}
-                    <div className="grid grid-cols-7 gap-1.5">
-                      {['lun','mar','mer','jeu','ven','sam','dim'].map(d => {
-                        const day = w.days[d];
-                        const typeColor = { rest: 'var(--text-faint)', easy: 'var(--go)', tempo: 'var(--warn)', intervals: 'var(--alert)', long: 'var(--compass)', test: 'var(--danger)' }[day.type];
+                    <div className="grid gap-1" style={{ gridTemplateColumns: gridCols, marginBottom: 4 }}>
+                      {/* Week-info cell — click to expand */}
+                      <button onClick={() => setOpenWeek(isOpen ? null : i)} className="rounded-md flex flex-col items-start justify-center px-1.5 py-1 text-left transition-colors"
+                        style={{ background: isOpen ? tint(info.color, 16) : 'var(--bg)', border: `1px solid ${isOpen ? info.color : 'var(--border)'}`, borderLeft: `3px solid ${info.color}`, minHeight: 54 }}>
+                        <span className="font-display font-bold leading-none" style={{ fontSize: 13, color: 'var(--text)' }}>S{w.weekIdx}</span>
+                        {(w.isRecoveryWeek || w.isRaceWeek) && (
+                          <span className="font-mono tracking-widest leading-none mt-0.5" style={{ fontSize: 7, color: w.isRaceWeek ? 'var(--accent)' : 'var(--text-dim)' }}>{w.isRaceWeek ? 'COURSE' : 'RÉCUP'}</span>
+                        )}
+                        {w.stats && <span className="font-mono tabular leading-none mt-0.5" style={{ fontSize: 8, color: 'var(--text-faint)' }}>{w.stats.km}km</span>}
+                      </button>
+                      {/* Day cells */}
+                      {dayKeys.map(dk => {
+                        const day = w.days[dk];
+                        const t = day?.type || 'rest';
+                        if (t === 'rest') {
+                          if (day?.strengthToday) {
+                            const ac = STRENGTH_SESSIONS[day.strengthToday]?.accent || 'var(--accent)';
+                            return (
+                              <div key={dk} className="rounded-md flex flex-col items-center justify-center px-0.5 text-center" title={`${dayFull[dk]} — Renfo ${day.strengthToday}`} style={{ background: tint(ac, 12), border: `1px dashed ${tint(ac, 45)}`, minHeight: 54 }}>
+                                <span className="font-mono tracking-widest leading-none" style={{ fontSize: 7, color: ac }}>RENFO</span>
+                                <span className="font-display font-bold leading-none mt-0.5" style={{ fontSize: 11, color: ac }}>{day.strengthToday}</span>
+                              </div>
+                            );
+                          }
+                          return <div key={dk} className="rounded-md flex items-center justify-center" style={{ border: '1px solid var(--border)', minHeight: 54 }}><span style={{ color: 'var(--text-faint)', fontSize: 14, lineHeight: 1, opacity: 0.35 }}>·</span></div>;
+                        }
+                        const c = SESSION_TYPE_MAP[t]?.color || 'var(--text-dim)';
+                        const Icon = SESSION_TYPE_MAP[t]?.Icon || IconActivity;
                         return (
-                          <div key={d} className="rounded p-1.5 text-center" style={{ background: day.type === 'rest' ? 'transparent' : `${typeColor}10`, border: `1px solid ${typeColor}30`, minHeight: '48px' }}>
-                            <div className="font-mono text-[8px] tracking-widest mb-0.5" style={{ color: 'var(--text-faint)' }}>{d.toUpperCase()}</div>
-                            {day.type !== 'rest' ? (
-                              <>
-                                <div className="w-1 h-1 mx-auto rounded-full mb-0.5" style={{ background: typeColor }} />
-                                <div className="text-[9px] leading-tight line-clamp-2" title={day.label}>{day.label}</div>
-                              </>
-                            ) : day.strengthToday ? (
-                              <div className="font-mono text-[8px] mt-1" style={{ color: STRENGTH_SESSIONS[day.strengthToday].accent }}>R.{day.strengthToday}</div>
-                            ) : (
-                              <div className="text-[9px]" style={{ color: 'var(--text-faint)' }}>—</div>
-                            )}
+                          <div key={dk} className="rounded-md flex flex-col items-center justify-center px-0.5 text-center overflow-hidden" title={`${dayFull[dk]} — ${day.label}`} style={{ background: tint(c, 13), border: `1px solid ${tint(c, 30)}`, borderTop: `2px solid ${c}`, minHeight: 54 }}>
+                            <Icon size={13} style={{ color: c }} />
+                            <span className="font-mono tracking-widest mt-1 leading-none truncate w-full" style={{ fontSize: 7, color: c }}>{SHORT_TYPE[t] || t.toUpperCase()}</span>
+                            {day.strengthToday && <span className="font-mono leading-none mt-0.5" style={{ fontSize: 6, color: STRENGTH_SESSIONS[day.strengthToday]?.accent || 'var(--accent)' }}>+R.{day.strengthToday}</span>}
                           </div>
                         );
                       })}
                     </div>
-                  </button>
-
-                  {/* Expanded content: show each session's detail + purpose */}
-                  {isOpen && (
-                    <div className="px-4 pb-4 space-y-2 fade-in" style={{ borderTop: '1px solid var(--border)' }}>
-                      {!w.isRaceWeek && (
-                        <div className="pt-4 pb-2 rounded-lg p-3" style={{ background: `${info.color}10`, border: `1px solid ${info.color}30` }}>
-                          <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: info.color }}>PHASE {info.label.toUpperCase()} · {info.focus.toUpperCase()}</div>
-                          <div className="text-xs leading-relaxed" style={{ color: 'var(--text-dim)' }}>{info.explain}</div>
+                    {/* Expanded week detail */}
+                    {isOpen && (
+                      <div className="rounded-lg mb-1 p-3 space-y-2 fade-in" style={{ background: 'var(--bg)', border: `1px solid ${tint(info.color, 35)}` }}>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-display font-bold text-sm">Semaine {w.weekIdx}</span>
+                          <Tag color={info.color}>{info.label.toUpperCase()}</Tag>
+                          {w.isRecoveryWeek && <Tag color="var(--text-dim)">RÉCUP</Tag>}
+                          {w.isRaceWeek && <Tag color="var(--accent)">COURSE</Tag>}
+                          <span className="font-mono text-[10px] tabular flex-1 text-right" style={{ color: 'var(--text-faint)' }}>{fmtDate(w.weekStart)}{w.stats ? ` · ${w.stats.km}km · ${Math.floor(w.stats.duration / 60)}h${String(w.stats.duration % 60).padStart(2, '0')} · ${w.stats.tss} de charge` : ''}</span>
                         </div>
-                      )}
-                      {['lun','mar','mer','jeu','ven','sam','dim'].map(d => {
-                        const day = w.days[d];
-                        if (day.type === 'rest' && !day.strengthToday) return null;
-                        const dayLabel = { lun: 'Lundi', mar: 'Mardi', mer: 'Mercredi', jeu: 'Jeudi', ven: 'Vendredi', sam: 'Samedi', dim: 'Dimanche' }[d];
-                        const typeColor = { rest: 'var(--text-faint)', easy: 'var(--go)', tempo: 'var(--warn)', intervals: 'var(--alert)', long: 'var(--compass)', test: 'var(--danger)' }[day.type];
-                        return (
-                          <div key={d} className="rounded-lg p-3" style={{ background: 'var(--bg)' }}>
-                            <div className="flex items-baseline gap-2 mb-1 flex-wrap">
-                              <div className="font-mono text-[11px] tracking-widest w-20 flex-shrink-0" style={{ color: typeColor }}>{dayLabel.toUpperCase()}</div>
-                              <div className="font-display font-bold text-sm">{day.label}</div>
-                              {(day.plannedMin || day.plannedKm) && (
-                                <div className="font-mono text-xs tabular" style={{ color: typeColor }}>
-                                  {day.plannedMin ? `${day.plannedMin} min` : ''}
-                                  {day.plannedMin && day.plannedKm ? ' · ' : ''}
-                                  {day.plannedKm ? `${day.plannedKm} km` : ''}
-                                </div>
-                              )}
-                              {day.strengthToday && <Tag color={STRENGTH_SESSIONS[day.strengthToday].accent}>+ RENFO {day.strengthToday}</Tag>}
-                            </div>
-                            {day.detail && <div className="text-sm ml-0 md:ml-[88px] leading-relaxed" style={{ color: 'var(--text)' }}>{day.detail}</div>}
-                            {day.purpose && <div className="text-xs ml-0 md:ml-[88px] mt-1 italic" style={{ color: 'var(--text-dim)' }}>→ {day.purpose}</div>}
+                        {!w.isRaceWeek && (
+                          <div className="rounded-lg p-2.5" style={{ background: tint(info.color, 8), border: `1px solid ${tint(info.color, 25)}` }}>
+                            <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: info.color }}>{info.focus.toUpperCase()}</div>
+                            <div className="text-xs leading-relaxed" style={{ color: 'var(--text-dim)' }}>{info.explain}</div>
                           </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                        )}
+                        {dayKeys.map(dk => {
+                          const day = w.days[dk];
+                          if (!day || (day.type === 'rest' && !day.strengthToday)) return null;
+                          const c = SESSION_TYPE_MAP[day.type]?.color || 'var(--text-faint)';
+                          return (
+                            <div key={dk} className="rounded-lg p-2.5" style={{ background: 'var(--bg-elev-2)' }}>
+                              <div className="flex items-baseline gap-2 mb-0.5 flex-wrap">
+                                <span className="font-mono text-[10px] tracking-widest w-16 flex-shrink-0" style={{ color: c }}>{dayFull[dk].toUpperCase()}</span>
+                                <span className="font-display font-bold text-sm">{day.type === 'rest' ? 'Repos' : day.label}</span>
+                                {(day.plannedMin || day.plannedKm) && (
+                                  <span className="font-mono text-[11px] tabular" style={{ color: c }}>
+                                    {day.plannedMin ? `${day.plannedMin} min` : ''}{day.plannedMin && day.plannedKm ? ' · ' : ''}{day.plannedKm ? `${day.plannedKm} km` : ''}
+                                  </span>
+                                )}
+                                {day.strengthToday && <Tag color={STRENGTH_SESSIONS[day.strengthToday]?.accent || 'var(--accent)'}>+ RENFO {day.strengthToday}</Tag>}
+                              </div>
+                              {day.detail && <div className="text-xs leading-relaxed ml-0 md:ml-[72px]" style={{ color: 'var(--text)' }}>{day.detail}</div>}
+                              {day.purpose && <div className="text-[11px] italic mt-0.5 ml-0 md:ml-[72px]" style={{ color: 'var(--text-dim)' }}>→ {day.purpose}</div>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </React.Fragment>
+                );
+              });
+            })()}
+            <div className="font-mono text-[8px] tracking-widest text-center mt-2 pt-2" style={{ color: 'var(--text-faint)', borderTop: '1px solid var(--border)' }}>CLIQUE SUR UNE SEMAINE POUR VOIR LE DÉTAIL</div>
           </div>
+
+          {/* Overwrite warning */}
           <div className="rounded-lg p-3 mb-4" style={{ background: 'rgba(255, 176, 32, 0.06)', border: '1px solid rgba(255, 176, 32, 0.2)' }}>
             <div className="flex items-start gap-2">
               <IconAlert size={14} style={{ color: 'var(--warn)', flexShrink: 0, marginTop: 2 }} />
               <div className="text-xs leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-                <span style={{ color: 'var(--text)' }}>Ce plan écrase tes séances existantes</span> sur les semaines couvertes. Tu pourras toujours les modifier ensuite jour par jour dans Plan → Éditer la semaine.
+                <span style={{ color: 'var(--text)' }}>Ce plan écrase tes séances existantes</span> sur les semaines couvertes. Tu pourras toujours les modifier ensuite jour par jour dans Plan.
               </div>
             </div>
           </div>
