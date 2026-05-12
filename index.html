@@ -3096,7 +3096,7 @@
       }, [profile, races, activities]);
 
       if (!data) return null;
-      const { race, raceDate, daysToRace, targetSec, predictedSec } = data;
+      const { race, raceDate, daysToRace, distKm, targetSec, predictedSec } = data;
 
       const fmtTime = (sec) => {
         if (!sec) return '—';
@@ -3127,9 +3127,12 @@
         statusColor = 'var(--text-dim)';
       }
 
-      // Phase classification (mirrors RaceTimeline)
+      // Phase classification (mirrors RaceTimeline) — "en veille" while the race is still beyond
+      // a realistic prep window (longer for longer races).
+      const prepWeeks = distKm == null ? 14 : (distKm >= 35 ? 18 : distKm >= 20 ? 14 : distKm >= 8 ? 10 : 8);
       let phaseLabel;
-      if (daysToRace <= 14) phaseLabel = 'AFFÛTAGE';
+      if (daysToRace > prepWeeks * 7) phaseLabel = 'EN VEILLE';
+      else if (daysToRace <= 14) phaseLabel = 'AFFÛTAGE';
       else if (daysToRace <= 28) phaseLabel = 'PIC';
       else if (daysToRace <= 56) phaseLabel = 'BUILD';
       else phaseLabel = 'BASE';
@@ -12990,32 +12993,47 @@
             pred = predictRaceTimeV2(Math.round(projCp), wprime, profile.weightKg, distKm, profile.prs, cpWp.merged, tsb, baseCp);
           }
 
-          // Phase classification
+          // Training phase for THIS race — derived purely from the runway. It's only meaningful
+          // once the race enters a realistic prep window (longer for longer races). Beyond that
+          // window the race is "en veille": there's nothing to do specifically for it yet, so we
+          // say that instead of pretending you're already doing "base" work toward it.
+          const prepWeeks = distKm == null ? 14 : (distKm >= 35 ? 18 : distKm >= 20 ? 14 : distKm >= 8 ? 10 : 8);
+          const prepStartMs = raceMs - prepWeeks * 7 * dayMs;
+          const focusRace = (upcoming[0] && upcoming[0].id !== r.id) ? upcoming[0] : null; // the nearer race the plan currently targets
           let phase, phaseColor, phaseDesc;
-          if (totalDays <= 7) { phase = 'AFFÛTAGE'; phaseColor = 'var(--accent)'; phaseDesc = 'Dernière semaine — réduis le volume, garde l\'intensité courte.'; }
+          if (totalDays > prepWeeks * 7) {
+            phase = 'EN VEILLE'; phaseColor = 'var(--text-dim)';
+            phaseDesc = focusRace
+              ? `Course encore lointaine — pas de préparation spécifique pour l'instant. Ton plan vise ${focusRace.name} (J−${Math.round((new Date(focusRace.date) - now) / dayMs)}). La prépa pour cette course-ci démarrera vers le ${fmtDate(new Date(prepStartMs))} (~${prepWeeks} semaines avant).`
+              : `Course encore lointaine — pas besoin de t'entraîner spécifiquement pour l'instant. Continue ton fond aérobie ; la préparation démarrera vers le ${fmtDate(new Date(prepStartMs))} (~${prepWeeks} semaines avant).`;
+          }
+          else if (totalDays <= 7) { phase = 'AFFÛTAGE'; phaseColor = 'var(--accent)'; phaseDesc = 'Dernière semaine — réduis le volume, garde l\'intensité courte.'; }
           else if (totalDays <= 14) { phase = 'AFFÛTAGE'; phaseColor = 'var(--accent)'; phaseDesc = 'Phase d\'affûtage — volume -30%, intensité maintenue.'; }
           else if (totalDays <= 28) { phase = 'PIC'; phaseColor = 'var(--alert)'; phaseDesc = 'Phase de pic — séances spécifiques course à allure cible.'; }
           else if (totalDays <= 56) { phase = 'BUILD'; phaseColor = 'var(--compass)'; phaseDesc = 'Phase de build — montée progressive du volume et de l\'intensité.'; }
           else { phase = 'BASE'; phaseColor = 'var(--go)'; phaseDesc = 'Phase de base aérobie — construis ton fond avant les séances spécifiques.'; }
+          const enVeille = phase === 'EN VEILLE';
 
-          // Hints / what's missing
+          // Hints / what's missing — skipped for "en veille" races (they'd just be noise so far out).
           const hints = [];
-          // Long run check (only relevant for semi+)
-          if (distKm >= 21 && totalDays > 21) {
-            const recentLongRuns = activities.filter(a => {
-              const ageDays = (now.getTime() - a.startMs) / dayMs;
-              return ageDays >= 0 && ageDays <= 28 && (a.durationSec || 0) >= 5400; // 90min
-            }).length;
-            if (recentLongRuns < 2 && distKm >= 21) {
-              hints.push({ type: 'warn', text: `Tu n'as fait que ${recentLongRuns} sortie${recentLongRuns > 1 ? 's' : ''} ≥90min dans les 4 dernières semaines. Pour ${r.distance}, vise 1/semaine.` });
+          if (!enVeille) {
+            // Long run check (only relevant for semi+)
+            if (distKm >= 21 && totalDays > 21) {
+              const recentLongRuns = activities.filter(a => {
+                const ageDays = (now.getTime() - a.startMs) / dayMs;
+                return ageDays >= 0 && ageDays <= 28 && (a.durationSec || 0) >= 5400; // 90min
+              }).length;
+              if (recentLongRuns < 2 && distKm >= 21) {
+                hints.push({ type: 'warn', text: `Tu n'as fait que ${recentLongRuns} sortie${recentLongRuns > 1 ? 's' : ''} ≥90min dans les 4 dernières semaines. Pour ${r.distance}, vise 1/semaine.` });
+              }
             }
-          }
-          if (distKm >= 35 && longRunCount < 3 && totalDays > 28) {
-            hints.push({ type: 'warn', text: `Marathon : seulement ${longRunCount} sortie${longRunCount > 1 ? 's' : ''} longue${longRunCount > 1 ? 's' : ''} planifiée${longRunCount > 1 ? 's' : ''} d'ici la course. Vise 4-6 sorties ≥2h30.` });
-          }
-          // Plan completeness
-          if (totalDays > 7 && daysWithSession < Math.floor(totalDays * 0.4)) {
-            hints.push({ type: 'info', text: `${daysWithSession} séances planifiées sur ${totalDays} jours. Densifie ton plan pour mieux préparer.` });
+            if (distKm >= 35 && longRunCount < 3 && totalDays > 28) {
+              hints.push({ type: 'warn', text: `Marathon : seulement ${longRunCount} sortie${longRunCount > 1 ? 's' : ''} longue${longRunCount > 1 ? 's' : ''} planifiée${longRunCount > 1 ? 's' : ''} d'ici la course. Vise 4-6 sorties ≥2h30.` });
+            }
+            // Plan completeness
+            if (totalDays > 7 && daysWithSession < Math.floor(totalDays * 0.4)) {
+              hints.push({ type: 'info', text: `${daysWithSession} séances planifiées sur ${totalDays} jours. Densifie ton plan pour mieux préparer.` });
+            }
           }
           // TSB safety
           if (totalDays <= 14 && tsb < -10) {
@@ -13030,7 +13048,7 @@
             projCp: Math.round(projCp),
             ctl, atl, tsb,
             pred,
-            phase, phaseColor, phaseDesc,
+            phase, phaseColor, phaseDesc, enVeille, prepWeeks,
             hints,
             distKm,
             totalPlannedTss: Math.round(totalPlannedTss),
@@ -13380,8 +13398,12 @@
                         {/* Plan summary + Remove */}
                         <div className="flex items-center justify-between mt-4 pt-3 border-t flex-wrap gap-2" style={{ borderColor: 'var(--border)' }}>
                           <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
-                            {proj.daysWithSession > 0 ? `${proj.daysWithSession} séances · charge ${proj.totalPlannedTss} planifiée` : 'Aucune séance planifiée d\'ici la course'}
-                            {proj.longRunCount > 0 && ` · ${proj.longRunCount} sortie${proj.longRunCount > 1 ? 's' : ''} longue${proj.longRunCount > 1 ? 's' : ''}`}
+                            {proj.enVeille
+                              ? 'Pas encore en préparation pour cette course'
+                              : (<>
+                                  {proj.daysWithSession > 0 ? `${proj.daysWithSession} séances · charge ${proj.totalPlannedTss} planifiée` : 'Aucune séance planifiée d\'ici la course'}
+                                  {proj.longRunCount > 0 && ` · ${proj.longRunCount} sortie${proj.longRunCount > 1 ? 's' : ''} longue${proj.longRunCount > 1 ? 's' : ''}`}
+                                </>)}
                           </div>
                           <button onClick={() => onRemoveRace(r.id)} className="btn flex items-center gap-1 px-2.5 py-1 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'rgba(255, 91, 91, 0.08)', color: 'var(--danger)' }}>
                             <IconTrash size={11} /> SUPPRIMER
