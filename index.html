@@ -1728,6 +1728,7 @@
     const IconAlert = (p) => <Ico {...p}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></Ico>;
     const IconActivity = (p) => <Ico {...p}><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></Ico>;
     const IconUpload = (p) => <Ico {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></Ico>;
+    const IconGrip = (p) => <Ico {...p}><circle cx="9" cy="6" r="1.8" fill="currentColor" stroke="none"/><circle cx="9" cy="12" r="1.8" fill="currentColor" stroke="none"/><circle cx="9" cy="18" r="1.8" fill="currentColor" stroke="none"/><circle cx="15" cy="6" r="1.8" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1.8" fill="currentColor" stroke="none"/><circle cx="15" cy="18" r="1.8" fill="currentColor" stroke="none"/></Ico>;
     const IconTrending = (p) => <Ico {...p}><polyline points="23 6 13.5 15.5 8.5 10.5 1 18" /><polyline points="17 6 23 6 23 12" /></Ico>;
     const IconPlay = (p) => <Ico {...p}><polygon points="5 3 19 12 5 21 5 3" fill="currentColor" /></Ico>;
     const IconInfo = (p) => <Ico {...p}><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></Ico>;
@@ -4583,6 +4584,9 @@
         if (onConsumePlanJump) onConsumePlanJump();
       }, [planJumpTarget]);
       const [showRaceTimeline, setShowRaceTimeline] = useState(false);
+      // Drag-and-drop reordering of day cards within the displayed week
+      const [dragDayIdx, setDragDayIdx] = useState(null);   // index (0=Mon..6=Sun) of the card being dragged
+      const [dragOverIdx, setDragOverIdx] = useState(null); // index currently hovered as a drop target
       const buildDeletedWeek = () => ({
         lun: { type: 'rest', label: 'Repos', detail: '', strengthToday: null, plannedKm: null, plannedMin: null },
         mar: { type: 'rest', label: 'Repos', detail: '', strengthToday: null, plannedKm: null, plannedMin: null },
@@ -4618,6 +4622,32 @@
       const upcomingRaces = [...races].filter(r => new Date(r.date) >= now).sort((a, b) => new Date(a.date) - new Date(b.date));
       const pastRaces = [...races].filter(r => new Date(r.date) < now).sort((a, b) => new Date(b.date) - new Date(a.date));
 
+      // Materialize the displayed week as a full 7-day object (pulling from overrides or
+      // the default template), so we can edit it even if no override exists yet.
+      const planDayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
+      function buildFullDisplayedWeek() {
+        const out = {};
+        planDayKeys.forEach((dayKey, i) => {
+          const d = new Date(displayedWeekStart); d.setDate(displayedWeekStart.getDate() + i);
+          const p = getPlannedSession(profile, planOverrides, d);
+          out[dayKey] = p
+            ? { type: p.type, label: p.label ?? (p.type === 'rest' ? 'Repos' : ''), detail: p.detail ?? '', blocks: Array.isArray(p.blocks) ? p.blocks : null, strengthToday: p.strengthToday ?? null, plannedKm: p.plannedKm ?? null, plannedMin: p.plannedMin ?? null }
+            : { type: 'rest', label: 'Repos', detail: '', blocks: null, strengthToday: null, plannedKm: null, plannedMin: null };
+        });
+        return out;
+      }
+      // Swap the planned sessions of two days (by index 0=Mon..6=Sun) within the displayed week.
+      // Only the plan content moves — logged activities/renfo stay attached to their real date.
+      function swapPlannedDays(fromIdx, toIdx) {
+        if (fromIdx == null || toIdx == null || fromIdx === toIdx) return;
+        const week = buildFullDisplayedWeek();
+        const a = planDayKeys[fromIdx], b = planDayKeys[toIdx];
+        const tmp = week[a]; week[a] = week[b]; week[b] = tmp;
+        onSavePlanWeek(wsKey, week);
+        const da = weekDays[fromIdx]?.date, db = weekDays[toIdx]?.date;
+        if (da && db) toast.push(`Séances échangées : ${DAYS_FR_LONG[da.getDay()]} ↔ ${DAYS_FR_LONG[db.getDay()]}`, { kind: 'info' });
+      }
+
       const planStart = profile.planStartDate ? new Date(profile.planStartDate) : null;
       const weekIdx = planStart ? Math.floor(daysBetween(planStart, displayedWeekStart) / 7) + 1 : null;
       const editingWeekInitial = useMemo(() => {
@@ -4645,32 +4675,6 @@
               <h1 className="t-h1">Ta semaine et ta saison</h1>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
-              {onImportActivity && (() => {
-                const fileRef = React.createRef();
-                async function handleFile(fileList) {
-                  if (!fileList || !fileList.length) return;
-                  const f = fileList[0];
-                  const text = await f.text();
-                  const lower = f.name.toLowerCase();
-                  let activity = null;
-                  try {
-                    if (lower.endsWith('.tcx')) activity = parseTCX(text);
-                    else if (lower.endsWith('.gpx')) activity = parseGPX(text);
-                    else if (lower.endsWith('.csv')) activity = parseStrydCSV(text, f.name, profile.weightKg);
-                  } catch (err) { toast.push(`Erreur : ${err.message || err}`, { kind: 'warn' }); return; }
-                  if (!activity) { toast.push('Format non reconnu (.tcx, .gpx, .csv).', { kind: 'warn' }); return; }
-                  onImportActivity(activity);
-                  if (fileRef.current) fileRef.current.value = '';
-                }
-                return (
-                  <>
-                    <input ref={fileRef} type="file" accept=".tcx,.gpx,.csv" style={{ display: 'none' }} onChange={(e) => handleFile(e.target.files)} />
-                    <Button variant="secondary" icon={IconUpload} onClick={() => fileRef.current?.click()} title="Importer une activité non planifiée">
-                      Import libre
-                    </Button>
-                  </>
-                );
-              })()}
               <Button variant="primary" icon={IconZap} onClick={() => setGeneratorOpen(true)}>
                 Générer un programme
               </Button>
@@ -4870,24 +4874,52 @@
                       borderColor = 'var(--border)';
                     }
 
+                    const isDragSrc = dragDayIdx === i;
+                    const isDropTgt = dragOverIdx === i && dragDayIdx != null && dragDayIdx !== i;
+                    const cardStyle = { background: bg, border: `1px solid ${borderColor}`, boxShadow: glow, cursor: 'grab' };
+                    if (isDragSrc) cardStyle.opacity = 0.4;
+                    if (isDropTgt) { cardStyle.outline = '2px dashed var(--compass)'; cardStyle.outlineOffset = '3px'; cardStyle.borderColor = 'var(--compass)'; }
                     return (
                       <button
                         key={i}
+                        draggable
                         onClick={() => {
                           const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
                           const dayIdx = (d.date.getDay() + 6) % 7;
                           setEditingInlineDay({ wsKey, dayKey: dayKeys[dayIdx] });
                         }}
+                        onDragStart={(e) => {
+                          setDragDayIdx(i);
+                          if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', String(i)); } catch (err) {} }
+                        }}
+                        onDragEnd={() => { setDragDayIdx(null); setDragOverIdx(null); }}
+                        onDragOver={(e) => {
+                          if (dragDayIdx == null) return;
+                          e.preventDefault();
+                          if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+                          if (dragOverIdx !== i) setDragOverIdx(i);
+                        }}
+                        onDragLeave={() => { setDragOverIdx(prev => (prev === i ? null : prev)); }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          let from = dragDayIdx;
+                          if (from == null && e.dataTransfer) { const t = parseInt(e.dataTransfer.getData('text/plain'), 10); if (!isNaN(t)) from = t; }
+                          setDragDayIdx(null); setDragOverIdx(null);
+                          swapPlannedDays(from, i);
+                        }}
                         className="plan-day-card rounded-xl p-3 md:p-4 min-h-[150px] flex flex-col text-left relative overflow-hidden"
-                        style={{ background: bg, border: `1px solid ${borderColor}`, boxShadow: glow, cursor: 'pointer' }}
-                        title="Cliquer pour éditer cette séance"
+                        style={cardStyle}
+                        title="Glisser pour déplacer la séance · cliquer pour l'éditer"
                       >
                         {/* Type-color corner accent on scheduled days */}
                         {!isRest && !d.isToday && (
                           <div className="pointer-events-none absolute -top-6 -right-6 w-16 h-16 rounded-full" style={{ background: typeColor, opacity: 0.12, filter: 'blur(8px)' }} />
                         )}
                         <div className="relative flex items-center justify-between mb-2">
-                          <div className="font-mono text-[10px] tracking-widest" style={{ color: d.isToday ? 'var(--compass)' : 'var(--text-faint)' }}>{DAYS_FR[d.date.getDay()].toUpperCase()} {String(d.date.getDate()).padStart(2, '0')}</div>
+                          <div className="flex items-center gap-1 min-w-0">
+                            <IconGrip size={11} className="flex-shrink-0" style={{ color: 'var(--text-faint)', opacity: 0.55 }} />
+                            <div className="font-mono text-[10px] tracking-widest truncate" style={{ color: d.isToday ? 'var(--compass)' : 'var(--text-faint)' }}>{DAYS_FR[d.date.getDay()].toUpperCase()} {String(d.date.getDate()).padStart(2, '0')}</div>
+                          </div>
                           <div className="flex items-center gap-1">
                             {hasActivity && <div className="w-4 h-4 rounded-full flex items-center justify-center" title={`${totalKm.toFixed(1)}km couru`} style={{ background: 'var(--go)', color: '#000' }}><IconCheck size={10} strokeWidth={3} /></div>}
                             {hasStrength && d.strength.map((s, si) => (<div key={si} className="w-4 h-4 rounded-full flex items-center justify-center font-mono text-[8px] font-bold" title={`Renfo ${s.type} réalisé`} style={{ background: STRENGTH_SESSIONS[s.type].accent, color: '#000' }}>{s.type}</div>))}
@@ -4925,8 +4957,8 @@
                     );
                   })}
                 </div>
-                <div className="mt-4 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-full t-meta mx-auto" style={{ background: 'var(--bg-elev)', color: 'var(--text-dim)', border: '1px solid var(--border)', width: 'fit-content' }}>
-                  <IconSettings size={11} /> CLIQUE SUR UN JOUR POUR ÉDITER
+                <div className="mt-4 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-full t-meta mx-auto text-center" style={{ background: 'var(--bg-elev)', color: 'var(--text-dim)', border: '1px solid var(--border)', width: 'fit-content' }}>
+                  <IconGrip size={11} /> GLISSE UNE CARTE POUR DÉPLACER LA SÉANCE · CLIQUE POUR ÉDITER
                 </div>
               </div>
             </Card>
@@ -5656,8 +5688,9 @@
           toast.push('Format non reconnu. Utilise .tcx, .gpx ou .csv.', { kind: 'warn' });
           return;
         }
-        // Force-link to this specific planned day
-        const forcedLink = {
+        // Force-link to this specific planned day. On a "rest" day there is nothing
+        // to compare against, so we import without a forced link (auto-detect still runs).
+        const forcedLink = sessionType === 'rest' ? null : {
           weekStartKey: wsKey,
           dayKey: dayKey,
           type: sessionType,
@@ -5980,6 +6013,33 @@
           </div>
         </section>
       );
+
+      // Shown on rest days (no session planned): lets the user attach an activity
+      // they actually ran that day, without going through a global "import" flow.
+      const importSection = onImportActivity ? (
+        <section>
+          <div className="t-meta mb-3" style={{ color: 'var(--text-faint)' }}>ACTIVITÉ RÉALISÉE</div>
+          <div className="rounded-xl p-4 flex flex-col gap-3" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
+            <div className="text-sm leading-snug" style={{ color: 'var(--text-dim)' }}>
+              Tu as couru ce jour-là sans que ce soit prévu ? Importe ton fichier (.tcx, .gpx ou .csv) — il sera rattaché à cette journée.
+            </div>
+            <div>
+              <ImportFromPlanButton
+                wsKey={wsKey}
+                dayKey={dayKey}
+                dayLabel={dayLabel}
+                sessionType={localDay.type}
+                sessionLabel={localDay.label}
+                sessionDetail={localDay.detail}
+                alreadyImported={!!linkedActivity}
+                weightKg={weekContext?.weightKg ?? null}
+                onImport={(activity, forcedLink) => onImportActivity(activity, forcedLink)}
+                onView={() => { if (linkedActivity) onViewActivity(linkedActivity); }}
+              />
+            </div>
+          </div>
+        </section>
+      ) : null;
 
       return (
         <div
@@ -6306,7 +6366,10 @@
                   </div>
                 </div>
               ) : (
-                renfoSection
+                <div className="space-y-6">
+                  {importSection}
+                  {renfoSection}
+                </div>
               )}
             </div>
 
