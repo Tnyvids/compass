@@ -255,6 +255,9 @@
     .input { background: var(--bg); border: 1px solid var(--border-bright); color: var(--text); padding: 0.75rem 1rem; border-radius: 0.625rem; font-size: 0.9375rem; outline: none; transition: border-color 0.2s; width: 100%; font-family: inherit; min-height: 44px; }
     .input:focus { border-color: var(--compass); }
     .input-mono { font-family: 'JetBrains Mono', monospace; }
+    /* Compact numeric field (e.g. H:MIN:SEC time pickers) — hide native spinner so digits aren't clipped */
+    .input-num { padding-left: 0.35rem; padding-right: 0.35rem; -moz-appearance: textfield; appearance: textfield; }
+    .input-num::-webkit-outer-spin-button, .input-num::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 
     /* Drop zone */
     .dropzone { transition: background 0.2s, border-color 0.2s; }
@@ -13310,17 +13313,17 @@
                               <div className="flex items-end gap-1.5">
                                 <div>
                                   <label className="font-mono text-[9px] tracking-widest block mb-1" style={{ color: 'var(--text-faint)' }}>H</label>
-                                  <input type="number" min="0" inputMode="numeric" className="input input-mono" style={{ width: 54, textAlign: 'center', fontSize: 16, fontWeight: 600 }} value={objH} onChange={(e) => setObjH(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') saveObjective(r.id); if (e.key === 'Escape') setEditingObjective(null); }} />
+                                  <input type="number" min="0" inputMode="numeric" className="input input-mono input-num" style={{ width: 64, textAlign: 'center', fontSize: 17, fontWeight: 700 }} value={objH} onChange={(e) => setObjH(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') saveObjective(r.id); if (e.key === 'Escape') setEditingObjective(null); }} />
                                 </div>
                                 <span className="font-display text-lg pb-2" style={{ color: 'var(--text-faint)' }}>:</span>
                                 <div>
                                   <label className="font-mono text-[9px] tracking-widest block mb-1" style={{ color: 'var(--text-faint)' }}>MIN</label>
-                                  <input type="number" min="0" max="59" inputMode="numeric" className="input input-mono" style={{ width: 54, textAlign: 'center', fontSize: 16, fontWeight: 600 }} value={objM} onChange={(e) => setObjM(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') saveObjective(r.id); if (e.key === 'Escape') setEditingObjective(null); }} />
+                                  <input type="number" min="0" max="59" inputMode="numeric" className="input input-mono input-num" style={{ width: 64, textAlign: 'center', fontSize: 17, fontWeight: 700 }} value={objM} onChange={(e) => setObjM(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') saveObjective(r.id); if (e.key === 'Escape') setEditingObjective(null); }} />
                                 </div>
                                 <span className="font-display text-lg pb-2" style={{ color: 'var(--text-faint)' }}>:</span>
                                 <div>
                                   <label className="font-mono text-[9px] tracking-widest block mb-1" style={{ color: 'var(--text-faint)' }}>SEC</label>
-                                  <input type="number" min="0" max="59" inputMode="numeric" className="input input-mono" style={{ width: 54, textAlign: 'center', fontSize: 16, fontWeight: 600 }} value={objS} onChange={(e) => setObjS(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') saveObjective(r.id); if (e.key === 'Escape') setEditingObjective(null); }} />
+                                  <input type="number" min="0" max="59" inputMode="numeric" className="input input-mono input-num" style={{ width: 64, textAlign: 'center', fontSize: 17, fontWeight: 700 }} value={objS} onChange={(e) => setObjS(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') saveObjective(r.id); if (e.key === 'Escape') setEditingObjective(null); }} />
                                 </div>
                               </div>
                               <div className="flex items-center gap-1.5 ml-auto">
