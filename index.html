@@ -13130,19 +13130,15 @@
 
       return (
         <Card className="p-6 md:p-7">
-          <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
-            <div className="flex items-center gap-2">
-              <IconTarget size={14} style={{ color: 'var(--accent)' }} />
-              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>
-                CALENDRIER DE COURSES{upcoming.length > 0 ? ` · ${upcoming.length} À VENIR` : ''}
-              </div>
-            </div>
-            {!adding && (
+          {/* The collapsible header above (in PlanView) already titles this section, so we
+              don't repeat "CALENDRIER DE COURSES" here — just the "Ajouter" action. */}
+          {!adding && (
+            <div className="flex justify-end mb-5">
               <button onClick={() => setAdding(true)} className="btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'rgba(212, 255, 0, 0.1)', color: 'var(--accent)', border: '1px solid rgba(212, 255, 0, 0.3)' }}>
-                <IconPlus size={12} /> AJOUTER
+                <IconPlus size={12} /> AJOUTER UNE COURSE
               </button>
-            )}
-          </div>
+            </div>
+          )}
 
           {/* Inline add form */}
           {adding && (
