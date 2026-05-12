@@ -1729,6 +1729,7 @@
     const IconActivity = (p) => <Ico {...p}><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></Ico>;
     const IconUpload = (p) => <Ico {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></Ico>;
     const IconGrip = (p) => <Ico {...p}><circle cx="9" cy="6" r="1.8" fill="currentColor" stroke="none"/><circle cx="9" cy="12" r="1.8" fill="currentColor" stroke="none"/><circle cx="9" cy="18" r="1.8" fill="currentColor" stroke="none"/><circle cx="15" cy="6" r="1.8" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1.8" fill="currentColor" stroke="none"/><circle cx="15" cy="18" r="1.8" fill="currentColor" stroke="none"/></Ico>;
+    const IconPencil = (p) => <Ico {...p}><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></Ico>;
     const IconTrending = (p) => <Ico {...p}><polyline points="23 6 13.5 15.5 8.5 10.5 1 18" /><polyline points="17 6 23 6 23 12" /></Ico>;
     const IconPlay = (p) => <Ico {...p}><polygon points="5 3 19 12 5 21 5 3" fill="currentColor" /></Ico>;
     const IconInfo = (p) => <Ico {...p}><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></Ico>;
@@ -4562,7 +4563,7 @@
       );
     }
 
-    function PlanView({ profile, races, checkins, activities, strengthSessions, strengthStart, planOverrides, planJumpTarget, onConsumePlanJump, sessionTemplates, onSaveTemplate, onApplyTemplate, onImportActivity, onViewActivity, onSavePlanWeek, onGeneratePlan, onAddRace, onRemoveRace, onSaveProfile, onStrengthStart, onResetStrengthStart, onClearStrengthHistory }) {
+    function PlanView({ profile, races, checkins, activities, strengthSessions, strengthStart, planOverrides, planJumpTarget, onConsumePlanJump, sessionTemplates, onSaveTemplate, onApplyTemplate, onImportActivity, onViewActivity, onSavePlanWeek, onGeneratePlan, onAddRace, onRemoveRace, onUpdateRace, onSaveProfile, onStrengthStart, onResetStrengthStart, onClearStrengthHistory }) {
       const dialog = useDialog();
       const toast = useToast();
       const [editingWeek, setEditingWeek] = useState(null);  // legacy modal mode (kept as fallback)
@@ -4981,7 +4982,7 @@
             </button>
             {showRaceTimeline && (
               <div className="mt-3">
-                <RaceTimeline races={races} profile={profile} activities={activities} planOverrides={planOverrides} onAddRace={onAddRace} onRemoveRace={onRemoveRace} />
+                <RaceTimeline races={races} profile={profile} activities={activities} planOverrides={planOverrides} onAddRace={onAddRace} onRemoveRace={onRemoveRace} onUpdateRace={onUpdateRace} />
               </div>
             )}
           </div>
@@ -12886,10 +12887,12 @@
     //  - "What's missing" hints (e.g. "no long run > 90min in past 3 weeks")
     //  - Inline add/remove
     // ========================================================================
-    function RaceTimeline({ races, profile, activities, planOverrides, onAddRace, onRemoveRace }) {
+    function RaceTimeline({ races, profile, activities, planOverrides, onAddRace, onRemoveRace, onUpdateRace }) {
       const [adding, setAdding] = useState(false);
       const [form, setForm] = useState({ name: '', distance: '10k', date: '', objective: '', priority: 'A' });
       const [expanded, setExpanded] = useState(null); // race id
+      const [editingObjective, setEditingObjective] = useState(null); // race id whose objective is being edited
+      const [objH, setObjH] = useState(''); const [objM, setObjM] = useState(''); const [objS, setObjS] = useState('');
 
       // Best efforts + W' fit (used for V3 prediction)
       const cpWp = useMemo(() => {
@@ -13078,6 +13081,29 @@
         setAdding(false);
       }
 
+      // Open the inline objective editor for a race, pre-filled with its current target
+      // (or, if none, the predicted day-J time as a starting point).
+      function startEditObjective(r) {
+        let sec = parsePRSec((r.objective || '').replace(/sub-?/i, '').trim());
+        if (sec == null) sec = (projections[r.id] && projections[r.id].pred) ? Math.round(projections[r.id].pred.timeSec) : 0;
+        const hh = Math.floor(sec / 3600), mm = Math.floor((sec % 3600) / 60), ss = sec % 60;
+        setObjH(String(hh)); setObjM(String(mm)); setObjS(String(ss));
+        setEditingObjective(r.id);
+      }
+      // Persist the edited objective. Stores a clean "m:ss" or "h:mm:ss" string in races[],
+      // which every other screen reads from — so the change shows up everywhere.
+      function saveObjective(id) {
+        const total = (parseInt(objH, 10) || 0) * 3600 + (parseInt(objM, 10) || 0) * 60 + (parseInt(objS, 10) || 0);
+        if (total <= 0) { onUpdateRace(id, { objective: '' }); setEditingObjective(null); return; }
+        const hh = Math.floor(total / 3600), mm = Math.floor((total % 3600) / 60), ss = total % 60;
+        const str = hh > 0
+          ? `${hh}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`
+          : `${mm}:${String(ss).padStart(2, '0')}`;
+        onUpdateRace(id, { objective: str });
+        setEditingObjective(null);
+      }
+      function clearObjective(id) { onUpdateRace(id, { objective: '' }); setEditingObjective(null); }
+
       // Visual timeline layout
       const timelineMaxDays = upcoming.length > 0 ? Math.max(30, Math.round((new Date(upcoming[upcoming.length - 1].date) - now) / 86400000) + 14) : 30;
 
@@ -13251,7 +13277,12 @@
                                 <div className="font-mono text-[10px]" style={{ color: 'var(--text-dim)' }}>{fmtPace(proj.pred.timeSec, distKm)}</div>
                               </div>
                               <div className="rounded-lg p-3" style={{ background: 'var(--bg-elev)' }}>
-                                <div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>OBJECTIF</div>
+                                <div className="font-mono text-[9px] tracking-widest flex items-center justify-between gap-1" style={{ color: 'var(--text-faint)' }}>
+                                  <span>OBJECTIF</span>
+                                  <button onClick={() => startEditObjective(r)} className="flex items-center gap-0.5 hover:opacity-80" style={{ color: 'var(--compass)' }} title="Modifier l'objectif chrono">
+                                    <IconPencil size={9} /> MODIFIER
+                                  </button>
+                                </div>
                                 {targetSec ? (
                                   <>
                                     <div className="font-display text-xl font-bold tabular" style={{ color: 'var(--text)' }}>{fmtTime(targetSec)}</div>
@@ -13259,13 +13290,67 @@
                                       {onTrack ? `✓ marge ${fmtTime(Math.abs(gap))}` : `manque ${Math.round(gap)}s`}
                                     </div>
                                   </>
+                                ) : r.objective ? (
+                                  <div className="font-display text-base font-bold leading-tight mt-0.5" style={{ color: 'var(--text)' }}>{r.objective}</div>
                                 ) : (
-                                  <div className="font-mono text-xs italic" style={{ color: 'var(--text-faint)' }}>non défini</div>
+                                  <button onClick={() => startEditObjective(r)} className="font-mono text-xs italic mt-0.5" style={{ color: 'var(--compass)' }}>+ définir</button>
                                 )}
                               </div>
                             </>
                           )}
                         </div>
+
+                        {/* Inline objective editor — opens from the "MODIFIER" link in the OBJECTIF box
+                            (or from the row below for races without a prediction). Saves into races[],
+                            which every screen reads from, so the new target shows up everywhere. */}
+                        {editingObjective === r.id && (
+                          <div className="rounded-lg p-3 mt-3 fade-in" style={{ background: 'var(--bg-elev)', border: '1px solid var(--compass)' }}>
+                            <div className="font-mono text-[10px] tracking-widest mb-2 flex items-center gap-1.5" style={{ color: 'var(--compass)' }}><IconTarget size={11} /> OBJECTIF CHRONO — {r.name}</div>
+                            <div className="flex items-end gap-2 flex-wrap">
+                              <div className="flex items-end gap-1.5">
+                                <div>
+                                  <label className="font-mono text-[9px] tracking-widest block mb-1" style={{ color: 'var(--text-faint)' }}>H</label>
+                                  <input type="number" min="0" inputMode="numeric" className="input input-mono" style={{ width: 54, textAlign: 'center', fontSize: 16, fontWeight: 600 }} value={objH} onChange={(e) => setObjH(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') saveObjective(r.id); if (e.key === 'Escape') setEditingObjective(null); }} />
+                                </div>
+                                <span className="font-display text-lg pb-2" style={{ color: 'var(--text-faint)' }}>:</span>
+                                <div>
+                                  <label className="font-mono text-[9px] tracking-widest block mb-1" style={{ color: 'var(--text-faint)' }}>MIN</label>
+                                  <input type="number" min="0" max="59" inputMode="numeric" className="input input-mono" style={{ width: 54, textAlign: 'center', fontSize: 16, fontWeight: 600 }} value={objM} onChange={(e) => setObjM(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') saveObjective(r.id); if (e.key === 'Escape') setEditingObjective(null); }} />
+                                </div>
+                                <span className="font-display text-lg pb-2" style={{ color: 'var(--text-faint)' }}>:</span>
+                                <div>
+                                  <label className="font-mono text-[9px] tracking-widest block mb-1" style={{ color: 'var(--text-faint)' }}>SEC</label>
+                                  <input type="number" min="0" max="59" inputMode="numeric" className="input input-mono" style={{ width: 54, textAlign: 'center', fontSize: 16, fontWeight: 600 }} value={objS} onChange={(e) => setObjS(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') saveObjective(r.id); if (e.key === 'Escape') setEditingObjective(null); }} />
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-1.5 ml-auto">
+                                <button onClick={() => saveObjective(r.id)} className="btn-base btn-primary btn-sm"><IconCheck size={12} /> Enregistrer</button>
+                                <button onClick={() => setEditingObjective(null)} className="btn-base btn-secondary btn-sm">Annuler</button>
+                                {r.objective && <button onClick={() => clearObjective(r.id)} className="btn-base btn-sm" style={{ color: 'var(--danger)', border: '1px solid rgba(255,91,91,0.3)' }} title="Retirer l'objectif"><IconTrash size={11} /></button>}
+                              </div>
+                            </div>
+                            {proj.pred && distKm && (
+                              <div className="font-mono text-[10px] mt-2" style={{ color: 'var(--text-dim)' }}>
+                                Réf. temps prédit jour J : <span style={{ color: 'var(--text)' }}>{fmtTime(proj.pred.timeSec)}</span> · {fmtPace(proj.pred.timeSec, distKm)}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Races without a prediction (Trail / Autre / unknown distance) don't get the
+                            OBJECTIF stat box — give them an objective + edit entry point here instead. */}
+                        {!(proj.pred && distKm) && editingObjective !== r.id && (
+                          <div className="rounded-lg p-3 mt-3 flex items-center justify-between gap-3 flex-wrap" style={{ background: 'var(--bg-elev)' }}>
+                            <div className="flex items-center gap-2 min-w-0">
+                              <IconTarget size={13} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>OBJECTIF CHRONO</div>
+                              <div className="font-display font-bold" style={{ color: r.objective ? 'var(--text)' : 'var(--text-faint)' }}>{r.objective ? (targetSec ? fmtTime(targetSec) : r.objective) : '—'}</div>
+                            </div>
+                            <button onClick={() => startEditObjective(r)} className="btn flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg)', color: 'var(--compass)', border: '1px solid var(--border)' }}>
+                              <IconPencil size={11} /> {r.objective ? 'MODIFIER' : 'DÉFINIR'}
+                            </button>
+                          </div>
+                        )}
 
                         {/* Phase description */}
                         <div className="rounded-lg p-3 mt-3" style={{ background: proj.phaseColor + '08', border: `1px solid ${proj.phaseColor}30` }}>
@@ -15113,6 +15198,9 @@
       }
 
       function handleAddRace(race) { setRaces([...races, race].sort((a, b) => new Date(a.date) - new Date(b.date))); }
+      function handleUpdateRace(id, patch) {
+        setRaces(races.map(r => (r.id === id ? { ...r, ...patch } : r)).sort((a, b) => new Date(a.date) - new Date(b.date)));
+      }
       function handleRemoveRace(id) {
         const race = races.find(r => r.id === id);
         if (!race) return;
@@ -15308,6 +15396,7 @@
                 }}
                 onAddRace={handleAddRace}
                 onRemoveRace={handleRemoveRace}
+                onUpdateRace={handleUpdateRace}
                 onSaveProfile={setProfile}
                 strengthStart={strengthStart}
                 onStrengthStart={handleStrengthStart}
