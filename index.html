@@ -14314,7 +14314,7 @@
       return null;
     }
 
-    function buildPlan({ raceDate, totalWeeks, cp, weightKg, sessionsPerWeek, addStrength, raceDistance, powerPaceTable, userTemplates = [] }) {
+    function buildPlan({ raceDate, totalWeeks, cp, weightKg, sessionsPerWeek, strengthPerWeek = 0, raceDistance, powerPaceTable, userTemplates = [] }) {
       const phasePlan = getPhasePlan(totalWeeks);
       const weeks = [];
       const raceDay = new Date(raceDate);
@@ -14391,10 +14391,12 @@
           });
         }
 
-        if (addStrength) {
+        if (strengthPerWeek > 0) {
+          // Spread the requested number of renfo sessions across rest/easy days, alternating A/B.
+          // (There are only 2 distinct renfo sessions per program, so a 3rd repeats session A.)
           const restOrEasyDays = Object.entries(days).filter(([d, s]) => s.type === 'rest' || s.type === 'easy');
-          if (restOrEasyDays.length >= 1) days[restOrEasyDays[0][0]].strengthToday = 'A';
-          if (restOrEasyDays.length >= 2) days[restOrEasyDays[1][0]].strengthToday = 'B';
+          const n = Math.min(strengthPerWeek, restOrEasyDays.length);
+          for (let i = 0; i < n; i++) days[restOrEasyDays[i][0]].strengthToday = (i % 2 === 0) ? 'A' : 'B';
         }
 
         // Weekly stats
@@ -14505,8 +14507,9 @@
       const [customDate, setCustomDate] = useState('');
       const [customDistance, setCustomDistance] = useState('10k');
       const [sessionsPerWeek, setSessionsPerWeek] = useState(4);
-      const [addStrength, setAddStrength] = useState(true);
+      const [strengthPerWeek, setStrengthPerWeek] = useState((profile && profile.showStrength === false) ? 0 : 2);
       const [preview, setPreview] = useState(null);
+      const archetype = getActiveArchetype(profile);
 
       const powerPaceTable = useMemo(() => buildPowerPaceTable(activities || []), [activities]);
       const hasHistory = powerPaceTable.length >= 3;
@@ -14534,7 +14537,7 @@
         if (totalWeeks > 20) { toast.push('Course trop loin : maximum 20 semaines. Réduit la plage ou attends.', { kind: 'warn' }); return; }
         const plan = buildPlan({
           raceDate: targetDate, totalWeeks, cp: profile.cp, weightKg: profile.weightKg || 70,
-          sessionsPerWeek, addStrength, raceDistance: targetDistance,
+          sessionsPerWeek, strengthPerWeek, raceDistance: targetDistance,
           powerPaceTable,
           userTemplates: sessionTemplates,
         });
@@ -14565,10 +14568,6 @@
             <div className="p-6 md:p-7">
               {!preview ? (
                 <>
-                  <div className="text-sm mb-6 leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-                    Compass génère un plan périodisé (Base → Build → Peak → Taper) adapté à ta CP actuelle ({profile.cp || '?'}W), avec recovery weeks automatiques toutes les 4 semaines.
-                  </div>
-
                   {/* Target */}
                   <div className="mb-5">
                     <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--text-faint)' }}>COURSE CIBLE</div>
@@ -14616,13 +14615,20 @@
 
                   {/* Strength */}
                   <div className="mb-5">
-                    <label className="flex items-center gap-3 cursor-pointer p-3 rounded-lg" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--border)' }}>
-                      <input type="checkbox" checked={addStrength} onChange={(e) => setAddStrength(e.target.checked)} className="w-5 h-5 accent-current" style={{ accentColor: 'var(--accent)' }} />
-                      <div className="flex-1">
-                        <div className="font-display text-sm font-bold">Inclure 2 séances de renfo par semaine</div>
-                        <div className="text-xs" style={{ color: 'var(--text-dim)' }}>Séances A et B les jours easy/repos · 15 min chacune</div>
-                      </div>
-                    </label>
+                    <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--text-faint)' }}>SÉANCES DE RENFO PAR SEMAINE</div>
+                    <div className="grid grid-cols-4 gap-2">
+                      {[0, 1, 2, 3].map(n => (
+                        <button key={n} onClick={() => setStrengthPerWeek(n)} className="btn py-3 rounded-lg" style={{ background: strengthPerWeek === n ? 'var(--accent)' : 'var(--bg-elev-2)', color: strengthPerWeek === n ? '#000' : 'var(--text)', border: `1px solid ${strengthPerWeek === n ? 'var(--accent)' : 'var(--border)'}` }}>
+                          <div className="font-display font-bold text-lg">{n === 0 ? '—' : n}</div>
+                          <div className="font-mono text-[9px] tracking-widest mt-0.5">{n === 0 ? 'AUCUNE' : `${n} / SEM`}</div>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="text-xs mt-2 leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+                      {strengthPerWeek === 0
+                        ? 'Aucune séance de renforcement ajoutée au plan.'
+                        : <>Programme <span style={{ color: 'var(--text)' }}>« {archetype.name} »</span> — {archetype.sessions?.A?.title ? <>séances « {archetype.sessions.A.title} »{archetype.sessions?.B?.title ? ` / « ${archetype.sessions.B.title} »` : ''}</> : 'séances A / B'} placées sur les jours easy/repos, ~15 min chacune.{strengthPerWeek === 3 ? ' La 3ᵉ séance reprend la 1ʳᵉ.' : ''}</>}
+                    </div>
                   </div>
 
                   {/* Historical calibration info */}
