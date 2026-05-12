@@ -14314,30 +14314,11 @@
       return null;
     }
 
-    function buildPlan({ raceDate, totalWeeks, cp, weightKg, sessionsPerWeek, strengthPerWeek = 0, raceDistance, powerPaceTable, userTemplates = [] }) {
+    function buildPlan({ raceDate, totalWeeks, cp, weightKg, sessionsPerWeek, strengthPerWeek = 0, raceDistance, powerPaceTable }) {
       const phasePlan = getPhasePlan(totalWeeks);
       const weeks = [];
       const raceDay = new Date(raceDate);
       const firstWeekStart = getWeekStart(new Date(raceDay.getTime() - (totalWeeks - 1) * 7 * 86400000));
-
-      // Pick the user's preferred template for a given session type — most recently used first,
-      // fallback to most recently created. Returns null if no template matches.
-      function pickUserTemplate(type) {
-        const matches = (userTemplates || []).filter(t => t && t.type === type && Array.isArray(t.blocks) && t.blocks.length > 0);
-        if (matches.length === 0) return null;
-        matches.sort((a, b) => (b.lastUsed || b.createdAt || 0) - (a.lastUsed || a.createdAt || 0));
-        return matches[0];
-      }
-      function cloneBlocksWithFreshIds(blocks) {
-        if (!Array.isArray(blocks)) return null;
-        return blocks.map(b => {
-          const nb = { ...b, id: 'b_' + Math.random().toString(36).slice(2, 9) };
-          if (b.kind === 'group' && Array.isArray(b.children)) {
-            nb.children = b.children.map(c => ({ ...c, id: 'b_' + Math.random().toString(36).slice(2, 9) }));
-          }
-          return nb;
-        });
-      }
 
       function weeklyPattern(n) {
         if (n <= 3) return { mar: 'intervals', jeu: 'tempo', dim: 'long' };
@@ -14368,21 +14349,10 @@
             days[d] = { type: 'rest', label: 'Repos', detail: '' };
           });
           Object.entries(pat).forEach(([day, sessionType]) => {
-            // Silent replacement: if the user has a saved template for this type, use it
-            // (rescaled to current CP via the existing rescaleTemplateForCP flow on profile change).
-            const userTpl = pickUserTemplate(sessionType);
-            if (userTpl) {
-              days[day] = {
-                type: sessionType,
-                label: userTpl.name,
-                detail: userTpl.detail || '',
-                blocks: cloneBlocksWithFreshIds(userTpl.blocks),
-                plannedKm: userTpl.plannedKm ?? null,
-                plannedMin: userTpl.plannedMin ?? null,
-                fromUserTemplate: true,
-              };
-              return;
-            }
+            // The generator builds plans from the built-in periodised session database
+            // (Daniels / Pfitzinger / Yasso / Billat formats), cycling through several
+            // variants per phase so consecutive weeks differ. User-saved templates are
+            // NOT auto-injected here — that produced an identical session every week.
             const tplFn = SESSION_TEMPLATES[sessionType] && SESSION_TEMPLATES[sessionType][phase];
             if (!tplFn) return;
             const tpl = tplFn(cp, w);
@@ -14539,7 +14509,6 @@
           raceDate: targetDate, totalWeeks, cp: profile.cp, weightKg: profile.weightKg || 70,
           sessionsPerWeek, strengthPerWeek, raceDistance: targetDistance,
           powerPaceTable,
-          userTemplates: sessionTemplates,
         });
         setPreview(plan);
       }
@@ -14716,13 +14685,6 @@
         );
       }
 
-      // Count sessions sourced from the user's saved templates (silent replacement)
-      let userTemplatedCount = 0;
-      const userTemplatedTypes = new Set();
-      preview.weeks.forEach(w => Object.values(w.days).forEach(d => {
-        if (d && d.fromUserTemplate) { userTemplatedCount++; userTemplatedTypes.add(d.type); }
-      }));
-
       const phaseOrder = [['base', phaseSummary.base], ['build', phaseSummary.build], ['peak', phaseSummary.peak], ['taper', phaseSummary.taper]].filter(([, n]) => n > 0);
       const lastDate = preview.weeks.length ? new Date(preview.weeks[preview.weeks.length - 1].weekStart.getTime() + 6 * 86400000) : null;
 
@@ -14778,17 +14740,6 @@
               })}
             </div>
           </div>
-
-          {userTemplatedCount > 0 && (
-            <div className="rounded-lg p-3 mb-4" style={{ background: 'rgba(74,158,255,0.06)', border: '1px solid rgba(74,158,255,0.25)' }}>
-              <div className="flex items-start gap-2">
-                <IconBookOpen size={14} style={{ color: 'var(--compass)', flexShrink: 0, marginTop: 2 }} />
-                <div className="text-xs leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-                  <span style={{ color: 'var(--compass)', fontWeight: 600 }}>{userTemplatedCount} séance{userTemplatedCount > 1 ? 's' : ''}</span> reprennent tes templates sauvegardés{userTemplatedTypes.size > 0 ? ` (${Array.from(userTemplatedTypes).map(t => (SESSION_TYPE_MAP[t]?.l || t).toLowerCase()).join(', ')})` : ''}. La périodisation par phase est conservée pour les types sans template.
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* Calendar — one row per week. Click a session for its detail, or the SEM column for the whole week. */}
           <div className="rounded-xl p-2.5 md:p-4 mb-4" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--border)' }}>
