@@ -14557,7 +14557,7 @@
       return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/85 backdrop-blur-md" onClick={onCancel} />
-          <div className={`relative w-full ${preview ? 'max-w-4xl' : 'max-w-3xl'} max-h-[92vh] overflow-y-auto rounded-2xl scale-in`} style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
+          <div className={`relative w-full ${preview ? 'max-w-[94vw]' : 'max-w-3xl'} max-h-[92vh] overflow-y-auto rounded-2xl scale-in`} style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
             <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-5 backdrop-blur-xl" style={{ background: 'rgba(17,17,17,0.9)', borderBottom: '1px solid var(--border)' }}>
               <div>
                 <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--accent)' }}>GÉNÉRATEUR DE PROGRAMME</div>
@@ -14816,7 +14816,7 @@
                     <div className="grid gap-1.5" style={{ gridTemplateColumns: gridCols, marginBottom: 6 }}>
                       {/* Week-info cell — click to expand the whole week */}
                       <button onClick={() => toggleWeek(i)} className="rounded-lg flex flex-col items-start justify-center px-2 py-1.5 text-left transition-colors"
-                        style={{ background: weekOpen && !open.dk ? tint(info.color, 16) : 'var(--bg)', border: `1px solid ${weekOpen ? info.color : 'var(--border)'}`, borderLeft: `4px solid ${info.color}`, minHeight: 84 }}>
+                        style={{ background: weekOpen && !open.dk ? tint(info.color, 16) : 'var(--bg)', border: `1px solid ${weekOpen ? info.color : 'var(--border)'}`, borderLeft: `4px solid ${info.color}`, minHeight: 92 }}>
                         <span className="font-display font-bold leading-none" style={{ fontSize: 16, color: 'var(--text)' }}>S{w.weekIdx}</span>
                         {(w.isRecoveryWeek || w.isRaceWeek) && (
                           <span className="font-mono tracking-widest leading-none mt-1.5 px-1 py-0.5 rounded" style={{ fontSize: 8, color: w.isRaceWeek ? '#000' : 'var(--text)', background: w.isRaceWeek ? 'var(--accent)' : 'var(--bg-elev-2)' }}>{w.isRaceWeek ? 'COURSE' : 'RÉCUP'}</span>
@@ -14834,7 +14834,7 @@
                           return (
                             <button key={dk} onClick={() => toggleDay(i, dk)} className="rounded-lg flex flex-col items-center justify-center px-1 text-center transition-colors"
                               title={`${dayFull[dk]} — Repos${day?.strengthToday ? ` · renfo ${day.strengthToday} (secondaire)` : ''}`}
-                              style={{ background: dayOpen ? 'var(--bg)' : 'transparent', border: `1px solid ${dayOpen ? 'var(--text-faint)' : 'var(--border)'}`, minHeight: 84 }}>
+                              style={{ background: dayOpen ? 'var(--bg)' : 'transparent', border: `1px solid ${dayOpen ? 'var(--text-faint)' : 'var(--border)'}`, minHeight: 92 }}>
                               <span style={{ color: 'var(--text-faint)', fontSize: 16, lineHeight: 1, opacity: 0.4 }}>·</span>
                               {day?.strengthToday && <span className="font-mono leading-tight mt-1.5" style={{ fontSize: 8.5, color: ac, opacity: 0.85 }}>+ renfo {day.strengthToday}</span>}
                             </button>
@@ -14844,13 +14844,13 @@
                         const Icon = SESSION_TYPE_MAP[t]?.Icon || IconActivity;
                         const durLabel = day.plannedMin ? `${day.plannedMin}'` : (day.plannedKm ? `${day.plannedKm} km` : '');
                         return (
-                          <button key={dk} onClick={() => toggleDay(i, dk)} className="rounded-lg flex flex-col items-center justify-center px-1 text-center overflow-hidden transition-transform hover:-translate-y-0.5"
+                          <button key={dk} onClick={() => toggleDay(i, dk)} className="rounded-lg flex flex-col items-center justify-center gap-1 px-2 py-1.5 text-center overflow-hidden transition-transform hover:-translate-y-0.5"
                             title={`${dayFull[dk]} — ${day.label}`}
-                            style={{ background: tint(c, dayOpen ? 22 : 14), border: `1px solid ${dayOpen ? c : tint(c, 32)}`, borderTop: `3px solid ${c}`, minHeight: 84 }}>
+                            style={{ background: tint(c, dayOpen ? 22 : 14), border: `1px solid ${dayOpen ? c : tint(c, 32)}`, borderTop: `3px solid ${c}`, minHeight: 92 }}>
                             <Icon size={18} style={{ color: c }} />
-                            <span className="font-mono tracking-widest leading-none mt-1.5 truncate w-full" style={{ fontSize: 9.5, color: c }}>{SHORT_TYPE[t] || t.toUpperCase()}</span>
-                            {durLabel && <span className="font-mono tabular leading-none mt-1" style={{ fontSize: 9, color: 'var(--text-dim)' }}>{durLabel}</span>}
-                            {day.strengthToday && <span className="font-mono leading-none mt-1" style={{ fontSize: 7.5, color: STRENGTH_SESSIONS[day.strengthToday]?.accent || 'var(--accent)', opacity: 0.8 }}>+ renfo {day.strengthToday}</span>}
+                            <span className="leading-tight line-clamp-2 font-medium" style={{ fontSize: 10.5, color: 'var(--text)' }}>{day.label}</span>
+                            {durLabel && <span className="font-mono tabular leading-none" style={{ fontSize: 9.5, color: c }}>{durLabel}</span>}
+                            {day.strengthToday && <span className="font-mono leading-none" style={{ fontSize: 8, color: STRENGTH_SESSIONS[day.strengthToday]?.accent || 'var(--accent)', opacity: 0.85 }}>+ renfo {day.strengthToday}</span>}
                           </button>
                         );
                       })}
