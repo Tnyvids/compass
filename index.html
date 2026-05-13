@@ -5083,6 +5083,182 @@
     //   block = { id, kind: 'group', reps, children: [single_blocks] }
     // Rendering: groups are bordered boxes with reps input + children inside + "add child" button.
     // Serialization: groups become "N×(A + B + C)".
+
+    // ======================================================================
+    // BLOCK PARSING / TOTALS — file-scope helpers
+    // Same logic that the modal's BLOCS editor uses, exposed here so the plan
+    // generator can compute plannedMin/plannedKm identically. This eliminates
+    // the divergence between the grid (estimateSessionKm avg-watt heuristic)
+    // and the modal (per-block duration × per-block watts).
+    // ctx = { cp, weightKg, ppt } — same shape as inside the editor.
+    // ======================================================================
+    function makeBlockId() { return 'b_' + Math.random().toString(36).slice(2, 9); }
+
+    // SINGLE_WATT_TOLERANCE_W : un libellé "à 172W" est lu comme une fourchette
+    // [172-5, 172+5] pour ne pas faire biper la montre quand l'effort dérive
+    // de quelques watts (chaleur, vent, côte, dérive cardiaque). Les fourchettes
+    // déjà explicites dans le texte (ex. 216-226W) sont laissées telles quelles.
+    const SINGLE_WATT_TOLERANCE_W = 5;
+
+    function parseSingleSegment(seg, opts = {}) {
+      const widen = opts.widenSingleW != null ? opts.widenSingleW : SINGLE_WATT_TOLERANCE_W;
+      const s = String(seg);
+      const mixedMatch = s.match(/(\d+)\s*['′m]\s*(\d+)\s*["″s]/);
+      let durMin;
+      if (mixedMatch) {
+        durMin = parseInt(mixedMatch[1]) + parseInt(mixedMatch[2]) / 60;
+      } else {
+        const minMatch = s.match(/(\d+(?:[.,]\d+)?)\s*['′]/);
+        const secMatch = s.match(/(\d+)\s*["″]/);
+        if (minMatch) durMin = parseFloat(minMatch[1].replace(',', '.'));
+        else if (secMatch) durMin = parseInt(secMatch[1]) / 60;
+        else return null;
+      }
+      const rangeMatch = s.match(/(\d{2,3})\s*[-–]\s*(\d{2,3})\s*w/i);
+      const singleMatch = !rangeMatch && (s.match(/à\s*(\d{2,3})\s*w/i) || s.match(/(?:^|\s)(\d{2,3})\s*w\b/i));
+      let powerLow = null, powerHigh = null;
+      if (rangeMatch) {
+        powerLow = parseInt(rangeMatch[1]);
+        powerHigh = parseInt(rangeMatch[2]);
+      } else if (singleMatch) {
+        const p = parseInt(singleMatch[1]);
+        if (widen > 0) {
+          powerLow = Math.max(0, p - widen);
+          powerHigh = p + widen;
+        } else {
+          powerLow = powerHigh = p;
+        }
+      }
+      return { durMin: Math.round(durMin * 1000) / 1000, powerLow, powerHigh };
+    }
+
+    function parseSessionDetail(s, ctx = {}) {
+      if (!s || !s.trim()) return [];
+      let work = String(s);
+
+      // 1. Pré-passe : "Xm à PW" → "T' à PW" via ppt ou poids·1.04
+      work = work.replace(/(\d{2,4})\s*m\s+à\s*(\d{2,3})\s*[wW]\b/g, (m, meters, power) => {
+        const pwr = parseInt(power, 10);
+        const dist = parseInt(meters, 10);
+        if (!pwr || !dist) return m;
+        let secs = null;
+        if (ctx.ppt && ctx.ppt.length) {
+          const paceSec = estimatePaceForPower(pwr, ctx.ppt);
+          if (paceSec) secs = (dist / 1000) * paceSec;
+        }
+        if (!secs && ctx.weightKg) {
+          const speedMs = pwr / (ctx.weightKg * 1.04);
+          if (speedMs > 0) secs = dist / speedMs;
+        }
+        if (!secs || !isFinite(secs)) return m;
+        const totalSec = Math.round(secs);
+        const minPart = Math.floor(totalSec / 60);
+        const secPart = totalSec % 60;
+        let durTok;
+        if (minPart === 0) durTok = `${secPart}"`;
+        else if (secPart === 0) durTok = `${minPart}'`;
+        else durTok = `${minPart}'${secPart}"`;
+        return `${durTok} à ${pwr}W`;
+      });
+
+      // 2. Extraction des groupes — chaque match remplacé par __GROUP_N__ pour
+      //    préserver sa position dans le texte (l'ordre des blocs reste celui du détail).
+      const groups = {};
+      let groupCounter = 0;
+      const storeGroup = (g) => {
+        const key = `__GROUP_${groupCounter++}__`;
+        groups[key] = g;
+        return ` ${key} `;
+      };
+
+      // Forme A — "N×(<contenu>)" : multi-blocs entre parenthèses.
+      work = work.replace(/(\d+)\s*[×x]\s*\(([^)]+)\)/gi, (m, n, contents) => {
+        const reps = parseInt(n);
+        const segs = contents.split(/\s*\+\s*/).map(x => x.trim());
+        const children = [];
+        segs.forEach((seg, idx) => {
+          const parsed = parseSingleSegment(seg);
+          if (!parsed) return;
+          let blockKind = 'work';
+          if (idx > 0) blockKind = 'recovery';
+          if (parsed.powerLow && ctx.cp && parsed.powerLow / ctx.cp < 0.75) blockKind = 'recovery';
+          children.push({ id: makeBlockId(), kind: 'single', blockKind, ...parsed });
+        });
+        if (children.length === 0) return m;
+        return storeGroup({ id: makeBlockId(), kind: 'group', reps, children });
+      });
+
+      // Forme B — "N×<travail> [(<récup>)]" : travail suivi d'une récup optionnelle entre parens.
+      work = work.replace(
+        /(\d+)\s*[×x]\s*([^+(]+?)\s*(?:\(([^)]+)\))?\s*(?=[+]|$|__GROUP_\d+__)/g,
+        (m, n, workSeg, recoverySeg) => {
+          const reps = parseInt(n);
+          const parsedWork = parseSingleSegment(workSeg);
+          if (!parsedWork || parsedWork.durMin === undefined) return m;
+          const children = [{ id: makeBlockId(), kind: 'single', blockKind: 'work', ...parsedWork }];
+          if (recoverySeg) {
+            const clean = recoverySeg.replace(/^\s*R\b\s*/i, '').trim();
+            const parsedRec = parseSingleSegment(clean);
+            if (parsedRec && parsedRec.durMin !== undefined) {
+              children.push({ id: makeBlockId(), kind: 'single', blockKind: 'recovery', ...parsedRec });
+            }
+          }
+          return storeGroup({ id: makeBlockId(), kind: 'group', reps, children });
+        }
+      );
+
+      // 3. Split final par "+" — segments dans l'ordre du texte.
+      const out = [];
+      const segs = work.split(/\s*\+\s*/).map(x => x.trim()).filter(x => x.length > 0);
+      segs.forEach(seg => {
+        const groupMatch = seg.match(/^__GROUP_(\d+)__$/);
+        if (groupMatch) {
+          const g = groups[seg];
+          if (g) out.push(g);
+          return;
+        }
+        if (seg.includes('__GROUP_')) return;
+        const parsed = parseSingleSegment(seg);
+        if (!parsed) return;
+        const low = seg.toLowerCase();
+        let blockKind = 'work';
+        if (/éch|warmup/i.test(low)) blockKind = 'warmup';
+        else if (/ret\b|cool/i.test(low)) blockKind = 'cooldown';
+        else if (parsed.powerLow && ctx.cp && parsed.powerLow / ctx.cp < 0.75) {
+          // Bloc basse intensité : warmup/recovery par défaut, MAIS un bloc long
+          // (≥ 30 min) à basse intensité est en réalité une sortie aérobie ('work').
+          if (parsed.durMin >= 30) blockKind = 'work';
+          else blockKind = out.length === 0 ? 'warmup' : 'recovery';
+        }
+        out.push({ id: makeBlockId(), kind: 'single', blockKind, ...parsed });
+      });
+
+      return out;
+    }
+
+    function computeSessionTotals(blocks, ctx = {}) {
+      let totalMin = 0, totalKm = 0;
+      const addSingle = (b, mult = 1) => {
+        if (!b.durMin) return;
+        const m = b.durMin * mult;
+        totalMin += m;
+        const pwr = b.powerLow != null ? (b.powerLow + b.powerHigh) / 2 : (ctx.cp ? ctx.cp * 0.75 : null);
+        if (pwr && ctx.ppt && ctx.ppt.length) {
+          const paceSec = estimatePaceForPower(pwr, ctx.ppt);
+          if (paceSec) { totalKm += (m * 60) / paceSec; return; }
+        }
+        if (pwr && ctx.weightKg) {
+          const speedMs = pwr / (ctx.weightKg * 1.04);
+          totalKm += (speedMs * m * 60) / 1000;
+        }
+      };
+      (blocks || []).forEach(b => {
+        if (b.kind === 'single') addSingle(b, 1);
+        else if (b.kind === 'group') (b.children || []).forEach(c => addSingle(c, b.reps));
+      });
+      return { totalMin: Math.round(totalMin * 10) / 10, totalKm: Math.round(totalKm * 10) / 10 };
+    }
+
     function SessionBlocksEditor({ day, onChange, ctx }) {
       function makeId() { return 'b_' + Math.random().toString(36).slice(2, 9); }
 
@@ -5174,146 +5350,6 @@
         return blocks;
       }
 
-      // Parse existing detail into new block structure.
-      // L'algorithme procède en 3 phases :
-      //   1. Pré-passe : convertit "Xm à PW" en "T' à PW" pour que les reps en
-      //      mètres (ex. 6×800m, R 400m) soient quantifiables.
-      //   2. Extraction des groupes (N×) avec recovery éventuelle entre parens,
-      //      remplacés par un marqueur indexé pour préserver leur position.
-      //   3. Split final par "+", chaque segment devient soit un bloc simple,
-      //      soit un groupe via lookup du marqueur. Ordre garanti correct.
-      function parseDetailToBlocks(s) {
-        if (!s || !s.trim()) return [];
-        let work = String(s);
-
-        // 1. Pré-passe : "Xm à PW" → "T' à PW" (durée dérivée de la puissance via
-        //    historique allure/puissance, sinon fallback poids·1.04). Couvre aussi
-        //    les recovery en mètres entre parenthèses, ex. (R 400m à 160W).
-        work = work.replace(/(\d{2,4})\s*m\s+à\s*(\d{2,3})\s*[wW]\b/g, (m, meters, power) => {
-          const pwr = parseInt(power, 10);
-          const dist = parseInt(meters, 10);
-          if (!pwr || !dist) return m;
-          let secs = null;
-          if (ctx && ctx.ppt && ctx.ppt.length) {
-            const paceSec = estimatePaceForPower(pwr, ctx.ppt);
-            if (paceSec) secs = (dist / 1000) * paceSec;
-          }
-          if (!secs && ctx && ctx.weightKg) {
-            const speedMs = pwr / (ctx.weightKg * 1.04);
-            if (speedMs > 0) secs = dist / speedMs;
-          }
-          if (!secs || !isFinite(secs)) return m;
-          const totalSec = Math.round(secs);
-          const minPart = Math.floor(totalSec / 60);
-          const secPart = totalSec % 60;
-          let durTok;
-          if (minPart === 0) durTok = `${secPart}"`;
-          else if (secPart === 0) durTok = `${minPart}'`;
-          else durTok = `${minPart}'${secPart}"`;
-          return `${durTok} à ${pwr}W`;
-        });
-
-        // 2. Extraction des groupes — chaque groupe matché est stocké dans `groups`
-        //    et son emplacement est remplacé par un marqueur __GROUP_N__ pour
-        //    qu'au pass 3, le split par "+" produise les blocs dans l'ordre du texte.
-        const groups = {};
-        let groupCounter = 0;
-        const storeGroup = (g) => {
-          const key = `__GROUP_${groupCounter++}__`;
-          groups[key] = g;
-          return ` ${key} `;
-        };
-
-        // Forme A — "N×(<contents>)" : multi-blocs entre parenthèses.
-        work = work.replace(/(\d+)\s*[×x]\s*\(([^)]+)\)/gi, (m, n, contents) => {
-          const reps = parseInt(n);
-          const segs = contents.split(/\s*\+\s*/).map(x => x.trim());
-          const children = [];
-          segs.forEach((seg, idx) => {
-            const parsed = parseSingleSeg(seg);
-            if (!parsed) return;
-            let blockKind = 'work';
-            if (idx > 0) blockKind = 'recovery';
-            if (parsed.powerLow && ctx.cp && parsed.powerLow / ctx.cp < 0.75) blockKind = 'recovery';
-            children.push({ id: makeId(), kind: 'single', blockKind, ...parsed });
-          });
-          if (children.length === 0) return m;
-          return storeGroup({ id: makeId(), kind: 'group', reps, children });
-        });
-
-        // Forme B — "N×<work> [(<recovery>)]" : work suivi d'une recovery optionnelle
-        //   entre parens. Le séparateur entre `×` et le segment work peut être vide
-        //   (3×6') ou contenir des espaces (3× 6'). Le segment work est non-greedy
-        //   jusqu'au prochain `+`, `(`, ou marqueur de groupe — ce qui évite
-        //   l'ancien bug de pass 2 qui aspirait le cooldown comme recovery.
-        work = work.replace(
-          /(\d+)\s*[×x]\s*([^+(]+?)\s*(?:\(([^)]+)\))?\s*(?=[+]|$|__GROUP_\d+__)/g,
-          (m, n, workSeg, recoverySeg) => {
-            const reps = parseInt(n);
-            const parsedWork = parseSingleSeg(workSeg);
-            if (!parsedWork || parsedWork.durMin === undefined) return m;
-            const children = [{ id: makeId(), kind: 'single', blockKind: 'work', ...parsedWork }];
-            if (recoverySeg) {
-              // Strip leading "R " marker ("R 2' à 172W" → "2' à 172W")
-              const clean = recoverySeg.replace(/^\s*R\b\s*/i, '').trim();
-              const parsedRec = parseSingleSeg(clean);
-              if (parsedRec && parsedRec.durMin !== undefined) {
-                children.push({ id: makeId(), kind: 'single', blockKind: 'recovery', ...parsedRec });
-              }
-            }
-            return storeGroup({ id: makeId(), kind: 'group', reps, children });
-          }
-        );
-
-        // 3. Split final par "+" — chaque segment devient un bloc dans l'ordre du texte.
-        const out = [];
-        const segs = work.split(/\s*\+\s*/).map(x => x.trim()).filter(x => x.length > 0);
-        segs.forEach(seg => {
-          const groupMatch = seg.match(/^__GROUP_(\d+)__$/);
-          if (groupMatch) {
-            const g = groups[seg];
-            if (g) out.push(g);
-            return;
-          }
-          // Filtrer les fragments de marqueurs résiduels (rare)
-          if (seg.includes('__GROUP_')) return;
-          const parsed = parseSingleSeg(seg);
-          if (!parsed) return;
-          const low = seg.toLowerCase();
-          let blockKind = 'work';
-          if (/éch|warmup/i.test(low)) blockKind = 'warmup';
-          else if (/ret\b|cool/i.test(low)) blockKind = 'cooldown';
-          else if (parsed.powerLow && ctx.cp && parsed.powerLow / ctx.cp < 0.75) {
-            blockKind = out.length === 0 ? 'warmup' : 'recovery';
-          }
-          out.push({ id: makeId(), kind: 'single', blockKind, ...parsed });
-        });
-
-        return out;
-      }
-
-      function parseSingleSeg(seg) {
-        const s = String(seg);
-        // Mixed format first: "1'30\"" or "1m30s"
-        const mixedMatch = s.match(/(\d+)\s*['′m]\s*(\d+)\s*["″s]/);
-        let durMin;
-        if (mixedMatch) {
-          durMin = parseInt(mixedMatch[1]) + parseInt(mixedMatch[2]) / 60;
-        } else {
-          const minMatch = s.match(/(\d+(?:[.,]\d+)?)\s*['′]/);
-          const secMatch = s.match(/(\d+)\s*["″]/);
-          if (minMatch) durMin = parseFloat(minMatch[1].replace(',', '.'));
-          else if (secMatch) durMin = parseInt(secMatch[1]) / 60;
-          else return null;
-        }
-        const rangeMatch = s.match(/(\d{2,3})\s*[-–]\s*(\d{2,3})\s*w/i);
-        const singleMatch = !rangeMatch && (s.match(/à\s*(\d{2,3})\s*w/i) || s.match(/(?:^|\s)(\d{2,3})\s*w\b/i));
-        let powerLow = null, powerHigh = null;
-        if (rangeMatch) { powerLow = parseInt(rangeMatch[1]); powerHigh = parseInt(rangeMatch[2]); }
-        else if (singleMatch) { powerLow = powerHigh = parseInt(singleMatch[1]); }
-        return { durMin: Math.round(durMin * 1000) / 1000, powerLow, powerHigh };
-      }
-
       // Serialize to detail string
       function serializeBlocks(blocks) {
         const parts = [];
@@ -5348,30 +5384,10 @@
         return `${durLabel}${powerStr ? ' à ' + powerStr : ''}${kindTag}`;
       }
 
-      // Compute totals
+      // computeTotals delegates to the file-scope helper used by buildPlan,
+      // so the BLOCS editor and the Plan grid show matching numbers.
       function computeTotals(blocks, cp, weightKg, ppt) {
-        let totalMin = 0, totalKm = 0;
-        const addSingle = (b, mult = 1) => {
-          if (!b.durMin) return;
-          const m = b.durMin * mult;
-          totalMin += m;
-          const pwr = b.powerLow != null ? (b.powerLow + b.powerHigh) / 2 : (cp ? cp * 0.75 : null);
-          if (pwr && ppt && ppt.length) {
-            const paceSec = estimatePaceForPower(pwr, ppt);
-            if (paceSec) { totalKm += (m * 60) / paceSec; return; }
-          }
-          if (pwr && weightKg) {
-            const speedMs = pwr / (weightKg * 1.04);
-            totalKm += (speedMs * m * 60) / 1000;
-          }
-        };
-        blocks.forEach(b => {
-          if (b.kind === 'single') addSingle(b, 1);
-          else if (b.kind === 'group') {
-            b.children.forEach(c => addSingle(c, b.reps));
-          }
-        });
-        return { totalMin: Math.round(totalMin * 10) / 10, totalKm: Math.round(totalKm * 10) / 10 };
+        return computeSessionTotals(blocks, { cp, weightKg, ppt });
       }
 
       // CONTROLLED COMPONENT: blocks come from props.day.blocks (single source of truth).
@@ -5390,7 +5406,7 @@
         }
         // Case 2: blocks is null/undefined — try to parse from detail as a fallback
         if (day.detail && day.detail.trim().length > 2) {
-          return parseDetailToBlocks(day.detail);
+          return parseSessionDetail(day.detail, ctx);
         }
         // Case 3: nothing
         return [];
@@ -14545,11 +14561,17 @@
             // applique déjà le retrait -20 % en semaine de récup, et son detail est calibré dessus.
             const skipAdjust = sessionType === 'long' && Number.isFinite(tpl.explicitDurationMin);
             const adjustedTpl = (isRecoveryWeek && !skipAdjust) ? adjustForRecovery(tpl, sessionType, cp) : tpl;
+            // On parse aussi le détail en blocs ET on calcule les totaux ICI
+            // pour que plannedMin/plannedKm soient cohérents avec ce que l'éditeur
+            // de blocs affiche (même formule de bout en bout : durée × puissance
+            // bloc par bloc, sans heuristique de drag/moyenne globale).
+            const dayBlocks = parseSessionDetail(adjustedTpl.detail, { cp, weightKg, ppt: powerPaceTable });
             days[day] = {
               type: sessionType,
               label: adjustedTpl.label,
               detail: adjustedTpl.detail,
               purpose: adjustedTpl.purpose,
+              blocks: dayBlocks,
             };
             if (Number.isFinite(adjustedTpl.explicitDurationMin)) {
               days[day].explicitDurationMin = adjustedTpl.explicitDurationMin;
@@ -14580,29 +14602,51 @@
           if (d.type === 'rest') return;
           sessionCount++;
           let dur, km;
+          // Totaux des blocs : c'est la SEULE source de vérité côté générateur
+          // pour plannedMin/plannedKm. L'éditeur de blocs utilise exactement la
+          // même fonction (computeSessionTotals), donc le grid et le modal
+          // affichent les mêmes chiffres.
+          const blockTotals = computeSessionTotals(d.blocks, { cp, weightKg, ppt: powerPaceTable });
+
           // Trust explicit values from user templates rather than re-estimating from detail text.
           if (d.fromUserTemplate && Number.isFinite(d.plannedMin) && d.plannedMin > 0) {
             dur = d.plannedMin;
             km = Number.isFinite(d.plannedKm) && d.plannedKm > 0
               ? d.plannedKm
-              : estimateSessionKm(d.type, cp, weightKg, dur, d.detail, null, powerPaceTable);
+              : (blockTotals.totalKm > 0 ? blockTotals.totalKm : estimateSessionKm(d.type, cp, weightKg, dur, d.detail, null, powerPaceTable));
           } else if (Number.isFinite(d.explicitDurationMin) && d.explicitDurationMin > 0) {
             // Durée déjà calculée par le générateur (ex. sortie longue calée sur la distance
             // de course) — on contourne le boost +15 % et le floor : la valeur est canonique.
+            // km est dérivé des blocs si possible, sinon de la durée explicite.
             dur = d.explicitDurationMin;
-            km = estimateSessionKm(d.type, cp, weightKg, dur, d.detail, null, powerPaceTable);
-          } else {
-            const rawDur = estimateSessionDuration(d.detail, d.type);
-            // On recovery weeks: never boost, apply 0.7 factor on easy/long to ensure real deload
-            let boostedRaw;
-            if (isRecoveryWeek && (d.type === 'easy' || d.type === 'long')) {
-              boostedRaw = Math.round(rawDur * 0.70); // strict deload for easy/long
+            if (blockTotals.totalKm > 0 && blockTotals.totalMin > 0) {
+              km = Math.round((blockTotals.totalKm * dur / blockTotals.totalMin) * 10) / 10;
             } else {
-              const shouldBoost = (d.type === 'easy' || d.type === 'long') && strongAthlete;
-              boostedRaw = shouldBoost ? Math.round(rawDur * volumeMultiplier) : rawDur;
+              km = estimateSessionKm(d.type, cp, weightKg, dur, d.detail, null, powerPaceTable);
             }
-            dur = Math.max(boostedRaw, minDurByType[d.type] || 0);
-            km = estimateSessionKm(d.type, cp, weightKg, dur, d.detail, null, powerPaceTable);
+          } else {
+            // Durée et km dérivés directement des blocs. Fallback sur les anciennes
+            // heuristiques si parseSessionDetail n'a rien produit (détail texte non
+            // standard, ex. template utilisateur libre).
+            const rawDur = blockTotals.totalMin > 0 ? blockTotals.totalMin : estimateSessionDuration(d.detail, d.type);
+            const rawKm  = blockTotals.totalKm  > 0 ? blockTotals.totalKm  : null;
+            // On recovery weeks: never boost, apply 0.7 factor on easy/long to ensure real deload.
+            // Le boost +15 % ne s'applique plus qu'aux footings easy : la longue a déjà sa durée
+            // calibrée via explicitDurationMin, et on ne veut pas la rallonger arbitrairement.
+            let scale = 1;
+            if (isRecoveryWeek && (d.type === 'easy' || d.type === 'long')) scale = 0.70;
+            else if (d.type === 'easy' && strongAthlete) scale = volumeMultiplier;
+            const scaledDur = Math.round(rawDur * scale);
+            const floor = minDurByType[d.type] || 0;
+            dur = Math.max(scaledDur, floor);
+            // Si on a appliqué un scale ou un floor, on rééchelonne km en proportion
+            // (la vitesse moyenne ne change pas, seul le temps couru change).
+            if (rawKm !== null) {
+              const finalScale = rawDur > 0 ? dur / rawDur : 1;
+              km = Math.round(rawKm * finalScale * 10) / 10;
+            } else {
+              km = estimateSessionKm(d.type, cp, weightKg, dur, d.detail, null, powerPaceTable);
+            }
           }
           d.plannedMin = dur;
           d.plannedKm = km;
