@@ -1607,8 +1607,11 @@
     // Recalibrate all plan overrides watt targets when CP changes.
     // Walks through every day's blocks AND detail string, and rescales
     // each watt value by the ratio (newCP / oldCP).
+    // If fromDate is provided, only days on/after fromDate are recalibrated —
+    // past sessions keep their original watts (they were done at the old CP,
+    // touching them would rewrite history).
     // Returns new planOverrides object.
-    function recalibratePlanForCP(planOverrides, oldCP, newCP) {
+    function recalibratePlanForCP(planOverrides, oldCP, newCP, fromDate = null) {
       if (!oldCP || !newCP || oldCP === newCP) return planOverrides;
       const ratio = newCP / oldCP;
       const rescaleW = (w) => Math.round(w * ratio);
@@ -1643,12 +1646,29 @@
         });
       };
 
+      // Cutoff au début de la journée (00:00) — la séance d'aujourd'hui compte comme « à venir »
+      let cutoffMs = null;
+      if (fromDate) {
+        const d = new Date(fromDate);
+        d.setHours(0, 0, 0, 0);
+        cutoffMs = d.getTime();
+      }
+      const dayKeyOrder = { lun: 0, mar: 1, mer: 2, jeu: 3, ven: 4, sam: 5, dim: 6 };
+
       const result = {};
       Object.entries(planOverrides || {}).forEach(([wsKey, week]) => {
         if (!week) { result[wsKey] = week; return; }
+        // wsKey est un YYYY-MM-DD du lundi de la semaine
+        const wsParts = wsKey.split('-');
+        const weekStart = wsParts.length === 3 ? new Date(parseInt(wsParts[0]), parseInt(wsParts[1]) - 1, parseInt(wsParts[2])) : null;
         const newWeek = {};
         Object.entries(week).forEach(([dayKey, day]) => {
           if (!day) { newWeek[dayKey] = day; return; }
+          // Filtre par date : on ne touche que les jours >= cutoff
+          if (cutoffMs !== null && weekStart && dayKeyOrder[dayKey] !== undefined) {
+            const dayMs = weekStart.getTime() + dayKeyOrder[dayKey] * 86400000;
+            if (dayMs < cutoffMs) { newWeek[dayKey] = day; return; }
+          }
           newWeek[dayKey] = {
             ...day,
             detail: rescaleDetail(day.detail),
@@ -15456,30 +15476,42 @@
       // Utilisé à la fois quand la CP change dans Profil ET via le bouton manuel
       // « Recalibrer les watts » sous la CP. Met à jour planSourceCp pour suivre
       // la CP qui a servi à calculer les watts cibles.
+      // Le recalibrage ne touche QUE les séances à partir d'aujourd'hui :
+      // les séances passées gardent leurs watts d'origine (elles ont été faites
+      // à l'ancienne CP — réécrire leur cible falsifierait l'historique).
       async function handleRecalibratePlan(oldCP, newCP) {
         if (!oldCP || !newCP || oldCP === newCP) return false;
-        const overridesCount = Object.keys(planOverrides).length;
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        // On ne compte que les semaines qui ont au moins un jour >= aujourd'hui
+        const futureOverridesCount = Object.keys(planOverrides || {}).filter(wsKey => {
+          const parts = wsKey.split('-');
+          if (parts.length !== 3) return false;
+          const weekStart = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+          const weekEnd = new Date(weekStart.getTime() + 6 * 86400000);
+          return weekEnd.getTime() >= today.getTime();
+        }).length;
         const tplCount = sessionTemplates.length;
-        if (overridesCount === 0 && tplCount === 0) {
-          toast.push('Aucun plan ni template à recalibrer.', { kind: 'info' });
+        if (futureOverridesCount === 0 && tplCount === 0) {
+          toast.push('Aucune séance à venir ni template à recalibrer.', { kind: 'info' });
           return false;
         }
         const ratio = newCP / oldCP;
         const pct = Math.round((ratio - 1) * 100);
         const parts = [];
-        if (overridesCount > 0) parts.push(`tes ${overridesCount} semaine${overridesCount > 1 ? 's' : ''} planifiée${overridesCount > 1 ? 's' : ''}`);
+        if (futureOverridesCount > 0) parts.push(`tes séances à venir (${futureOverridesCount} semaine${futureOverridesCount > 1 ? 's' : ''})`);
         if (tplCount > 0) parts.push(`tes ${tplCount} template${tplCount > 1 ? 's' : ''} de séance`);
         const what = parts.join(' et ');
         const ok = await dialog.confirm({
           title: `Recalibrer ${what} ?`,
-          message: `CP ${oldCP}W → ${newCP}W (${pct >= 0 ? '+' : ''}${pct}%).\nTous les watts cibles seront ajustés proportionnellement.`,
+          message: `CP ${oldCP}W → ${newCP}W (${pct >= 0 ? '+' : ''}${pct}%).\nLes watts seront ajustés proportionnellement à partir d'aujourd'hui. Les séances déjà passées gardent leurs watts d'origine.`,
           confirmLabel: 'Recalibrer',
         });
         if (ok) {
-          if (overridesCount > 0) setPlanOverrides(recalibratePlanForCP(planOverrides, oldCP, newCP));
+          if (futureOverridesCount > 0) setPlanOverrides(recalibratePlanForCP(planOverrides, oldCP, newCP, today));
           if (tplCount > 0) setSessionTemplates(sessionTemplates.map(t => rescaleTemplateForCP(t, oldCP, newCP)));
           setProfile(p => ({ ...p, planSourceCp: newCP }));
-          toast.push(`Watts recalibrés sur ${newCP}W.`, { kind: 'success' });
+          toast.push(`Watts recalibrés sur ${newCP}W à partir d'aujourd'hui.`, { kind: 'success' });
         }
         return ok;
       }
