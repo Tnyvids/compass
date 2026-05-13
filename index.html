@@ -5180,6 +5180,35 @@
         const out = [];
         let work = String(s);
 
+        // Pré-passe : convertir "Xm à PW" en "T' à PW" pour que les répétitions
+        // par distance (ex. 6×800m à 271W, R 400m à 160W) soient comptabilisées
+        // dans les blocs. Sans ça, parseSingleSeg ignore les segments en mètres
+        // (pas d'unité de temps reconnue) et le total des km/min sous-estime
+        // sérieusement la séance.
+        work = work.replace(/(\d{2,4})\s*m\s+à\s*(\d{2,3})\s*[wW]\b/g, (m, meters, power) => {
+          const pwr = parseInt(power, 10);
+          const dist = parseInt(meters, 10);
+          if (!pwr || !dist) return m;
+          let secs = null;
+          if (ctx && ctx.ppt && ctx.ppt.length) {
+            const paceSec = estimatePaceForPower(pwr, ctx.ppt);
+            if (paceSec) secs = (dist / 1000) * paceSec;
+          }
+          if (!secs && ctx && ctx.weightKg) {
+            const speedMs = pwr / (ctx.weightKg * 1.04);
+            if (speedMs > 0) secs = dist / speedMs;
+          }
+          if (!secs || !isFinite(secs)) return m;
+          const totalSec = Math.round(secs);
+          const minPart = Math.floor(totalSec / 60);
+          const secPart = totalSec % 60;
+          let durTok;
+          if (minPart === 0) durTok = `${secPart}"`;
+          else if (secPart === 0) durTok = `${minPart}'`;
+          else durTok = `${minPart}'${secPart}"`;
+          return `${durTok} à ${pwr}W`;
+        });
+
         // Pass 1: explicit "N×(...)" or "N x (...)" with parentheses
         work = work.replace(/(\d+)\s*[×x]\s*\(([^)]+)\)/gi, (m, n, contents) => {
           const reps = parseInt(n);
