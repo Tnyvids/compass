@@ -8533,6 +8533,18 @@
                 </div>
               </div>
             )}
+            {!editing && profile.cp && profile.planSourceCp && profile.cp !== profile.planSourceCp && planOverrides && Object.keys(planOverrides).length > 0 && onRecalibratePlan && (
+              <div className="mt-4 rounded-lg p-3 flex items-start gap-3" style={{ background: 'rgba(74, 158, 255, 0.06)', border: '1px solid rgba(74, 158, 255, 0.25)' }}>
+                <IconZap size={14} style={{ color: 'var(--compass)', flexShrink: 0, marginTop: 2 }} />
+                <div className="text-xs leading-relaxed flex-1">
+                  <span className="font-display font-bold" style={{ color: 'var(--compass)' }}>Watts du plan désynchronisés</span>
+                  <div style={{ color: 'var(--text-dim)' }} className="mt-0.5">
+                    Ta CP a changé depuis la génération du plan ({profile.planSourceCp}W → {profile.cp}W, {(() => { const p = Math.round((profile.cp / profile.planSourceCp - 1) * 100); return (p >= 0 ? '+' : '') + p + '%'; })()}). Les watts cibles ne sont plus à l'échelle.
+                  </div>
+                </div>
+                <button onClick={onRecalibratePlan} className="btn rounded-lg px-3 py-2 font-mono text-[10px] tracking-widest whitespace-nowrap" style={{ background: 'var(--compass)', color: '#000', border: '1px solid var(--compass)' }}>RECALIBRER</button>
+              </div>
+            )}
           </Card>
 
           {/* PRs */}
@@ -13913,16 +13925,47 @@
           ];
           return variants[(w - 1) % variants.length];
         },
-        peak: (cp, w) => {
+        peak: (cp, w, ctx) => {
+          // En Peak, les blocs « race-pace » sont calés sur l'allure de la course visée :
+          //   5K ≈ CP·1.04, 10K ≈ CP·0.99, 15K ≈ CP·0.95, semi ≈ CP·0.92, marathon ≈ CP·0.86
+          // ctx.slotIdx = 0 → jour qualité principal à allure course
+          // ctx.slotIdx >= 1 → 2e jour seuil de la semaine (semi/marathon) → sous-seuil contrôlé
+          const rp = (ctx && ctx.raceProfile) || { key: '10k', racePaceMul: 0.99, racePaceLabel: 'allure 10K', raceLabelShort: '10K' };
+          const slotIdx = (ctx && Number.isFinite(ctx.slotIdx)) ? ctx.slotIdx : 0;
+          const rpW = Math.round(cp * rp.racePaceMul);
+
+          if (slotIdx >= 1) {
+            const subW = Math.round(cp * 0.90);
+            const variants = [
+              { label: 'Seuil sous-LT', detail: `${wUp(cp)} + 3×10' à ${subW}-${Math.round(cp*0.93)}W (R 2' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Deuxième jour seuil de la semaine, intensité contrôlée.' },
+              { label: 'Cruise seuil', detail: `${wUp(cp)} + 4×7' à ${subW}-${Math.round(cp*0.93)}W (R 90" à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Volume sous-seuil pour soutenir la grosse séance qualité.' },
+              { label: 'Tempo continu', detail: `${wUp(cp)} + 25' continus à ${Math.round(cp*0.90)}W + ${wDown(cp)}`, purpose: 'Endurance au seuil, journée qualité secondaire.' },
+            ];
+            return variants[(w - 1) % variants.length];
+          }
+
+          // Slot 0 : qualité principale à l'allure de la course
+          const isMar = rp.key === 'marathon';
+          const isLong = isMar || rp.key === 'semi' || rp.key === '15k';
+          const reps1 = isMar ? "3×15'" : isLong ? "4×10'" : "3×8'";
+          const reps2 = isMar ? "2×20'" : isLong ? "2×15'" : "2×12'";
+          const recover = isMar ? "3" : "2";
+          const cont1 = isMar ? "30'" : isLong ? "25'" : "20'";
+          const cont2 = isMar ? "20'" : isLong ? "15'" : "10'";
+          const repsKm = isMar ? '8' : (rp.key === 'semi' || rp.key === '15k') ? '6' : '5';
           const variants = [
-            { label: 'Seuil compact', detail: `${wUp(cp)} + 2×15' à ${Math.round(cp*0.95)}-${Math.round(cp*1.00)}W (R 3' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Affûtage au seuil élevé, mime l\'effort d\'une demi-course 10K.' },
-            { label: 'Allure compétition', detail: `${wUp(cp)} + 3×8' à ${Math.round(cp*0.96)}-${Math.round(cp*1.00)}W (R 2' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Répétitions à l\'intensité de course 10K, préparation spécifique.' },
-            { label: 'Seuil allure course', detail: `${wUp(cp)} + 20' à ${Math.round(cp*0.97)}W + 5' marche + 10' à ${Math.round(cp*0.97)}W + ${wDown(cp)}`, purpose: 'Bloc race-pace long, dernier crash-test avant la course.' },
-            { label: 'Spécifique race-pace', detail: `${wUp(cp)} + 5×1000m à ${Math.round(cp*0.97)}W (R 2' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Précision sur la distance de répétition = la course elle-même.' },
+            { label: `Spécifique ${rp.raceLabelShort}`, detail: `${wUp(cp)} + ${reps1} à ${rpW}W (R ${recover}' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: `Répétitions à ${rp.racePaceLabel}, calibrage du tempo course.` },
+            { label: `Bloc ${rp.racePaceLabel}`, detail: `${wUp(cp)} + ${reps2} à ${rpW}W (R 3' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: `Blocs longs à ${rp.racePaceLabel}, gestion d'effort sur la durée.` },
+            { label: `${rp.racePaceLabel} en continu`, detail: `${wUp(cp)} + ${cont1} à ${rpW}W + 5' marche + ${cont2} à ${rpW}W + ${wDown(cp)}`, purpose: `Bloc race-pace long, dernier crash-test avant la course.` },
+            { label: `Race-pace 1000m`, detail: `${wUp(cp)} + ${repsKm}×1000m à ${rpW}W (R 2' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: `Précision à ${rp.racePaceLabel} sur fractions courtes.` },
           ];
           return variants[(w - 1) % variants.length];
         },
-        taper: (cp) => ({ label: 'Tempo léger', detail: `${wUp(cp)} + 2×6' à ${Math.round(cp*0.92)}-${Math.round(cp*0.95)}W (R 2' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Maintien du seuil en volume réduit, affûtage sans stress.' }),
+        taper: (cp, w, ctx) => {
+          const rp = (ctx && ctx.raceProfile) || { racePaceMul: 0.94, racePaceLabel: 'allure cible' };
+          const rpW = Math.round(cp * Math.min(0.96, rp.racePaceMul));
+          return { label: 'Tempo léger', detail: `${wUp(cp)} + 2×6' à ${rpW}W (R 2' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Maintien de l\'allure cible en volume réduit, affûtage sans stress.' };
+        },
       },
 
       intervals: {
@@ -13961,37 +14004,57 @@
       },
 
       long: {
-        base: (cp, w) => {
-          const baseMin = 60 + Math.min(30, (w - 1) * 5);
+        // ctx (optionnel) : { targetMin, raceProfile } — fourni par buildPlan
+        //   targetMin = durée cible déjà calculée (ramp progressif sur le bloc, retrait récup, taper)
+        //   raceProfile = profil de la course visée (pour les variants spé)
+        // Quand ctx.targetMin est fourni, on renvoie explicitDurationMin pour que buildPlan
+        // contourne le boost +15 % / floor de durée.
+        base: (cp, w, ctx) => {
+          const T = (ctx && Number.isFinite(ctx.targetMin)) ? ctx.targetMin : (60 + Math.min(30, (w - 1) * 5));
           const variants = [
-            { label: 'Sortie longue aérobie', detail: `${baseMin}' constant à ${Math.round(cp*0.72)}-${Math.round(cp*0.82)}W`, purpose: 'Construire la durée supportable en aérobie pur, base de tout plan.' },
-            { label: 'Longue avec pickups', detail: `${baseMin - 15}' à ${Math.round(cp*0.75)}W + 6×1' à ${Math.round(cp*0.92)}W (R 2' à ${Math.round(cp*0.70)}W) + 5' à ${Math.round(cp*0.70)}W`, purpose: 'Introduit de la variabilité dans la longue, stimule la fin de course.' },
-            { label: 'Progressive longue', detail: `${baseMin}' en 3 tiers : ${Math.round(cp*0.72)}W → ${Math.round(cp*0.80)}W → ${Math.round(cp*0.88)}W`, purpose: 'Apprend à finir fort, travaille la résistance mentale.' },
-            { label: 'Longue vallonnée', detail: `${baseMin}' à ${Math.round(cp*0.75)}-${Math.round(cp*0.85)}W avec relances à ${Math.round(cp*0.95)}W en côte`, purpose: 'Renforcement musculaire intégré, spécifique parcours vallonnés.' },
+            { label: 'Sortie longue aérobie', detail: `${T}' constant à ${Math.round(cp*0.72)}-${Math.round(cp*0.82)}W`, purpose: 'Construire la durée supportable en aérobie pur, base de tout plan.', explicitDurationMin: T },
+            { label: 'Longue avec pickups', detail: `${Math.max(20, T - 15)}' à ${Math.round(cp*0.75)}W + 6×1' à ${Math.round(cp*0.92)}W (R 2' à ${Math.round(cp*0.70)}W) + 5' à ${Math.round(cp*0.70)}W`, purpose: 'Introduit de la variabilité dans la longue, stimule la fin de course.', explicitDurationMin: T },
+            { label: 'Progressive longue', detail: `${T}' en 3 tiers : ${Math.round(cp*0.72)}W → ${Math.round(cp*0.80)}W → ${Math.round(cp*0.88)}W`, purpose: 'Apprend à finir fort, travaille la résistance mentale.', explicitDurationMin: T },
+            { label: 'Longue vallonnée', detail: `${T}' à ${Math.round(cp*0.75)}-${Math.round(cp*0.85)}W avec relances à ${Math.round(cp*0.95)}W en côte`, purpose: 'Renforcement musculaire intégré, spécifique parcours vallonnés.', explicitDurationMin: T },
           ];
           return variants[(w - 1) % variants.length];
         },
-        build: (cp, w) => {
+        build: (cp, w, ctx) => {
+          const T = (ctx && Number.isFinite(ctx.targetMin)) ? ctx.targetMin : 90;
+          const rp = (ctx && ctx.raceProfile) || null;
+          const tempoW = Math.round(cp * 0.92);
+          const rpW = rp ? Math.round(cp * rp.racePaceMul) : Math.round(cp * 0.92);
+          const isLongRace = rp && (rp.key === 'marathon' || rp.key === 'semi' || rp.key === '15k');
           const variants = [
-            { label: 'Longue + finish seuil', detail: `60' à ${Math.round(cp*0.75)}W + 20' à ${Math.round(cp*0.90)}-${Math.round(cp*0.93)}W`, purpose: 'Apprend à pousser fatigué, simulation fin de semi/marathon.' },
-            { label: 'Longue avec fractions', detail: `45' à ${Math.round(cp*0.75)}W + 6×3' à ${Math.round(cp*0.95)}W (R 2' à ${Math.round(cp*0.70)}W) + 15' à ${Math.round(cp*0.72)}W`, purpose: 'Combine volume et intensité, séance très qualitative.' },
-            { label: 'Progressive longue', detail: `90' progressive : 30' à ${Math.round(cp*0.72)}W + 30' à ${Math.round(cp*0.80)}W + 30' à ${Math.round(cp*0.90)}W`, purpose: 'Montée graduelle d\'intensité sur effort long, classique des plans marathon.' },
-            { label: 'Longue tempo medley', detail: `30' à ${Math.round(cp*0.75)}W + 3×10' à ${Math.round(cp*0.92)}W (R 2' trot à ${Math.round(cp*0.70)}W) + 15' à ${Math.round(cp*0.72)}W`, purpose: 'Seuil sur fond de fatigue, excellent transfert course.' },
-            { label: 'Longue avec seuil milieu', detail: `20' à ${Math.round(cp*0.72)}W + 30' à ${Math.round(cp*0.90)}W + 30' à ${Math.round(cp*0.75)}W`, purpose: 'Bloc seuil encadré de aérobie, simule pacing course.' },
-            { label: 'Longue Pfitz MLR', detail: `90-105' à ${Math.round(cp*0.80)}-${Math.round(cp*0.85)}W constante`, purpose: 'Medium-Long Run de Pfitzinger : intensité aérobie soutenue, très formateur.' },
+            { label: 'Longue + finish seuil', detail: `${Math.max(30, T - 20)}' à ${Math.round(cp*0.75)}W + 20' à ${tempoW}-${Math.round(cp*0.93)}W`, purpose: 'Apprend à pousser fatigué, simulation fin de semi/marathon.', explicitDurationMin: T },
+            { label: 'Longue avec fractions', detail: `${Math.max(25, T - 35)}' à ${Math.round(cp*0.75)}W + 6×3' à ${Math.round(cp*0.95)}W (R 2' à ${Math.round(cp*0.70)}W) + 15' à ${Math.round(cp*0.72)}W`, purpose: 'Combine volume et intensité, séance très qualitative.', explicitDurationMin: T },
+            { label: 'Progressive longue', detail: `${T}' progressive : ${Math.round(T/3)}' à ${Math.round(cp*0.72)}W + ${Math.round(T/3)}' à ${Math.round(cp*0.80)}W + ${T - 2*Math.round(T/3)}' à ${Math.round(cp*0.90)}W`, purpose: "Montée graduelle d'intensité sur effort long, classique des plans marathon.", explicitDurationMin: T },
+            { label: 'Longue tempo medley', detail: `${Math.max(20, T - 45)}' à ${Math.round(cp*0.75)}W + 3×10' à ${tempoW}W (R 2' trot à ${Math.round(cp*0.70)}W) + 15' à ${Math.round(cp*0.72)}W`, purpose: 'Seuil sur fond de fatigue, excellent transfert course.', explicitDurationMin: T },
+            isLongRace
+              ? { label: `Longue avec bloc ${rp.racePaceLabel}`, detail: `${Math.max(15, Math.round(T*0.25))}' à ${Math.round(cp*0.72)}W + 30' à ${rpW}W + ${Math.max(15, T - 30 - Math.round(T*0.25))}' à ${Math.round(cp*0.75)}W`, purpose: `Bloc à ${rp.racePaceLabel} encadré d'aérobie, simule le pacing de la course.`, explicitDurationMin: T }
+              : { label: 'Longue avec seuil milieu', detail: `${Math.max(15, Math.round(T*0.25))}' à ${Math.round(cp*0.72)}W + 30' à ${Math.round(cp*0.90)}W + ${Math.max(15, T - 30 - Math.round(T*0.25))}' à ${Math.round(cp*0.75)}W`, purpose: 'Bloc seuil encadré de aérobie, simule pacing course.', explicitDurationMin: T },
+            { label: 'Longue Pfitz MLR', detail: `${T}' à ${Math.round(cp*0.80)}-${Math.round(cp*0.85)}W constante`, purpose: 'Medium-Long Run de Pfitzinger : intensité aérobie soutenue, très formateur.', explicitDurationMin: T },
           ];
           return variants[(w - 1) % variants.length];
         },
-        peak: (cp, w) => {
+        peak: (cp, w, ctx) => {
+          const T = (ctx && Number.isFinite(ctx.targetMin)) ? ctx.targetMin : 100;
+          const rp = (ctx && ctx.raceProfile) || { key: '10k', racePaceMul: 0.99, racePaceLabel: 'allure 10K', raceLabelShort: '10K' };
+          const rpW = Math.round(cp * rp.racePaceMul);
+          const tempoW = Math.round(cp * Math.max(0.88, Math.min(0.95, rp.racePaceMul - 0.04)));
+          const rpBlockMin = rp.key === 'marathon' ? 50 : (rp.key === 'semi' || rp.key === '15k') ? 40 : 30;
           const variants = [
-            { label: 'Longue spé course', detail: `50' à ${Math.round(cp*0.75)}W + 30' à ${Math.round(cp*0.97)}W (allure 10K)`, purpose: 'Simule la seconde moitié d\'une course longue à allure cible.' },
-            { label: 'Longue avec bloc course', detail: `30' à ${Math.round(cp*0.72)}W + 25' à ${Math.round(cp*0.97)}W + 15' à ${Math.round(cp*0.75)}W + 10' à ${Math.round(cp*1.00)}W + 10' à ${Math.round(cp*0.70)}W`, purpose: 'Double bloc d\'effort, test de résilience.' },
-            { label: 'Tempo simulation', detail: `20' à ${Math.round(cp*0.72)}W + 40' continus à ${Math.round(cp*0.92)}W + 10' à ${Math.round(cp*0.68)}W`, purpose: 'Gros bloc seuil continu, prépare mentalement à la course.' },
-            { label: 'Demi-distance pace', detail: `${wUp(cp)} + 45' continus à ${Math.round(cp*0.97)}W`, purpose: 'Demi-course simulée à allure cible, test final.' },
+            { label: `Longue spé ${rp.raceLabelShort}`, detail: `${Math.max(20, T - rpBlockMin)}' à ${Math.round(cp*0.75)}W + ${rpBlockMin}' à ${rpW}W (${rp.racePaceLabel})`, purpose: `Simule la seconde moitié de course à ${rp.racePaceLabel}.`, explicitDurationMin: T },
+            { label: 'Longue avec bloc course', detail: `${Math.max(20, T - 60)}' à ${Math.round(cp*0.72)}W + 25' à ${rpW}W + 15' à ${Math.round(cp*0.75)}W + 10' à ${rpW}W + 10' à ${Math.round(cp*0.70)}W`, purpose: "Double bloc d'effort à allure course, test de résilience.", explicitDurationMin: T },
+            { label: 'Tempo simulation', detail: `${Math.max(15, T - 50)}' à ${Math.round(cp*0.72)}W + 40' continus à ${tempoW}W + 10' à ${Math.round(cp*0.68)}W`, purpose: 'Gros bloc seuil continu, prépare mentalement à la course.', explicitDurationMin: T },
+            { label: `Demi-distance ${rp.raceLabelShort}`, detail: `${wUp(cp)} + ${Math.max(30, T - 25)}' continus à ${rpW}W`, purpose: `Demi-course simulée à ${rp.racePaceLabel}, test final.`, explicitDurationMin: T },
           ];
           return variants[(w - 1) % variants.length];
         },
-        taper: (cp) => ({ label: 'Longue courte', detail: `50-60' à ${Math.round(cp*0.75)}-${Math.round(cp*0.82)}W, fraîche`, purpose: 'Maintien du volume long réduit, dernière longue avant course.' }),
+        taper: (cp, w, ctx) => {
+          const T = (ctx && Number.isFinite(ctx.targetMin)) ? ctx.targetMin : 55;
+          return { label: 'Longue courte', detail: `${T}' à ${Math.round(cp*0.75)}-${Math.round(cp*0.82)}W, fraîche`, purpose: 'Maintien du volume long réduit, dernière longue avant course.', explicitDurationMin: T };
+        },
       },
     };
 
@@ -14314,17 +14377,73 @@
       return null;
     }
 
+    // Profil de course : à partir d'un libellé de distance ('5K', '10K', '15K', 'Semi', 'Marathon'),
+    // renvoie l'allure cible (en multiple de CP), le libellé de cette allure, la durée plafond
+    // pour la sortie longue (en min), et le type d'emphase hebdomadaire à appliquer.
+    function getRaceProfile(raceDistance) {
+      const raw = String(raceDistance || '10K').toLowerCase().replace(/[\s_-]/g, '');
+      let key = '10k';
+      if (/^5(k|km)?$/.test(raw)) key = '5k';
+      else if (/^10(k|km)?$/.test(raw)) key = '10k';
+      else if (/^15(k|km)?$/.test(raw)) key = '15k';
+      else if (/^(semi|half)$/.test(raw) || /^21\.?\d*(k|km)?$/.test(raw)) key = 'semi';
+      else if (/^marathon$/.test(raw) || /^42\.?\d*(k|km)?$/.test(raw)) key = 'marathon';
+
+      const profiles = {
+        '5k':       { racePaceMul: 1.04, racePaceLabel: 'allure 5K',       raceLabelShort: '5K',  longRunPeakMin: 70,  weeklyEmphasis: 'vma_seuil_long' },
+        '10k':      { racePaceMul: 0.99, racePaceLabel: 'allure 10K',      raceLabelShort: '10K', longRunPeakMin: 90,  weeklyEmphasis: 'vma_seuil_long' },
+        '15k':      { racePaceMul: 0.95, racePaceLabel: 'allure 15K',      raceLabelShort: '15K', longRunPeakMin: 100, weeklyEmphasis: 'seuil_dominant' },
+        'semi':     { racePaceMul: 0.92, racePaceLabel: 'allure semi',     raceLabelShort: 'semi',longRunPeakMin: 115, weeklyEmphasis: 'seuil_dominant' },
+        'marathon': { racePaceMul: 0.86, racePaceLabel: 'allure marathon', raceLabelShort: 'M',   longRunPeakMin: 160, weeklyEmphasis: 'marathon_specific' },
+      };
+      return { key, ...profiles[key] };
+    }
+
+    // Durée cible (min) de la sortie longue pour une semaine donnée :
+    // montée linéaire de ~55' (semaine 1) jusqu'à longRunPeakMin (dernière semaine de Peak),
+    // taper progressif (70 % → 50 %), retrait -20 % sur semaine de récup.
+    function computeLongRunMin({ weekIdx, totalWeeks, phasePlan, isRecoveryWeek, raceProfile }) {
+      const baseMin = 55;
+      const peakMin = (raceProfile && raceProfile.longRunPeakMin) || 90;
+      const lastNonTaperWeek = phasePlan.base + phasePlan.build + phasePlan.peak;
+      const peakLongWeek = Math.max(2, lastNonTaperWeek);
+
+      let target;
+      if (weekIdx <= peakLongWeek) {
+        const denom = Math.max(1, peakLongWeek - 1);
+        const progress = Math.min(1, Math.max(0, (weekIdx - 1) / denom));
+        target = Math.round(baseMin + (peakMin - baseMin) * progress);
+      } else {
+        const taperIdx = weekIdx - peakLongWeek;
+        const taperWeeks = Math.max(1, totalWeeks - peakLongWeek);
+        const reduction = 0.70 - 0.20 * Math.min(1, (taperIdx - 1) / Math.max(1, taperWeeks - 1));
+        target = Math.round(peakMin * reduction);
+      }
+      if (isRecoveryWeek) target = Math.round(target * 0.80);
+      return Math.max(40, target);
+    }
+
     function buildPlan({ raceDate, totalWeeks, cp, weightKg, sessionsPerWeek, strengthPerWeek = 0, raceDistance, powerPaceTable }) {
       const phasePlan = getPhasePlan(totalWeeks);
+      const raceProfile = getRaceProfile(raceDistance);
       const weeks = [];
       const raceDay = new Date(raceDate);
       const firstWeekStart = getWeekStart(new Date(raceDay.getTime() - (totalWeeks - 1) * 7 * 86400000));
 
-      function weeklyPattern(n) {
-        if (n <= 3) return { mar: 'intervals', jeu: 'tempo', dim: 'long' };
-        if (n === 4) return { mar: 'intervals', jeu: 'tempo', sam: 'easy', dim: 'long' };
-        if (n === 5) return { mar: 'intervals', mer: 'easy', jeu: 'tempo', sam: 'easy', dim: 'long' };
-        return { mar: 'intervals', mer: 'easy', jeu: 'tempo', ven: 'easy', sam: 'easy', dim: 'long' };
+      // Structure hebdomadaire selon la distance + phase :
+      //  - 5K/10K (vma_seuil_long) : VMA mardi + seuil jeudi + longue dimanche (comportement classique)
+      //  - 15K/Semi (seuil_dominant) : en Build/Peak, le mardi VMA bascule en 2e jour seuil
+      //  - Marathon (marathon_specific) : en Peak, le mardi VMA bascule en jour race-pace tempo
+      function weeklyPattern(n, profile, phase) {
+        const emphasis = (profile && profile.weeklyEmphasis) || 'vma_seuil_long';
+        const swapToTempo =
+          (emphasis === 'marathon_specific' && phase === 'peak') ||
+          (emphasis === 'seuil_dominant' && (phase === 'build' || phase === 'peak'));
+        const t1 = swapToTempo ? 'tempo' : 'intervals';
+        if (n <= 3) return { mar: t1, jeu: 'tempo', dim: 'long' };
+        if (n === 4) return { mar: t1, jeu: 'tempo', sam: 'easy', dim: 'long' };
+        if (n === 5) return { mar: t1, mer: 'easy', jeu: 'tempo', sam: 'easy', dim: 'long' };
+        return { mar: t1, mer: 'easy', jeu: 'tempo', ven: 'easy', sam: 'easy', dim: 'long' };
       }
 
       for (let w = 1; w <= totalWeeks; w++) {
@@ -14333,8 +14452,11 @@
         const isRecoveryWeek = (w % 4 === 0) && phase !== 'peak' && phase !== 'taper' && w !== totalWeeks;
         const isRaceWeek = w === totalWeeks;
 
-        const pat = isRecoveryWeek ? reducedWeeklyPattern(sessionsPerWeek) : weeklyPattern(sessionsPerWeek);
+        const pat = isRecoveryWeek ? reducedWeeklyPattern(sessionsPerWeek) : weeklyPattern(sessionsPerWeek, raceProfile, phase);
         const days = { lun: null, mar: null, mer: null, jeu: null, ven: null, sam: null, dim: null };
+
+        // Durée cible de la longue calculée hors massage : ramp progressif + retrait récup + taper
+        const longRunMin = computeLongRunMin({ weekIdx: w, totalWeeks, phasePlan, isRecoveryWeek, raceProfile });
 
         if (isRaceWeek) {
           days.lun = { type: 'rest', label: 'Repos', detail: '' };
@@ -14348,16 +14470,37 @@
           ['lun','mar','mer','jeu','ven','sam','dim'].forEach(d => {
             days[d] = { type: 'rest', label: 'Repos', detail: '' };
           });
+          // Tracker pour qu'un type apparaissant 2 fois dans la même semaine récupère un variant différent
+          const typeSlot = {};
           Object.entries(pat).forEach(([day, sessionType]) => {
             // The generator builds plans from the built-in periodised session database
             // (Daniels / Pfitzinger / Yasso / Billat formats), cycling through several
             // variants per phase so consecutive weeks differ. User-saved templates are
             // NOT auto-injected here — that produced an identical session every week.
+            const slotIdx = typeSlot[sessionType] || 0;
+            typeSlot[sessionType] = slotIdx + 1;
             const tplFn = SESSION_TEMPLATES[sessionType] && SESSION_TEMPLATES[sessionType][phase];
             if (!tplFn) return;
-            const tpl = tplFn(cp, w);
-            const adjustedTpl = isRecoveryWeek ? adjustForRecovery(tpl, sessionType, cp) : tpl;
-            days[day] = { type: sessionType, label: adjustedTpl.label, detail: adjustedTpl.detail, purpose: adjustedTpl.purpose };
+            const ctx = {
+              raceProfile,
+              slotIdx,
+              targetMin: sessionType === 'long' ? longRunMin : undefined,
+            };
+            // Décale le variant pour le 2e slot du même type (évite la duplication exacte)
+            const tpl = tplFn(cp, w + slotIdx * 3, ctx);
+            // Pour la longue, on ne passe PAS dans adjustForRecovery : la durée cible (longRunMin)
+            // applique déjà le retrait -20 % en semaine de récup, et son detail est calibré dessus.
+            const skipAdjust = sessionType === 'long' && Number.isFinite(tpl.explicitDurationMin);
+            const adjustedTpl = (isRecoveryWeek && !skipAdjust) ? adjustForRecovery(tpl, sessionType, cp) : tpl;
+            days[day] = {
+              type: sessionType,
+              label: adjustedTpl.label,
+              detail: adjustedTpl.detail,
+              purpose: adjustedTpl.purpose,
+            };
+            if (Number.isFinite(adjustedTpl.explicitDurationMin)) {
+              days[day].explicitDurationMin = adjustedTpl.explicitDurationMin;
+            }
           });
         }
 
@@ -14390,6 +14533,11 @@
             km = Number.isFinite(d.plannedKm) && d.plannedKm > 0
               ? d.plannedKm
               : estimateSessionKm(d.type, cp, weightKg, dur, d.detail, null, powerPaceTable);
+          } else if (Number.isFinite(d.explicitDurationMin) && d.explicitDurationMin > 0) {
+            // Durée déjà calculée par le générateur (ex. sortie longue calée sur la distance
+            // de course) — on contourne le boost +15 % et le floor : la valeur est canonique.
+            dur = d.explicitDurationMin;
+            km = estimateSessionKm(d.type, cp, weightKg, dur, d.detail, null, powerPaceTable);
           } else {
             const rawDur = estimateSessionDuration(d.detail, d.type);
             // On recovery weeks: never boost, apply 0.7 factor on easy/long to ensure real deload
@@ -14406,6 +14554,9 @@
           d.plannedMin = dur;
           d.plannedKm = km;
           d.plannedTss = estimateSessionTSS(d.type, cp, dur);
+          // explicitDurationMin était transitoire (sert au calcul ci-dessus) — on nettoie
+          // pour ne pas le persister dans les overrides sauvegardés.
+          if (d.explicitDurationMin !== undefined) delete d.explicitDurationMin;
           weekDuration += dur;
           weekKm += km;
           weekTSS += d.plannedTss;
@@ -14475,7 +14626,7 @@
       const [mode, setMode] = useState(futureRaces.length > 0 ? 'race' : 'custom');
       const [selectedRaceId, setSelectedRaceId] = useState(futureRaces[0]?.id || null);
       const [customDate, setCustomDate] = useState('');
-      const [customDistance, setCustomDistance] = useState('10k');
+      const [customDistance, setCustomDistance] = useState('10K');
       const [sessionsPerWeek, setSessionsPerWeek] = useState(4);
       const [strengthPerWeek, setStrengthPerWeek] = useState((profile && profile.showStrength === false) ? 0 : 2);
       const [preview, setPreview] = useState(null);
@@ -14555,7 +14706,7 @@
                       <div className="grid grid-cols-2 gap-2">
                         <input type="date" className="input" value={customDate} onChange={(e) => setCustomDate(e.target.value)} />
                         <select className="input" value={customDistance} onChange={(e) => setCustomDistance(e.target.value)}>
-                          <option value="5K">5 km</option><option value="10K">10 km</option><option value="Semi">Semi-marathon</option><option value="Marathon">Marathon</option>
+                          <option value="5K">5 km</option><option value="10K">10 km</option><option value="15K">15 km</option><option value="Semi">Semi-marathon</option><option value="Marathon">Marathon</option>
                         </select>
                       </div>
                     )}
@@ -15301,6 +15452,38 @@
         setStrengthSessions([session, ...strengthSessions]);
       }
 
+      // Ouvre le dialogue de recalibrage du plan (et des templates) sur les watts.
+      // Utilisé à la fois quand la CP change dans Profil ET via le bouton manuel
+      // « Recalibrer les watts » sous la CP. Met à jour planSourceCp pour suivre
+      // la CP qui a servi à calculer les watts cibles.
+      async function handleRecalibratePlan(oldCP, newCP) {
+        if (!oldCP || !newCP || oldCP === newCP) return false;
+        const overridesCount = Object.keys(planOverrides).length;
+        const tplCount = sessionTemplates.length;
+        if (overridesCount === 0 && tplCount === 0) {
+          toast.push('Aucun plan ni template à recalibrer.', { kind: 'info' });
+          return false;
+        }
+        const ratio = newCP / oldCP;
+        const pct = Math.round((ratio - 1) * 100);
+        const parts = [];
+        if (overridesCount > 0) parts.push(`tes ${overridesCount} semaine${overridesCount > 1 ? 's' : ''} planifiée${overridesCount > 1 ? 's' : ''}`);
+        if (tplCount > 0) parts.push(`tes ${tplCount} template${tplCount > 1 ? 's' : ''} de séance`);
+        const what = parts.join(' et ');
+        const ok = await dialog.confirm({
+          title: `Recalibrer ${what} ?`,
+          message: `CP ${oldCP}W → ${newCP}W (${pct >= 0 ? '+' : ''}${pct}%).\nTous les watts cibles seront ajustés proportionnellement.`,
+          confirmLabel: 'Recalibrer',
+        });
+        if (ok) {
+          if (overridesCount > 0) setPlanOverrides(recalibratePlanForCP(planOverrides, oldCP, newCP));
+          if (tplCount > 0) setSessionTemplates(sessionTemplates.map(t => rescaleTemplateForCP(t, oldCP, newCP)));
+          setProfile(p => ({ ...p, planSourceCp: newCP }));
+          toast.push(`Watts recalibrés sur ${newCP}W.`, { kind: 'success' });
+        }
+        return ok;
+      }
+
       // ========== Session Templates handlers ==========
       function handleSaveTemplate(day, customName) {
         if (!day || day.type === 'rest') {
@@ -15466,7 +15649,10 @@
                 onGeneratePlan={(overrides, meta) => {
                   setPlanOverrides({ ...planOverrides, ...overrides });
                   if (meta && meta.startDate) {
-                    setProfile({ ...profile, planStartDate: meta.startDate, planTotalWeeks: meta.totalWeeks, planSource: 'COMPASS Generator' });
+                    // planSourceCp = CP qui a servi à calculer les watts cibles du plan.
+                    // Sert au bouton « Recalibrer les watts » dans Profil : si profile.cp
+                    // diverge de planSourceCp, le plan n'est plus à l'échelle.
+                    setProfile({ ...profile, planStartDate: meta.startDate, planTotalWeeks: meta.totalWeeks, planSource: 'COMPASS Generator', planSourceCp: profile.cp });
                   }
                 }}
                 onAddRace={handleAddRace}
@@ -15514,37 +15700,14 @@
                 profile={profile}
                 phaseGraduations={phaseGraduations}
                 onSave={async (newProfile) => {
-                  // If CP changed, ask user if they want to recalibrate the plan
                   const oldCP = profile.cp;
                   const newCP = newProfile.cp;
                   setProfile(newProfile);
                   if (oldCP && newCP && oldCP !== newCP) {
-                    const overridesCount = Object.keys(planOverrides).length;
-                    const tplCount = sessionTemplates.length;
-                    if (overridesCount > 0 || tplCount > 0) {
-                      const ratio = newCP / oldCP;
-                      const pct = Math.round((ratio - 1) * 100);
-                      const parts = [];
-                      if (overridesCount > 0) parts.push(`tes ${overridesCount} semaine${overridesCount > 1 ? 's' : ''} planifiée${overridesCount > 1 ? 's' : ''}`);
-                      if (tplCount > 0) parts.push(`tes ${tplCount} template${tplCount > 1 ? 's' : ''} de séance`);
-                      const what = parts.join(' et ');
-                      const ok = await dialog.confirm({
-                        title: `Recalibrer ${what} ?`,
-                        message: `Tu as modifié ta CP de ${oldCP}W → ${newCP}W (${pct >= 0 ? '+' : ''}${pct}%).\nTous les watts cibles seront ajustés proportionnellement.`,
-                        confirmLabel: 'Recalibrer',
-                      });
-                      if (ok) {
-                        if (overridesCount > 0) {
-                          const newOverrides = recalibratePlanForCP(planOverrides, oldCP, newCP);
-                          setPlanOverrides(newOverrides);
-                        }
-                        if (tplCount > 0) {
-                          setSessionTemplates(sessionTemplates.map(t => rescaleTemplateForCP(t, oldCP, newCP)));
-                        }
-                      }
-                    }
+                    await handleRecalibratePlan(oldCP, newCP);
                   }
                 }}
+                onRecalibratePlan={() => handleRecalibratePlan(profile.planSourceCp, profile.cp)}
                 activities={activities}
                 planOverrides={planOverrides}
                 onShowAllActivities={() => setView('log')}
