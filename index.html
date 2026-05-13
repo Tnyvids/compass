@@ -1669,10 +1669,19 @@
             const dayMs = weekStart.getTime() + dayKeyOrder[dayKey] * 86400000;
             if (dayMs < cutoffMs) { newWeek[dayKey] = day; return; }
           }
+          // plannedKm : à %CP constant, la vitesse monte ~linéairement avec la CP →
+          // pour une même durée on couvre plus de distance. plannedMin reste fixe
+          // (la durée des reps ne change pas) et plannedTss reste fixe (TSS est
+          // calculée sur l'intensité RELATIVE, IF = NP/CP, donc invariante au
+          // scaling proportionnel des watts).
+          const newKm = (typeof day.plannedKm === 'number' && day.plannedKm > 0)
+            ? Math.round(day.plannedKm * ratio * 10) / 10
+            : day.plannedKm;
           newWeek[dayKey] = {
             ...day,
             detail: rescaleDetail(day.detail),
             blocks: rescaleBlocks(day.blocks),
+            plannedKm: newKm,
           };
         });
         result[wsKey] = newWeek;
