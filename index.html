@@ -5171,22 +5171,33 @@
         return ` ${key} `;
       };
 
-      // Forme A — "N×(<contenu>)" : multi-blocs entre parenthèses.
-      work = work.replace(/(\d+)\s*[×x]\s*\(([^)]+)\)/gi, (m, n, contents) => {
-        const reps = parseInt(n);
-        const segs = contents.split(/\s*\+\s*/).map(x => x.trim());
-        const children = [];
-        segs.forEach((seg, idx) => {
-          const parsed = parseSingleSegment(seg);
-          if (!parsed) return;
-          let blockKind = 'work';
-          if (idx > 0) blockKind = 'recovery';
-          if (parsed.powerLow && ctx.cp && parsed.powerLow / ctx.cp < 0.75) blockKind = 'recovery';
-          children.push({ id: makeBlockId(), kind: 'single', blockKind, ...parsed });
-        });
-        if (children.length === 0) return m;
-        return storeGroup({ id: makeBlockId(), kind: 'group', reps, children });
-      });
+      // Forme A — "N×(<contenu>) [R <récup>]" : multi-blocs entre parenthèses,
+      // avec récupération inter-rep optionnelle écrite hors parens (notation
+      // « Over-under » : 3×(3' over + 2' under) R 3' jog).
+      work = work.replace(
+        /(\d+)\s*[×x]\s*\(([^)]+)\)(?:[\s—–-]*R\s+([^+]+?)(?=\s*\+|$))?/gi,
+        (m, n, contents, rOutside) => {
+          const reps = parseInt(n);
+          const segs = contents.split(/\s*\+\s*/).map(x => x.trim());
+          const children = [];
+          segs.forEach((seg, idx) => {
+            const parsed = parseSingleSegment(seg);
+            if (!parsed) return;
+            let blockKind = 'work';
+            if (idx > 0) blockKind = 'recovery';
+            if (parsed.powerLow && ctx.cp && parsed.powerLow / ctx.cp < 0.75) blockKind = 'recovery';
+            children.push({ id: makeBlockId(), kind: 'single', blockKind, ...parsed });
+          });
+          if (rOutside) {
+            const parsedR = parseSingleSegment(rOutside.trim());
+            if (parsedR && parsedR.durMin !== undefined) {
+              children.push({ id: makeBlockId(), kind: 'single', blockKind: 'recovery', ...parsedR });
+            }
+          }
+          if (children.length === 0) return m;
+          return storeGroup({ id: makeBlockId(), kind: 'group', reps, children });
+        }
+      );
 
       // Forme B — "N×<travail> [(<récup>)]" : travail suivi d'une récup optionnelle entre parens.
       work = work.replace(
@@ -14040,11 +14051,11 @@
       intervals: {
         base: (cp, w) => {
           const variants = [
-            { label: 'VO2 court 30/30', detail: `${wUp(cp)} + 10×30" à ${Math.round(cp*1.12)}W / 30" à ${Math.round(cp*0.70)}W (R 2' à ${Math.round(cp*0.70)}W entre séries de 5) + ${wDown(cp)}`, purpose: 'Format Billat : temps cumulé à VO2max dans le confort mental.' },
+            { label: 'VO2 court 30/30', detail: `${wUp(cp)} + 10×(30" à ${Math.round(cp*1.12)}W + 30" à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Format Billat : temps cumulé à VO2max dans le confort mental.' },
             { label: 'VMA fractionné', detail: `${wUp(cp)} + 8×1' à ${Math.round(cp*1.10)}-${Math.round(cp*1.15)}W (R 1' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Pousse la VO2max et la tolérance au lactate, format simple et efficace.' },
-            { label: 'Pyramide 1-2-3-2-1', detail: `${wUp(cp)} + 1\'-2\'-3\'-2\'-1\' à ${Math.round(cp*1.10)}W (R = durée à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Variation de durée à intensité fixe, développe la résistance mentale.' },
+            { label: 'Pyramide 1-2-3-2-1', detail: `${wUp(cp)} + 1' à ${Math.round(cp*1.10)}W + 1' à ${Math.round(cp*0.70)}W + 2' à ${Math.round(cp*1.10)}W + 2' à ${Math.round(cp*0.70)}W + 3' à ${Math.round(cp*1.10)}W + 3' à ${Math.round(cp*0.70)}W + 2' à ${Math.round(cp*1.10)}W + 2' à ${Math.round(cp*0.70)}W + 1' à ${Math.round(cp*1.10)}W + 1' à ${Math.round(cp*0.70)}W + ${wDown(cp)}`, purpose: 'Variation de durée à intensité fixe, développe la résistance mentale.' },
             { label: 'VO2 longs 2\'', detail: `${wUp(cp)} + 5×2' à ${Math.round(cp*1.08)}-${Math.round(cp*1.12)}W (R 90" à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Format Daniels I-pace, optimal pour monter la VO2max.' },
-            { label: 'Billat 30/30 série', detail: `${wUp(cp)} + 2×(8×30"/30") à ${Math.round(cp*1.15)}W — R 3' à ${Math.round(cp*0.70)}W entre séries + ${wDown(cp)}`, purpose: 'Maximise le temps passé au-dessus de 90% VO2max.' },
+            { label: 'Billat 30/30 série', detail: `${wUp(cp)} + 16×(30" à ${Math.round(cp*1.15)}W + 30" à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Maximise le temps passé au-dessus de 90% VO2max.' },
             { label: 'Diagonales 400m', detail: `${wUp(cp)} + 6×400m à ${Math.round(cp*1.10)}W (R 200m à ${Math.round(cp*0.65)}W) + ${wDown(cp)}`, purpose: 'Format piste classique, travail VMA pure.' },
           ];
           return variants[(w - 1) % variants.length];
@@ -14628,19 +14639,22 @@
             // Durée et km dérivés directement des blocs. Fallback sur les anciennes
             // heuristiques si parseSessionDetail n'a rien produit (détail texte non
             // standard, ex. template utilisateur libre).
-            const rawDur = blockTotals.totalMin > 0 ? blockTotals.totalMin : estimateSessionDuration(d.detail, d.type);
-            const rawKm  = blockTotals.totalKm  > 0 ? blockTotals.totalKm  : null;
-            // On recovery weeks: never boost, apply 0.7 factor on easy/long to ensure real deload.
-            // Le boost +15 % ne s'applique plus qu'aux footings easy : la longue a déjà sa durée
-            // calibrée via explicitDurationMin, et on ne veut pas la rallonger arbitrairement.
+            const haveBlocks = blockTotals.totalMin > 0 && blockTotals.totalKm > 0;
+            const rawDur = haveBlocks ? blockTotals.totalMin : estimateSessionDuration(d.detail, d.type);
+            const rawKm  = haveBlocks ? blockTotals.totalKm  : null;
+            // On recovery weeks: deload easy/long à 70 %. Boost +15 % réservé aux
+            // footings easy chez un athlète fort. La longue a déjà sa durée calibrée
+            // via explicitDurationMin.
             let scale = 1;
             if (isRecoveryWeek && (d.type === 'easy' || d.type === 'long')) scale = 0.70;
             else if (d.type === 'easy' && strongAthlete) scale = volumeMultiplier;
             const scaledDur = Math.round(rawDur * scale);
-            const floor = minDurByType[d.type] || 0;
+            // Quand on a des blocs valides, on respecte leur durée — pas de floor
+            // artificiel qui gonflerait la durée affichée dans le grid sans rien
+            // ajouter au détail. Floor uniquement comme filet de sécurité quand
+            // le détail texte n'a rien produit (fallback legacy).
+            const floor = haveBlocks ? 0 : (minDurByType[d.type] || 0);
             dur = Math.max(scaledDur, floor);
-            // Si on a appliqué un scale ou un floor, on rééchelonne km en proportion
-            // (la vitesse moyenne ne change pas, seul le temps couru change).
             if (rawKm !== null) {
               const finalScale = rawDur > 0 ? dur / rawDur : 1;
               km = Math.round(rawKm * finalScale * 10) / 10;
