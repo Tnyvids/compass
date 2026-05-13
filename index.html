@@ -5174,17 +5174,21 @@
         return blocks;
       }
 
-      // Parse existing detail into new block structure
+      // Parse existing detail into new block structure.
+      // L'algorithme procède en 3 phases :
+      //   1. Pré-passe : convertit "Xm à PW" en "T' à PW" pour que les reps en
+      //      mètres (ex. 6×800m, R 400m) soient quantifiables.
+      //   2. Extraction des groupes (N×) avec recovery éventuelle entre parens,
+      //      remplacés par un marqueur indexé pour préserver leur position.
+      //   3. Split final par "+", chaque segment devient soit un bloc simple,
+      //      soit un groupe via lookup du marqueur. Ordre garanti correct.
       function parseDetailToBlocks(s) {
         if (!s || !s.trim()) return [];
-        const out = [];
         let work = String(s);
 
-        // Pré-passe : convertir "Xm à PW" en "T' à PW" pour que les répétitions
-        // par distance (ex. 6×800m à 271W, R 400m à 160W) soient comptabilisées
-        // dans les blocs. Sans ça, parseSingleSeg ignore les segments en mètres
-        // (pas d'unité de temps reconnue) et le total des km/min sous-estime
-        // sérieusement la séance.
+        // 1. Pré-passe : "Xm à PW" → "T' à PW" (durée dérivée de la puissance via
+        //    historique allure/puissance, sinon fallback poids·1.04). Couvre aussi
+        //    les recovery en mètres entre parenthèses, ex. (R 400m à 160W).
         work = work.replace(/(\d{2,4})\s*m\s+à\s*(\d{2,3})\s*[wW]\b/g, (m, meters, power) => {
           const pwr = parseInt(power, 10);
           const dist = parseInt(meters, 10);
@@ -5209,7 +5213,18 @@
           return `${durTok} à ${pwr}W`;
         });
 
-        // Pass 1: explicit "N×(...)" or "N x (...)" with parentheses
+        // 2. Extraction des groupes — chaque groupe matché est stocké dans `groups`
+        //    et son emplacement est remplacé par un marqueur __GROUP_N__ pour
+        //    qu'au pass 3, le split par "+" produise les blocs dans l'ordre du texte.
+        const groups = {};
+        let groupCounter = 0;
+        const storeGroup = (g) => {
+          const key = `__GROUP_${groupCounter++}__`;
+          groups[key] = g;
+          return ` ${key} `;
+        };
+
+        // Forme A — "N×(<contents>)" : multi-blocs entre parenthèses.
         work = work.replace(/(\d+)\s*[×x]\s*\(([^)]+)\)/gi, (m, n, contents) => {
           const reps = parseInt(n);
           const segs = contents.split(/\s*\+\s*/).map(x => x.trim());
@@ -5222,78 +5237,58 @@
             if (parsed.powerLow && ctx.cp && parsed.powerLow / ctx.cp < 0.75) blockKind = 'recovery';
             children.push({ id: makeId(), kind: 'single', blockKind, ...parsed });
           });
-          if (children.length > 0) out.push({ id: makeId(), kind: 'group', reps, children, _placeholder: true });
-          return ' __GROUP_PLACEHOLDER__ ';
+          if (children.length === 0) return m;
+          return storeGroup({ id: makeId(), kind: 'group', reps, children });
         });
 
-        // Pass 2: implicit "N× ..." or "N x ..." WITHOUT parens — match through next "+ <recovery>" if present
-        // Pattern: "N× <work-segment> + <recovery-segment>" treated as a 2-step group
-        // Or: "N× <single-segment>" treated as a 1-step group
-        // Examples that match:
-        //   "3x 5'30 à 250W"         → 1 group of 3 reps with 1 child (work)
-        //   "3x 5'30 à 250W + 2' à 170W" → 1 group of 3 reps with [work, recovery]
-        //   "6× 1' à 260W"           → group of 6 with single child
-        // We use a simple heuristic: a recovery follower must have power < 80% of the work's power
-        // OR contain "récup"/"recovery"/"jog" keywords.
-        const implicitRegex = /(\d+)\s*[×x]\s+([^+]+?)(?:\s*\+\s*([^+]+?))?(?=\s*\+|\s*$|__GROUP_PLACEHOLDER__)/gi;
-        const replacements = [];
-        let match;
-        const reuse = work;
-        // We rebuild rather than using replace because we need to push to `out` AND remove from work
-        let lastIdx = 0;
-        const remaining = [];
-        while ((match = implicitRegex.exec(work)) !== null) {
-          const fullMatch = match[0];
-          const n = parseInt(match[1]);
-          const seg1 = match[2].trim();
-          const seg2 = match[3] ? match[3].trim() : null;
-          const parsed1 = parseSingleSeg(seg1);
-          if (!parsed1 || parsed1.durMin === undefined) {
-            continue; // can't parse work segment, skip — let it fall through to pass 3
-          }
-          remaining.push(work.slice(lastIdx, match.index));
-          lastIdx = match.index + fullMatch.length;
-
-          const children = [];
-          children.push({ id: makeId(), kind: 'single', blockKind: 'work', ...parsed1 });
-          if (seg2) {
-            const parsed2 = parseSingleSeg(seg2);
-            if (parsed2) {
-              // Decide if seg2 is recovery: lower power than seg1 OR contains recovery keyword
-              const isRecovery = /récup|recov|jog|trot|easy/i.test(seg2)
-                || (parsed2.powerLow && parsed1.powerLow && parsed2.powerLow < parsed1.powerLow * 0.85);
-              children.push({
-                id: makeId(),
-                kind: 'single',
-                blockKind: isRecovery ? 'recovery' : 'work',
-                ...parsed2,
-              });
+        // Forme B — "N×<work> [(<recovery>)]" : work suivi d'une recovery optionnelle
+        //   entre parens. Le séparateur entre `×` et le segment work peut être vide
+        //   (3×6') ou contenir des espaces (3× 6'). Le segment work est non-greedy
+        //   jusqu'au prochain `+`, `(`, ou marqueur de groupe — ce qui évite
+        //   l'ancien bug de pass 2 qui aspirait le cooldown comme recovery.
+        work = work.replace(
+          /(\d+)\s*[×x]\s*([^+(]+?)\s*(?:\(([^)]+)\))?\s*(?=[+]|$|__GROUP_\d+__)/g,
+          (m, n, workSeg, recoverySeg) => {
+            const reps = parseInt(n);
+            const parsedWork = parseSingleSeg(workSeg);
+            if (!parsedWork || parsedWork.durMin === undefined) return m;
+            const children = [{ id: makeId(), kind: 'single', blockKind: 'work', ...parsedWork }];
+            if (recoverySeg) {
+              // Strip leading "R " marker ("R 2' à 172W" → "2' à 172W")
+              const clean = recoverySeg.replace(/^\s*R\b\s*/i, '').trim();
+              const parsedRec = parseSingleSeg(clean);
+              if (parsedRec && parsedRec.durMin !== undefined) {
+                children.push({ id: makeId(), kind: 'single', blockKind: 'recovery', ...parsedRec });
+              }
             }
+            return storeGroup({ id: makeId(), kind: 'group', reps, children });
           }
-          out.push({ id: makeId(), kind: 'group', reps: n, children, _placeholder: true });
-        }
-        remaining.push(work.slice(lastIdx));
-        if (remaining.length > 1 || lastIdx > 0) {
-          work = remaining.join(' __GROUP_PLACEHOLDER__ ');
-        }
+        );
 
-        // Pass 3: remaining "+" separated segments (warmup, cooldown, single blocks)
-        const segs = work.split(/\s*\+\s*/).map(x => x.trim()).filter(x => x.length > 2 && !x.includes('__GROUP_PLACEHOLDER__'));
+        // 3. Split final par "+" — chaque segment devient un bloc dans l'ordre du texte.
+        const out = [];
+        const segs = work.split(/\s*\+\s*/).map(x => x.trim()).filter(x => x.length > 0);
         segs.forEach(seg => {
+          const groupMatch = seg.match(/^__GROUP_(\d+)__$/);
+          if (groupMatch) {
+            const g = groups[seg];
+            if (g) out.push(g);
+            return;
+          }
+          // Filtrer les fragments de marqueurs résiduels (rare)
+          if (seg.includes('__GROUP_')) return;
           const parsed = parseSingleSeg(seg);
           if (!parsed) return;
           const low = seg.toLowerCase();
           let blockKind = 'work';
           if (/éch|warmup/i.test(low)) blockKind = 'warmup';
-          else if (/ret|cool/i.test(low)) blockKind = 'cooldown';
+          else if (/ret\b|cool/i.test(low)) blockKind = 'cooldown';
           else if (parsed.powerLow && ctx.cp && parsed.powerLow / ctx.cp < 0.75) {
             blockKind = out.length === 0 ? 'warmup' : 'recovery';
           }
           out.push({ id: makeId(), kind: 'single', blockKind, ...parsed });
         });
 
-        // Cleanup: remove the _placeholder flag we used internally
-        out.forEach(b => { delete b._placeholder; });
         return out;
       }
 
