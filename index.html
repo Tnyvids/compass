@@ -15788,15 +15788,27 @@
     // or interpolate from the 2 closest points. Returns pace in sec/km, or null if impossible.
     function estimatePaceForPower(targetPower, powerPaceTable) {
       if (!targetPower || !powerPaceTable || !powerPaceTable.length) return null;
-      // Prefer nearest-in-power within the 10 most recent activities
-      const recent = powerPaceTable.slice(0, 10);
-      if (recent.length === 0) return null;
-      // Find exact-ish matches (within ±5W) — take the most recent
-      const close = recent.filter(p => Math.abs(p.power - targetPower) <= 5);
-      if (close.length > 0) return close[0].paceSecPerKm;
 
-      // Otherwise linear interp between the closest lower-power and higher-power from recent set
-      const sorted = recent.slice().sort((a, b) => a.power - b.power);
+      // Virtual PPT (mode allure) : toutes les entrées ont date=null. Dans ce
+      // cas, le slice(0, 10) coupait la moitié haute du spectre (137-230W) et
+      // forçait une extrapolation grossière au-delà → bug bien documenté qui
+      // produisait des 3:05/km pour un Yasso 800 censé être à 3:40/km.
+      // Pour la virtualPpt, on utilise la table entière (déjà sortée par power).
+      const isVirtual = powerPaceTable.every(p => p.date == null);
+      const search = isVirtual ? powerPaceTable : powerPaceTable.slice(0, 10);
+      if (search.length === 0) return null;
+
+      // Find exact-ish matches (within ±5W) — take the closest, not the most recent,
+      // pour éviter qu'une activité récente à 200W « gagne » contre une entrée
+      // virtualPpt à 202W quand on cherche 203W.
+      const close = search.filter(p => Math.abs(p.power - targetPower) <= 5);
+      if (close.length > 0) {
+        close.sort((a, b) => Math.abs(a.power - targetPower) - Math.abs(b.power - targetPower));
+        return close[0].paceSecPerKm;
+      }
+
+      // Otherwise linear interp between the closest lower-power and higher-power
+      const sorted = search.slice().sort((a, b) => a.power - b.power);
       const lower = sorted.filter(p => p.power < targetPower).pop();
       const higher = sorted.filter(p => p.power > targetPower)[0];
       if (lower && higher) {
