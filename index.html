@@ -451,6 +451,14 @@
     }
     function saveProfile(p) { storage.set(KEYS.profile, p); }
     function getAge(birthYear) { return new Date().getFullYear() - birthYear; }
+    // True if the user is in pace mode (explicit unit choice with a VMA, OR no
+    // CP but a VMA so we auto-fall back to pace). When true, every UI surface
+    // that mentions watts / CP / TSS-by-power must hide.
+    function isPaceMode(profile) {
+      if (!profile) return false;
+      if (profile.unitMode === 'pace') return !!profile.vma;
+      return !profile.cp && !!profile.vma;
+    }
 
     // ========================================================================
     // FILE PARSERS — TCX, GPX, CSV (Stryd)
@@ -1001,14 +1009,44 @@
     // CALCULATIONS
     // ========================================================================
 
-    // TSS = (durée_sec * NP * IF) / (CP * 3600) * 100
-    // IF = NP / CP
-    function computeTSS(activity, cp) {
-      if (!cp || !activity.normalizedPower || !activity.durationSec) return null;
-      const np = activity.normalizedPower;
-      const intensityFactor = np / cp;
-      const tss = (activity.durationSec * np * intensityFactor) / (cp * 3600) * 100;
-      return Math.round(tss);
+    // TSS power-mode : (durée_sec * NP * IF) / (CP * 3600) * 100 avec IF = NP / CP
+    // TSS pace-mode  : (durée_sec / 3600) * IF² * 100 avec IF = speed / thresholdSpeed
+    //
+    // L'argument est soit un nombre (CP, signature legacy gardée pour rétro-
+    // compatibilité), soit le profil complet — auquel cas on utilise NP+CP si
+    // dispo, sinon on retombe sur l'allure × VMA. Ça débloque CTL/ATL/TSB/ACWR
+    // pour TOUS les utilisateurs sans capteur de puissance.
+    //
+    // Le threshold speed est dérivé du modèle 3-ancrages à cpFrac=1.00 — donc
+    // calibré sur la VMA ET le footing déclaré de l'utilisateur. Pas une zone
+    // générique « 88 % VMA » mais une LT/CP personnalisée.
+    function computeTSS(activity, cpOrProfile, aerobicScore = 0.5) {
+      if (!activity || !activity.durationSec) return null;
+      const isProfile = cpOrProfile && typeof cpOrProfile === 'object';
+      const cp = isProfile ? cpOrProfile.cp : cpOrProfile;
+
+      // Path 1 : puissance — toujours prioritaire si dispo (mesure directe).
+      if (cp && activity.normalizedPower) {
+        const np = activity.normalizedPower;
+        const intensityFactor = np / cp;
+        return Math.round((activity.durationSec * np * intensityFactor) / (cp * 3600) * 100);
+      }
+
+      // Path 2 : pace fallback — requiert profil avec VMA + activité avec pace.
+      if (isProfile && cpOrProfile.vma && activity.paceMinPerKm) {
+        const speedKmH = 60 / activity.paceMinPerKm;
+        const thresholdPaceSec = paceForIntensity(1.00, cpOrProfile.vma, aerobicScore, cpOrProfile.easyPaceMinPerKm);
+        if (!thresholdPaceSec || !isFinite(thresholdPaceSec)) return null;
+        const thresholdSpeed = 3600 / thresholdPaceSec;
+        if (!thresholdSpeed || !isFinite(thresholdSpeed)) return null;
+        const IF = speedKmH / thresholdSpeed;
+        // Plafond IF à 1.5 — un effort à 150 % LT est physiologiquement absurde
+        // sur plus de quelques minutes ; protège contre les paces aberrants.
+        const safeIF = Math.min(1.5, Math.max(0, IF));
+        return Math.round((activity.durationSec / 3600) * safeIF * safeIF * 100);
+      }
+
+      return null;
     }
 
     // CP estimate from 2-point model (using best 3min and best 20min if available)
@@ -1437,6 +1475,67 @@
 
     // V3: Riegel-anchored race time prediction. Replaces V2 logic.
     // Keeps the same name as V2 so all call sites work transparently.
+    // Prédiction temps de course en mode allure (sans CP).
+    //
+    // Stratégie :
+    //   1. Si un PR frais existe (à n'importe quelle distance), Riegel-propager
+    //      depuis ce PR vers la distance cible. C'est l'ancrage le plus fiable.
+    //   2. Sinon, partir de la VMA via les coefficients % VMA par distance
+    //      (Cazorla/Mercier) : 5K=97 %, 10K=92 %, semi=85 %, mara=80 %.
+    //   3. Appliquer le bonus TSB (±2.5 %, comme V2 power).
+    //
+    // Renvoie { timeSec, confidence, source } ou null si infaisable.
+    function predictRaceTimePace(vma, distanceKm, prs, tsb, prsDates = null) {
+      if (!vma || !distanceKm || vma <= 0) return null;
+
+      let distKey;
+      if (distanceKm <= 7) distKey = '5k';
+      else if (distanceKm <= 15) distKey = '10k';
+      else if (distanceKm <= 30) distKey = 'semi';
+      else distKey = 'marathon';
+      const distKm = { '5k': 5, '10k': 10, semi: 21.0975, marathon: 42.195 }[distKey];
+
+      let timeSec = null;
+      let source = 'vma';
+      let confidence = 1;
+
+      // 1. PR-anchored prediction (priorité)
+      // Ordre de préférence pour ancrer : même distance > 10K > semi > 5K > mara.
+      const orderedKeys = [distKey, '10k', 'semi', '5k', 'marathon'].filter((k, i, arr) => arr.indexOf(k) === i);
+      for (const k of orderedKeys) {
+        const prSec = parsePRSec(prs && prs[k]);
+        if (!prSec || prSec <= 0) continue;
+        if (!isPrFresh(prsDates && prsDates[k])) continue;
+        const anchorKm = { '5k': 5, '10k': 10, semi: 21.0975, marathon: 42.195 }[k];
+        if (!anchorKm) continue;
+        if (k === distKey) {
+          timeSec = prSec;
+          confidence = 3;
+        } else {
+          timeSec = riegelPredict(prSec, anchorKm, distanceKm);
+          confidence = 2;
+        }
+        source = `pr_${k}`;
+        break;
+      }
+
+      // 2. VMA-based fallback
+      if (timeSec == null) {
+        const coef = { '5k': 0.97, '10k': 0.92, semi: 0.85, marathon: 0.80 }[distKey];
+        const speedKmH = vma * coef;
+        timeSec = (distKm / speedKmH) * 3600;
+      }
+
+      // 3. TSB bonus : ±2.5 %, linéaire (cohérent avec predictRaceTimeV2)
+      if (Number.isFinite(tsb)) {
+        const tsbBonus = Math.max(-0.025, Math.min(0.025, tsb * 0.001));
+        const elast = timeElasticity(distKey);
+        timeSec = timeSec * (1 - elast * tsbBonus);
+      }
+
+      return { timeSec: Math.round(timeSec), confidence, source };
+    }
+
     function predictRaceTimeV2(cp, wprime, weightKg, distanceKm, prs, bestEfforts, tsb, baselineCp = null, prsDates = null) {
       if (!cp || !weightKg || !distanceKm) return null;
 
@@ -1635,6 +1734,69 @@
       };
     }
 
+    // Équivalent pace-mode de detectCPProgression : repère si la VMA déclarée
+    // est sous-évaluée par rapport aux meilleures perfs récentes.
+    //
+    // Signal : on cherche les activités récentes (5 semaines) de durée 5-30 min
+    // qui ont eu lieu à allure élevée (proxy "test/effort court"), et on
+    // extrapole une VMA depuis la vitesse moyenne :
+    //   - 5-8 min   ≈ 100 % VMA (= test cooper, demi-cooper)
+    //   - 8-15 min  ≈ 95 % VMA
+    //   - 15-30 min ≈ 92 % VMA (= zone 10K)
+    // Si la VMA extrapolée > VMA déclarée + 0.3 km/h sur ≥2 activités, on
+    // suggère une mise à jour.
+    //
+    // Limite connue : sans courbe puissance-durée propre, on ne peut pas
+    // distinguer un test "à fond" d'un footing qui aurait été chrono dans
+    // cette durée. On compense en exigeant que la VMA extrapolée dépasse la
+    // déclarée — un footing ne tirera jamais le seuil vers le haut.
+    function detectVMAProgression(activities, currentVMA, refDate = new Date()) {
+      if (!Array.isArray(activities) || activities.length < 3) return null;
+      if (!currentVMA || currentVMA <= 0) return null;
+
+      const refMs = refDate.getTime();
+      const windowMs = 35 * 86400000; // 5 semaines
+      const candidates = activities.filter(a => {
+        if (!a || !a.startMs || !a.durationSec || !a.distanceMeters) return false;
+        if (refMs - a.startMs > windowMs) return false;
+        const durMin = a.durationSec / 60;
+        return durMin >= 5 && durMin <= 30;
+      });
+      if (candidates.length < 2) return null;
+
+      const estimates = candidates.map(a => {
+        const speed = (a.distanceMeters / 1000) / (a.durationSec / 3600); // km/h
+        const durMin = a.durationSec / 60;
+        let coef;
+        if (durMin <= 8) coef = 1.00;
+        else if (durMin <= 15) coef = 0.95;
+        else coef = 0.92;
+        return { vma: speed / coef, durMin, startMs: a.startMs, speed };
+      }).filter(e => isFinite(e.vma) && e.vma >= 6 && e.vma <= 26);
+
+      // Garde les 3 plus hautes estimations (élimine bruit, footings calmes).
+      const top = [...estimates].sort((a, b) => b.vma - a.vma).slice(0, 3);
+      if (top.length < 2) return null;
+
+      const suggestedVMA = Math.round((top.reduce((s, e) => s + e.vma, 0) / top.length) * 10) / 10;
+      const delta = suggestedVMA - currentVMA;
+
+      // Seuil minimal : +0.3 km/h ET +2 %
+      if (delta < 0.3) return null;
+      if (delta / currentVMA < 0.02) return null;
+
+      const confidence = top.length >= 3 ? 'high' : 'medium';
+      return {
+        suggestedVMA,
+        currentVMA,
+        delta: Math.round(delta * 10) / 10,
+        deltaPct: delta / currentVMA,
+        evidence: top.map(e => ({ durMin: Math.round(e.durMin), speedKmH: Math.round(e.speed * 10) / 10, vmaImplied: Math.round(e.vma * 10) / 10 })),
+        confidence,
+        sampleCount: top.length,
+      };
+    }
+
     // Recalibrate all plan overrides watt targets when CP changes.
     // Walks through every day's blocks AND detail string, and rescales
     // each watt value by the ratio (newCP / oldCP).
@@ -1718,6 +1880,214 @@
         result[wsKey] = newWeek;
       });
       return result;
+    }
+
+    // Recalibrate all plan overrides PACE targets when VMA or declared easy
+    // pace changes. Same spirit as recalibratePlanForCP, but for pace blocks.
+    //
+    // Algorithm : for each pace value we invert the (cpFrac → pace) mapping
+    // under the OLD profile (oldVma + oldEasyPace + score), recover the cpFrac
+    // (= the relative intensity the block was authored at), then re-derive
+    // the pace under the NEW profile. This preserves the *intent* of the
+    // block ("80 % VMA") rather than the absolute pace number.
+    //
+    // Why not just scale by VMA ratio : because the curve is now anchored on
+    // the user's declared easy pace, a pure VMA scaling would break the easy
+    // anchor whenever easyPaceMinPerKm changes independently of VMA.
+    //
+    // fromDate behaves like recalibratePlanForCP : past sessions are left
+    // alone so we don't rewrite history.
+    function recalibratePlanForPace(planOverrides, oldCtx, newCtx, fromDate = null) {
+      if (!oldCtx || !newCtx || !oldCtx.vma || !newCtx.vma) return planOverrides;
+      const score = (newCtx.score != null) ? newCtx.score : (oldCtx.score != null ? oldCtx.score : 0.5);
+      const recalcPaceSec = (paceSec) => {
+        if (!paceSec) return paceSec;
+        const cpFrac = cpFracFromPace(paceSec, oldCtx.vma, score, oldCtx.easyPace);
+        if (cpFrac == null || !isFinite(cpFrac)) return paceSec;
+        const newSec = paceForIntensity(cpFrac, newCtx.vma, score, newCtx.easyPace);
+        return newSec ? Math.round(newSec) : paceSec;
+      };
+      // Detail strings expose paces as "M:SS/km" or "M:SS-M:SS/km".
+      // Range pattern must run first to avoid double-matching the single one.
+      const rescaleDetail = (detail) => {
+        if (!detail) return detail;
+        let out = String(detail).replace(/(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})\s*\/?\s*km/gi, (m, m1, s1, m2, s2) => {
+          const sec1 = parseInt(m1) * 60 + parseInt(s1);
+          const sec2 = parseInt(m2) * 60 + parseInt(s2);
+          return `${fmtPaceSec(recalcPaceSec(sec1))}-${fmtPaceSec(recalcPaceSec(sec2))}/km`;
+        });
+        out = out.replace(/(\d{1,2}):(\d{2})\s*\/?\s*km/gi, (m, m1, s1) => {
+          const sec = parseInt(m1) * 60 + parseInt(s1);
+          return `${fmtPaceSec(recalcPaceSec(sec))}/km`;
+        });
+        return out;
+      };
+      const rescaleBlocks = (blocks) => {
+        if (!Array.isArray(blocks)) return blocks;
+        return blocks.map(b => {
+          if (b.kind === 'group' && Array.isArray(b.children)) {
+            return { ...b, children: b.children.map(c => ({
+              ...c,
+              paceSecLow: c.paceSecLow != null ? recalcPaceSec(c.paceSecLow) : c.paceSecLow,
+              paceSecHigh: c.paceSecHigh != null ? recalcPaceSec(c.paceSecHigh) : c.paceSecHigh,
+            })) };
+          }
+          return {
+            ...b,
+            paceSecLow: b.paceSecLow != null ? recalcPaceSec(b.paceSecLow) : b.paceSecLow,
+            paceSecHigh: b.paceSecHigh != null ? recalcPaceSec(b.paceSecHigh) : b.paceSecHigh,
+          };
+        });
+      };
+
+      let cutoffMs = null;
+      if (fromDate) {
+        const d = new Date(fromDate);
+        d.setHours(0, 0, 0, 0);
+        cutoffMs = d.getTime();
+      }
+      const dayKeyOrder = { lun: 0, mar: 1, mer: 2, jeu: 3, ven: 4, sam: 5, dim: 6 };
+
+      // Speed ratio approximation for plannedKm. Different intensities scale
+      // slightly differently, but the day-average is close enough to VMA ratio.
+      const kmRatio = newCtx.vma / oldCtx.vma;
+
+      const result = {};
+      Object.entries(planOverrides || {}).forEach(([wsKey, week]) => {
+        if (!week) { result[wsKey] = week; return; }
+        const wsParts = wsKey.split('-');
+        const weekStart = wsParts.length === 3 ? new Date(parseInt(wsParts[0]), parseInt(wsParts[1]) - 1, parseInt(wsParts[2])) : null;
+        const newWeek = {};
+        Object.entries(week).forEach(([dayKey, day]) => {
+          if (!day) { newWeek[dayKey] = day; return; }
+          if (cutoffMs !== null && weekStart && dayKeyOrder[dayKey] !== undefined) {
+            const dayMs = weekStart.getTime() + dayKeyOrder[dayKey] * 86400000;
+            if (dayMs < cutoffMs) { newWeek[dayKey] = day; return; }
+          }
+          const newKm = (typeof day.plannedKm === 'number' && day.plannedKm > 0)
+            ? Math.round(day.plannedKm * kmRatio * 10) / 10
+            : day.plannedKm;
+          newWeek[dayKey] = {
+            ...day,
+            detail: rescaleDetail(day.detail),
+            blocks: rescaleBlocks(day.blocks),
+            plannedKm: newKm,
+          };
+        });
+        result[wsKey] = newWeek;
+      });
+      return result;
+    }
+
+    function rescaleTemplateForPace(tpl, oldCtx, newCtx) {
+      if (!tpl || !oldCtx || !newCtx || !oldCtx.vma || !newCtx.vma) return tpl;
+      const score = (newCtx.score != null) ? newCtx.score : (oldCtx.score != null ? oldCtx.score : 0.5);
+      const recalcPaceSec = (paceSec) => {
+        if (!paceSec) return paceSec;
+        const cpFrac = cpFracFromPace(paceSec, oldCtx.vma, score, oldCtx.easyPace);
+        if (cpFrac == null || !isFinite(cpFrac)) return paceSec;
+        const newSec = paceForIntensity(cpFrac, newCtx.vma, score, newCtx.easyPace);
+        return newSec ? Math.round(newSec) : paceSec;
+      };
+      const rescale = (b) => {
+        const n = { ...b };
+        if (Number.isFinite(n.paceSecLow)) n.paceSecLow = recalcPaceSec(n.paceSecLow);
+        if (Number.isFinite(n.paceSecHigh)) n.paceSecHigh = recalcPaceSec(n.paceSecHigh);
+        if (n.kind === 'group' && Array.isArray(n.children)) n.children = n.children.map(rescale);
+        return n;
+      };
+      const rescaleDetail = (detail) => {
+        if (!detail) return detail;
+        let out = String(detail).replace(/(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})\s*\/?\s*km/gi, (m, m1, s1, m2, s2) => {
+          const sec1 = parseInt(m1) * 60 + parseInt(s1);
+          const sec2 = parseInt(m2) * 60 + parseInt(s2);
+          return `${fmtPaceSec(recalcPaceSec(sec1))}-${fmtPaceSec(recalcPaceSec(sec2))}/km`;
+        });
+        out = out.replace(/(\d{1,2}):(\d{2})\s*\/?\s*km/gi, (m, m1, s1) => {
+          const sec = parseInt(m1) * 60 + parseInt(s1);
+          return `${fmtPaceSec(recalcPaceSec(sec))}/km`;
+        });
+        return out;
+      };
+      const newBlocks = Array.isArray(tpl.blocks) ? tpl.blocks.map(rescale) : tpl.blocks;
+      return { ...tpl, blocks: newBlocks, detail: rescaleDetail(tpl.detail) };
+    }
+
+    // Exporte le plan en CSV téléchargeable.
+    // Colonnes : Date,Jour,Type,Nom,Durée(min),Distance(km),Détail,Renfo,Notes
+    // Format compatible Excel/Google Sheets (séparateur virgule, BOM UTF-8).
+    // Usage typique : l'utilisateur envoie ce CSV à son coach pour validation.
+    function exportPlanToCSV(planOverrides, profile, races = []) {
+      if (!planOverrides || Object.keys(planOverrides).length === 0) return null;
+
+      const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
+      const dayLabels = { lun: 'Lundi', mar: 'Mardi', mer: 'Mercredi', jeu: 'Jeudi', ven: 'Vendredi', sam: 'Samedi', dim: 'Dimanche' };
+      const typeLabels = { easy: 'Footing', long: 'Sortie longue', tempo: 'Tempo', intervals: 'Fractionné', test: 'Test', rest: 'Repos', race: 'Course' };
+      const strengthLabels = { A: 'Renfo A (Jambes/Genou)', B: 'Renfo B (Hanches/Fessiers)' };
+
+      const escape = (val) => {
+        if (val == null) return '';
+        const s = String(val);
+        if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+          return `"${s.replace(/"/g, '""')}"`;
+        }
+        return s;
+      };
+
+      // Map des courses par date pour annoter le CSV ("Course du jour")
+      const racesByDate = {};
+      (races || []).forEach(r => { if (r.date) racesByDate[r.date] = r; });
+
+      const rows = [['Date', 'Jour', 'Type', 'Nom', 'Durée (min)', 'Distance (km)', 'Détail', 'Renfo', 'Course']];
+
+      const weekKeys = Object.keys(planOverrides).sort();
+      weekKeys.forEach(wsKey => {
+        const week = planOverrides[wsKey];
+        if (!week) return;
+        const parts = wsKey.split('-');
+        if (parts.length !== 3) return;
+        const weekStart = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+
+        dayKeys.forEach((dk, idx) => {
+          const day = week[dk];
+          if (!day) return;
+          const date = new Date(weekStart.getTime() + idx * 86400000);
+          const dateStr = toLocalDateKey(date);
+          const race = racesByDate[dateStr];
+          if (day.type === 'rest' && !race) {
+            rows.push([dateStr, dayLabels[dk], 'Repos', '', '', '', '', '', '']);
+            return;
+          }
+          rows.push([
+            dateStr,
+            dayLabels[dk],
+            typeLabels[day.type] || day.type || '',
+            day.label || '',
+            day.plannedMin || '',
+            day.plannedKm || '',
+            day.detail || '',
+            strengthLabels[day.strengthToday] || '',
+            race ? `${race.name} (${race.distance})` : '',
+          ]);
+        });
+      });
+
+      const csv = '﻿' + rows.map(r => r.map(escape).join(',')).join('\r\n');
+      return csv;
+    }
+
+    function downloadCSV(filename, csv) {
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // Libère le blob après un délai court (laisse au navigateur le temps
+      // d'initier le téléchargement avant de révoquer l'URL).
+      setTimeout(() => URL.revokeObjectURL(url), 100);
     }
 
     // ========================================================================
@@ -2867,13 +3237,15 @@
         return null;
       }, [profile, planOverrides, activities]);
 
-      // Compute fitness numbers for the strip (forme/fatigue/fraîcheur)
+      // Compute fitness numbers for the strip (forme/fatigue/fraîcheur).
+      // Marche en mode puissance (cp) OU en mode allure (vma) — computeTSS
+      // se débrouille en interne pour choisir le bon path.
       const fitnessSummary = useMemo(() => {
-        if (!profile.cp || !activities.length) return null;
-        const acts = activities.map(a => ({ ...a, tss: computeTSS(a, profile.cp) }));
+        if ((!profile.cp && !profile.vma) || !activities.length) return null;
+        const acts = activities.map(a => ({ ...a, tss: computeTSS(a, profile) }));
         const f = computeFitness(acts);
         return { ctl: f.ctl, atl: f.atl, tsb: f.tsb };
-      }, [activities, profile.cp]);
+      }, [activities, profile.cp, profile.vma, profile.easyPaceMinPerKm]);
 
       // Decide TSB tone
       const tsbTone = fitnessSummary
@@ -2898,7 +3270,7 @@
               </button>
               <button onClick={() => onNav('profile')} className="hidden md:block text-right">
                 <div className="t-meta-dim">{profile.name.toUpperCase()}</div>
-                <div className="t-meta-dim" style={{ fontSize: 10 }}>{getAge(profile.birthYear)} ans · {profile.weightKg}kg · seuil {profile.cp}W</div>
+                <div className="t-meta-dim" style={{ fontSize: 10 }}>{getAge(profile.birthYear)} ans · {profile.weightKg}kg · {isPaceMode(profile) ? `VMA ${profile.vma} km/h` : `seuil ${profile.cp}W`}</div>
               </button>
             </div>
           </div>
@@ -3036,7 +3408,7 @@
     function KneeRiskCard({ profile, activities, checkins, strengthSessions, onNav, onStrengthStart }) {
       const [showDetails, setShowDetails] = useState(false);
       const data = useMemo(() => {
-        const acts = (activities || []).map(a => ({ ...a, tss: computeTSS(a, profile.cp) }));
+        const acts = (activities || []).map(a => ({ ...a, tss: computeTSS(a, profile) }));
         const acwr = computeACWR(acts);
         return computeKneeRiskIndex(profile, activities, checkins, strengthSessions, acwr);
       }, [profile, activities, checkins, strengthSessions]);
@@ -3164,7 +3536,12 @@
     // ========================================================================
     function RaceCountdownHero({ profile, races, activities, onNav }) {
       const data = useMemo(() => {
-        if (!races || !races.length || !profile.cp || !profile.weightKg) return null;
+        // Power-mode requiert cp + weight ; pace-mode requiert vma. Au moins
+        // une voie doit être ouverte pour qu'on puisse prédire un temps.
+        if (!races || !races.length) return null;
+        const hasPowerPath = profile.cp && profile.weightKg;
+        const hasPacePath = profile.vma;
+        if (!hasPowerPath && !hasPacePath) return null;
         const now = new Date(); now.setHours(0, 0, 0, 0);
         const future = (races || []).filter(r => new Date(r.date) >= now).sort((a, b) => new Date(a.date) - new Date(b.date));
         if (!future.length) return null;
@@ -3184,17 +3561,24 @@
         const targetSec = parsePRSec((race.objective || '').replace(/sub-?/i, '').trim());
 
         // Current race prediction (uses live tsbNow so the hero reflects today's session)
-        const acts = (activities || []).map(a => ({ ...a, tss: computeTSS(a, profile.cp) }));
+        const acts = (activities || []).map(a => ({ ...a, tss: computeTSS(a, profile) }));
         const f = computeFitness(acts);
         const tsbForToday = (typeof f.tsbNow === 'number') ? f.tsbNow : f.tsb;
-        const allBests = (activities || []).map(a => a.bestEfforts).filter(Boolean);
-        const merged = {};
-        allBests.forEach(b => Object.entries(b).forEach(([d, p]) => {
-          const pNum = Number(p);
-          if (!Number.isFinite(pNum) || pNum <= 0) return;
-          if (!merged[d] || pNum > merged[d]) merged[d] = pNum;
-        }));
-        const pred = predictRaceTimeV2(profile.cp, 15000, profile.weightKg, distKm, profile.prs, merged, tsbForToday, null, profile.prsDates);
+
+        let pred = null;
+        if (hasPowerPath) {
+          const allBests = (activities || []).map(a => a.bestEfforts).filter(Boolean);
+          const merged = {};
+          allBests.forEach(b => Object.entries(b).forEach(([d, p]) => {
+            const pNum = Number(p);
+            if (!Number.isFinite(pNum) || pNum <= 0) return;
+            if (!merged[d] || pNum > merged[d]) merged[d] = pNum;
+          }));
+          pred = predictRaceTimeV2(profile.cp, 15000, profile.weightKg, distKm, profile.prs, merged, tsbForToday, null, profile.prsDates);
+        } else {
+          // Pace path : prédiction depuis VMA + PRs frais éventuels.
+          pred = predictRaceTimePace(profile.vma, distKm, profile.prs, tsbForToday, profile.prsDates);
+        }
 
         return { race, raceDate, daysToRace, distKm, targetSec, predictedSec: pred?.timeSec || null };
       }, [profile, races, activities]);
@@ -3615,7 +3999,7 @@
                   <div className="text-sm leading-relaxed">{advice.replacement}</div>
                 </div>
               )}
-              {profile.cp && (
+              {!isPaceMode(profile) && profile.cp && (
                 <div>
                   <button onClick={() => setShowZones(v => !v)} className="w-full flex items-center justify-between font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>
                     <span>ZONES D'ENTRAÎNEMENT</span>
@@ -3886,7 +4270,7 @@
         const weekActs = activities.filter(a => a.startMs >= weekStartMs && a.startMs < weekEndMs);
         const rKm = weekActs.reduce((s, a) => s + (a.distanceMeters || 0), 0) / 1000;
         const rMin = weekActs.reduce((s, a) => s + (a.durationSec || 0), 0) / 60;
-        const rTSS = weekActs.reduce((s, a) => s + (computeTSS(a, profile.cp) || 0), 0);
+        const rTSS = weekActs.reduce((s, a) => s + (computeTSS(a, profile) || 0), 0);
         const rSessions = weekActs.length;
 
         // Planned — same fallback strategy as WeekStatsStrip
@@ -3899,7 +4283,7 @@
           const hasExplicitMin = Number.isFinite(d.plannedMin) && d.plannedMin > 0;
           const hasExplicitKm = Number.isFinite(d.plannedKm) && d.plannedKm > 0;
           const estimatedDur = estimateSessionDuration(d.detail, d.type);
-          const dur = hasExplicitMin ? d.plannedMin : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(d.type, profile.cp, profile.weightKg, d.plannedKm, powerPaceTable) : 0));
+          const dur = hasExplicitMin ? d.plannedMin : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(d.type, profile.cp, profile.weightKg, d.plannedKm, powerPaceTable, profile) : 0));
           const km = hasExplicitKm ? d.plannedKm : estimateSessionKm(d.type, profile.cp, profile.weightKg, dur, d.detail, null, powerPaceTable);
 
           pMin += dur;
@@ -4025,7 +4409,7 @@
           const hasExplicitMin = Number.isFinite(d.plannedMin) && d.plannedMin > 0;
           const hasExplicitKm = Number.isFinite(d.plannedKm) && d.plannedKm > 0;
           const estimatedDur = estimateSessionDuration(d.detail, d.type);
-          const dur = hasExplicitMin ? d.plannedMin : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(d.type, profile.cp, profile.weightKg, d.plannedKm, powerPaceTable) : 0));
+          const dur = hasExplicitMin ? d.plannedMin : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(d.type, profile.cp, profile.weightKg, d.plannedKm, powerPaceTable, profile) : 0));
           const km = hasExplicitKm ? d.plannedKm : estimateSessionKm(d.type, profile.cp, profile.weightKg, dur, d.detail, null, powerPaceTable);
           const tss = estimateSessionTSS(d.type, profile.cp, dur);
           totalMin += dur;
@@ -4046,7 +4430,7 @@
           const hasExplicitMin = Number.isFinite(d.plannedMin) && d.plannedMin > 0;
           const hasExplicitKm = Number.isFinite(d.plannedKm) && d.plannedKm > 0;
           const estimatedDur = estimateSessionDuration(d.detail, d.type);
-          const dur = hasExplicitMin ? d.plannedMin : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(d.type, profile.cp, profile.weightKg, d.plannedKm, powerPaceTable) : 0));
+          const dur = hasExplicitMin ? d.plannedMin : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(d.type, profile.cp, profile.weightKg, d.plannedKm, powerPaceTable, profile) : 0));
           const km = hasExplicitKm ? d.plannedKm : estimateSessionKm(d.type, profile.cp, profile.weightKg, dur, d.detail, null, powerPaceTable);
           thisTotalKm += km;
           thisTotalTSS += estimateSessionTSS(d.type, profile.cp, dur);
@@ -4607,7 +4991,7 @@
             : (estimatedDur > 0
                 ? estimatedDur
                 : (hasExplicitKm
-                    ? deriveDurationFromKm(d.planned.type, profile.cp, profile.weightKg, d.planned.plannedKm, powerPaceTable)
+                    ? deriveDurationFromKm(d.planned.type, profile.cp, profile.weightKg, d.planned.plannedKm, powerPaceTable, profile)
                     : 0));
 
           // km: use explicit if available, otherwise estimate from the duration we just computed
@@ -4626,7 +5010,7 @@
           rSessions++;
           rKm += (a.distanceMeters || 0) / 1000;
           rDur += (a.durationSec || 0) / 60;
-          const tss = computeTSS(a, profile.cp);
+          const tss = computeTSS(a, profile);
           if (tss) rTss += tss;
         });
       });
@@ -4790,18 +5174,30 @@
                 Générer un programme
               </Button>
               {Object.keys(planOverrides || {}).length > 0 && (
-                <Button variant="secondary" icon={IconTrash} onClick={async () => {
-                  const sourceLabel = profile.planSource === 'COMPASS Generator' ? ' généré par Compass' : '';
-                  const ok = await dialog.confirm({
-                    title: `Supprimer le plan${sourceLabel} ?`,
-                    message: 'Toutes les séances planifiées sur la durée du plan seront effacées. Tes activités passées et la bibliothèque ne sont pas touchées.',
-                    danger: true,
-                    confirmLabel: 'Supprimer',
-                  });
-                  if (ok && onDeletePlan) onDeletePlan();
-                }}>
-                  Supprimer le plan
-                </Button>
+                <>
+                  <Button variant="secondary" icon={IconFile} onClick={() => {
+                    const csv = exportPlanToCSV(planOverrides, profile, races);
+                    if (!csv) { toast.push('Aucune séance à exporter.', { kind: 'warn' }); return; }
+                    const today = new Date().toISOString().slice(0, 10);
+                    const name = (profile.name || 'compass').toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 20);
+                    downloadCSV(`plan_${name}_${today}.csv`, csv);
+                    toast.push('Plan exporté en CSV — à envoyer à ton coach.', { kind: 'success' });
+                  }}>
+                    Exporter
+                  </Button>
+                  <Button variant="secondary" icon={IconTrash} onClick={async () => {
+                    const sourceLabel = profile.planSource === 'COMPASS Generator' ? ' généré par Compass' : '';
+                    const ok = await dialog.confirm({
+                      title: `Supprimer le plan${sourceLabel} ?`,
+                      message: 'Toutes les séances planifiées sur la durée du plan seront effacées. Tes activités passées et la bibliothèque ne sont pas touchées.',
+                      danger: true,
+                      confirmLabel: 'Supprimer',
+                    });
+                    if (ok && onDeletePlan) onDeletePlan();
+                  }}>
+                    Supprimer le plan
+                  </Button>
+                </>
               )}
             </div>
           </div>
@@ -5140,7 +5536,21 @@
                 dayDate={dayDate}
                 day={day}
                 wsKey={editingInlineDay.wsKey}
-                weekContext={{ cp: profile.cp, weightKg: profile.weightKg, ppt: buildPowerPaceTable(activities || []) }}
+                weekContext={(() => {
+                  const isPaceMode = (profile.unitMode === 'pace' && !!profile.vma) || (!profile.cp && !!profile.vma);
+                  return {
+                    // In pace mode we expose cp = null so all "weekContext.cp && …"
+                    // branches (ZoneReference, TSS-by-power widgets) naturally hide.
+                    // The pace-aware code reads ctx.vma + ctx.aerobicScore instead.
+                    cp: isPaceMode ? null : profile.cp,
+                    weightKg: profile.weightKg,
+                    ppt: buildPowerPaceTable(activities || []),
+                    paceMode: isPaceMode,
+                    vma: profile.vma,
+                    easyPaceMinPerKm: profile.easyPaceMinPerKm,
+                    aerobicScore: deriveAerobicBaseScore(profile, activities || []).score,
+                  };
+                })()}
                 sessionTemplates={sessionTemplates}
                 planOverrides={planOverrides}
                 onSaveTemplate={onSaveTemplate}
@@ -5202,6 +5612,31 @@
         if (minMatch) durMin = parseFloat(minMatch[1].replace(',', '.'));
         else if (secMatch) durMin = parseInt(secMatch[1]) / 60;
         else return null;
+      }
+      // Try pace patterns first ("M:SS/km" or "M:SS-M:SS/km"). They take priority
+      // because a detail in pace mode has no watt tokens.
+      const paceRange = s.match(/(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})\s*\/?\s*km/i);
+      const paceSingle = !paceRange && s.match(/(\d{1,2}):(\d{2})\s*\/?\s*km/i);
+      if (paceRange) {
+        const fastSec = parseInt(paceRange[1]) * 60 + parseInt(paceRange[2]);
+        const slowSec = parseInt(paceRange[3]) * 60 + parseInt(paceRange[4]);
+        return {
+          durMin: Math.round(durMin * 1000) / 1000,
+          powerLow: null, powerHigh: null,
+          paceSecLow: Math.min(fastSec, slowSec),
+          paceSecHigh: Math.max(fastSec, slowSec),
+        };
+      }
+      if (paceSingle) {
+        const sec = parseInt(paceSingle[1]) * 60 + parseInt(paceSingle[2]);
+        // Single pace target → expand to ±PACE_TOLERANCE_SEC so the editor
+        // surfaces a usable range (e.g., "5:30/km" → 5:20-5:40/km).
+        return {
+          durMin: Math.round(durMin * 1000) / 1000,
+          powerLow: null, powerHigh: null,
+          paceSecLow: Math.max(60, sec - PACE_TOLERANCE_SEC),
+          paceSecHigh: sec + PACE_TOLERANCE_SEC,
+        };
       }
       const rangeMatch = s.match(/(\d{2,3})\s*[-–]\s*(\d{2,3})\s*w/i);
       const singleMatch = !rangeMatch && (s.match(/à\s*(\d{2,3})\s*w/i) || s.match(/(?:^|\s)(\d{2,3})\s*w\b/i));
@@ -5342,6 +5777,14 @@
         if (!b.durMin) return;
         const m = b.durMin * mult;
         totalMin += m;
+        // Pace block: km comes directly from duration × pace, no ppt needed.
+        if (b.paceSecLow != null || b.paceSecHigh != null) {
+          const lo = b.paceSecLow != null ? b.paceSecLow : b.paceSecHigh;
+          const hi = b.paceSecHigh != null ? b.paceSecHigh : b.paceSecLow;
+          const avgPaceSec = (lo + hi) / 2;
+          if (avgPaceSec > 0) totalKm += (m * 60) / avgPaceSec;
+          return;
+        }
         const pwr = b.powerLow != null ? (b.powerLow + b.powerHigh) / 2 : (ctx.cp ? ctx.cp * 0.75 : null);
         if (pwr && ctx.ppt && ctx.ppt.length) {
           const paceSec = estimatePaceForPower(pwr, ctx.ppt);
@@ -5363,11 +5806,34 @@
       function makeId() { return 'b_' + Math.random().toString(36).slice(2, 9); }
 
       function makeSingle(blockKind = 'work') {
+        // Pace-mode defaults : pace from VMA × vmaFracFromCpFrac(intensité, score).
+        // Same anchor table as buildVirtualPpt, so adding a block manually gives
+        // zones consistent with what the generator produced.
+        if (ctx.paceMode && ctx.vma) {
+          const score = ctx.aerobicScore != null ? ctx.aerobicScore : 0.5;
+          const paceFromCpFrac = (cpFrac) => Math.round(paceForIntensity(cpFrac, ctx.vma, score, ctx.easyPaceMinPerKm));
+          // Recovery + cooldown bornent fastCp à 0.70 = juste sous l'ancrage
+          // footing (0.72) pour que ces blocs restent toujours plus lents que
+          // l'allure footing déclarée. Warmup peut monter à 0.75 (lignes droites
+          // d'échauffement en fin de WU = OK).
+          const zones = {
+            warmup:   { durMin: 10, fastCp: 0.75, slowCp: 0.70 },
+            work:     { durMin: 5,  fastCp: 0.97, slowCp: 0.92 },
+            recovery: { durMin: 2,  fastCp: 0.70, slowCp: 0.60 },
+            cooldown: { durMin: 10, fastCp: 0.70, slowCp: 0.60 },
+          };
+          const z = zones[blockKind];
+          return {
+            id: makeId(), kind: 'single', blockKind, durMin: z.durMin,
+            paceSecLow: paceFromCpFrac(z.fastCp),
+            paceSecHigh: paceFromCpFrac(z.slowCp),
+          };
+        }
         const defaults = {
           warmup:   { durMin: 10, powerLow: ctx.cp ? Math.round(ctx.cp * 0.70) : null, powerHigh: ctx.cp ? Math.round(ctx.cp * 0.75) : null },
           work:     { durMin: 5,  powerLow: ctx.cp ? Math.round(ctx.cp * 0.92) : null, powerHigh: ctx.cp ? Math.round(ctx.cp * 0.97) : null },
-          recovery: { durMin: 2,  powerLow: ctx.cp ? Math.round(ctx.cp * 0.65) : null, powerHigh: ctx.cp ? Math.round(ctx.cp * 0.75) : null },
-          cooldown: { durMin: 10, powerLow: ctx.cp ? Math.round(ctx.cp * 0.65) : null, powerHigh: ctx.cp ? Math.round(ctx.cp * 0.70) : null },
+          recovery: { durMin: 2,  powerLow: ctx.cp ? Math.round(ctx.cp * 0.60) : null, powerHigh: ctx.cp ? Math.round(ctx.cp * 0.70) : null },
+          cooldown: { durMin: 10, powerLow: ctx.cp ? Math.round(ctx.cp * 0.60) : null, powerHigh: ctx.cp ? Math.round(ctx.cp * 0.70) : null },
         };
         const d = defaults[blockKind];
         return { id: makeId(), kind: 'single', blockKind, ...d };
@@ -5641,14 +6107,42 @@
                   <input type="number" min="0" max="59" step="1" className="input input-mono" style={{ padding: '0.35rem 0.4rem', fontSize: 14, width: 50, textAlign: 'center' }} placeholder="0" value={secPart || ''} onChange={(e) => { let s = parseInt(e.target.value) || 0; if (s >= 60) s = 59; onUpdate({ durMin: minPart + s / 60 }); }} />
                   <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 12 }}>sec</span>
                 </div>
-                {/* Power */}
-                <div className="flex items-center gap-1">
-                  <div className="t-meta-dim mr-1" style={{ color: 'var(--text-faint)' }}>PUISSANCE</div>
-                  <input type="number" className="input input-mono" style={{ padding: '0.35rem 0.4rem', fontSize: 14, width: 56, textAlign: 'center' }} placeholder="min" value={b.powerLow ?? ''} onChange={(e) => onUpdate({ powerLow: e.target.value ? parseInt(e.target.value) : null })} />
-                  <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 12 }}>–</span>
-                  <input type="number" className="input input-mono" style={{ padding: '0.35rem 0.4rem', fontSize: 14, width: 56, textAlign: 'center' }} placeholder="max" value={b.powerHigh ?? ''} onChange={(e) => onUpdate({ powerHigh: e.target.value ? parseInt(e.target.value) : null })} />
-                  <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 12 }}>W</span>
-                </div>
+                {(() => {
+                  // Mode allure : si le bloc a un champ pace (pace-mode user), on
+                  // affiche deux inputs MM:SS au lieu des inputs watts.
+                  const isPaceBlock = (b.paceSecLow != null || b.paceSecHigh != null) || (ctx.paceMode && b.powerLow == null && b.powerHigh == null);
+                  if (isPaceBlock) {
+                    const fmt = (sec) => {
+                      if (sec == null || sec <= 0) return '';
+                      const m = Math.floor(sec / 60);
+                      const s = Math.round(sec % 60);
+                      return `${m}:${String(s).padStart(2, '0')}`;
+                    };
+                    const parse = (str) => {
+                      const m = String(str || '').match(/^(\d{1,2}):(\d{2})$/);
+                      if (!m) return null;
+                      return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+                    };
+                    return (
+                      <div className="flex items-center gap-1">
+                        <div className="t-meta-dim mr-1" style={{ color: 'var(--text-faint)' }}>ALLURE</div>
+                        <input type="text" inputMode="numeric" className="input input-mono" style={{ padding: '0.35rem 0.4rem', fontSize: 14, width: 64, textAlign: 'center' }} placeholder="rapide" defaultValue={fmt(b.paceSecLow)} onBlur={(e) => { const v = parse(e.target.value); onUpdate({ paceSecLow: v }); }} />
+                        <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 12 }}>–</span>
+                        <input type="text" inputMode="numeric" className="input input-mono" style={{ padding: '0.35rem 0.4rem', fontSize: 14, width: 64, textAlign: 'center' }} placeholder="lent" defaultValue={fmt(b.paceSecHigh)} onBlur={(e) => { const v = parse(e.target.value); onUpdate({ paceSecHigh: v }); }} />
+                        <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 12 }}>/km</span>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="flex items-center gap-1">
+                      <div className="t-meta-dim mr-1" style={{ color: 'var(--text-faint)' }}>PUISSANCE</div>
+                      <input type="number" className="input input-mono" style={{ padding: '0.35rem 0.4rem', fontSize: 14, width: 56, textAlign: 'center' }} placeholder="min" value={b.powerLow ?? ''} onChange={(e) => onUpdate({ powerLow: e.target.value ? parseInt(e.target.value) : null })} />
+                      <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 12 }}>–</span>
+                      <input type="number" className="input input-mono" style={{ padding: '0.35rem 0.4rem', fontSize: 14, width: 56, textAlign: 'center' }} placeholder="max" value={b.powerHigh ?? ''} onChange={(e) => onUpdate({ powerHigh: e.target.value ? parseInt(e.target.value) : null })} />
+                      <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 12 }}>W</span>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           </div>
@@ -6827,8 +7321,29 @@
       );
     }
 
+    // Estime la VMA depuis le temps sur une course récente.
+    // Formules Cazorla/Mercier-Léger : la VMA est l'allure soutenable ~5-6 min,
+    // les autres distances se courent à un % connu de la VMA :
+    //   5K   ≈ 97 % VMA (limite supérieure pour bien entraîné)
+    //   10K  ≈ 92 % VMA
+    //   semi ≈ 85 % VMA
+    //   mara ≈ 80 % VMA
+    // → VMA ≈ vitesse_course / coefficient
+    // Renvoie null si distance/temps invalides.
+    function estimateVMAFromRace(distanceKey, timeSec) {
+      if (!distanceKey || !timeSec || timeSec <= 0) return null;
+      const distKm = { '5k': 5, '10k': 10, semi: 21.0975, marathon: 42.195 }[String(distanceKey).toLowerCase()];
+      if (!distKm) return null;
+      const speed = distKm / (timeSec / 3600); // km/h
+      const coef = { '5k': 0.97, '10k': 0.92, semi: 0.85, marathon: 0.80 }[String(distanceKey).toLowerCase()];
+      const vma = speed / coef;
+      if (!isFinite(vma) || vma < 6 || vma > 26) return null;
+      return Math.round(vma * 10) / 10;
+    }
+
     function OnboardingModal({ initialProfile, onComplete, onSkip }) {
       const [step, setStep] = useState(0);
+      const [vmaEstimator, setVmaEstimator] = useState({ open: false, distance: '10k', mm: '', ss: '' });
       const [draft, setDraft] = useState({
         name: initialProfile?.name || '',
         birthYear: initialProfile?.birthYear || '',
@@ -7010,7 +7525,45 @@
                       <div style={{ ...cardStyle, marginTop: '0.75rem' }}>
                         <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>VMA — VITESSE MAXIMALE AÉROBIE (KM/H, OPTIONNEL)</div>
                         <input type="number" step="0.1" value={draft.vma} onChange={(e) => setDraft({...draft, vma: e.target.value})} placeholder="Ex: 16.5" className="input" />
-                        <div className="text-xs mt-2 leading-relaxed" style={{ color: 'var(--text-faint)' }}>Vitesse soutenable au maximum 5-6 minutes. Si tu l'as testée (demi-Cooper, test 5'), renseigne-la — elle calibre les zones hautes (seuil, VMA, allure course). Sinon tu peux laisser vide et renseigner plutôt un temps récent 5K/10K dans <span style={{ color: 'var(--text-dim)' }}>Profil → Records</span> après l'onboarding.</div>
+                        <div className="text-xs mt-2 leading-relaxed" style={{ color: 'var(--text-faint)' }}>Vitesse soutenable au maximum 5-6 minutes. Calibre tes zones hautes (seuil, VMA, allure course).</div>
+
+                        {!vmaEstimator.open && (
+                          <button type="button" onClick={() => setVmaEstimator({ ...vmaEstimator, open: true })} className="mt-3 font-mono text-[10px] tracking-widest" style={{ color: 'var(--compass)' }}>
+                            ESTIMER DEPUIS UN TEMPS DE COURSE →
+                          </button>
+                        )}
+                        {vmaEstimator.open && (
+                          <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border)' }}>
+                            <div className="font-mono text-[9px] tracking-widest mb-2" style={{ color: 'var(--text-faint)' }}>TON MEILLEUR TEMPS RÉCENT</div>
+                            <div className="flex gap-2 items-center mb-2">
+                              <select value={vmaEstimator.distance} onChange={(e) => setVmaEstimator({ ...vmaEstimator, distance: e.target.value })} className="input" style={{ flex: '0 0 auto', width: 110 }}>
+                                <option value="5k">5K</option>
+                                <option value="10k">10K</option>
+                                <option value="semi">Semi</option>
+                                <option value="marathon">Marathon</option>
+                              </select>
+                              <span style={{ color: 'var(--text-faint)' }} className="font-mono text-xs">en</span>
+                              <input type="number" inputMode="numeric" value={vmaEstimator.mm} onChange={(e) => setVmaEstimator({ ...vmaEstimator, mm: e.target.value })} placeholder="min" className="input" style={{ width: 70, textAlign: 'center' }} />
+                              <span className="font-mono">:</span>
+                              <input type="number" inputMode="numeric" value={vmaEstimator.ss} onChange={(e) => setVmaEstimator({ ...vmaEstimator, ss: e.target.value })} placeholder="sec" className="input" style={{ width: 70, textAlign: 'center' }} />
+                            </div>
+                            {(() => {
+                              const mm = parseInt(vmaEstimator.mm) || 0;
+                              const ss = parseInt(vmaEstimator.ss) || 0;
+                              const totalSec = mm * 60 + ss;
+                              const est = totalSec > 60 ? estimateVMAFromRace(vmaEstimator.distance, totalSec) : null;
+                              if (est) {
+                                return (
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="text-xs" style={{ color: 'var(--text-dim)' }}>VMA estimée : <span className="font-display font-bold tabular" style={{ color: 'var(--accent)' }}>{est} km/h</span></div>
+                                    <button type="button" onClick={() => { setDraft({ ...draft, vma: est }); setVmaEstimator({ open: false, distance: '10k', mm: '', ss: '' }); }} className="btn rounded-lg px-3 py-1.5 font-mono text-[10px] tracking-widest" style={{ background: 'var(--compass)', color: '#000', border: '1px solid var(--compass)' }}>UTILISER</button>
+                                  </div>
+                                );
+                              }
+                              return <div className="text-xs" style={{ color: 'var(--text-faint)' }}>Renseigne un temps pour voir l'estimation (formules Cazorla / Mercier-Léger).</div>;
+                            })()}
+                          </div>
+                        )}
                       </div>
                     </>
                   )}
@@ -8024,7 +8577,7 @@
       const thisWeek = activities.filter(a => a.startMs >= weekStartMs && a.startMs < weekEndMs);
       const weekDistance = thisWeek.reduce((s, a) => s + (a.distanceMeters || 0), 0);
       const weekDuration = thisWeek.reduce((s, a) => s + (a.durationSec || 0), 0);
-      const weekTSS = thisWeek.reduce((s, a) => s + (computeTSS(a, profile.cp) || 0), 0);
+      const weekTSS = thisWeek.reduce((s, a) => s + (computeTSS(a, profile) || 0), 0);
       // Last week for comparison
       const lastWeekStart = weekStartMs - 7 * 86400000;
       const lastWeek = activities.filter(a => a.startMs >= lastWeekStart && a.startMs < weekStartMs);
@@ -8065,7 +8618,7 @@
             <button onClick={onManualEntry} className="btn lift rounded-2xl p-6 md:p-8 text-center flex flex-col items-center justify-center" style={{ background: 'rgba(212, 255, 0, 0.04)', border: '2px dashed rgba(212, 255, 0, 0.25)' }}>
               <IconPlus size={28} style={{ color: 'var(--accent)' }} className="mb-3" />
               <div className="font-display text-lg font-bold mb-1" style={{ color: 'var(--accent)' }}>Saisie manuelle</div>
-              <div className="text-xs" style={{ color: 'var(--text-dim)' }}>Sans fichier · Distance + durée + puissance</div>
+              <div className="text-xs" style={{ color: 'var(--text-dim)' }}>Sans fichier · Distance + durée{isPaceMode(profile) ? '' : ' + puissance'}</div>
             </button>
           </div>
 
@@ -8082,7 +8635,9 @@
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
               <Stat label="CETTE SEMAINE" value={(weekDistance / 1000).toFixed(1)} unit="km" icon={IconActivity} accent="var(--compass)" size="md" />
               <Stat label="DURÉE" value={fmtDuration(weekDuration)} icon={IconClock} accent="var(--text)" size="md" />
-              <Stat label="CHARGE CUMULÉE" value={Math.round(weekTSS)} icon={IconTrending} accent="var(--accent)" size="md" />
+              {isPaceMode(profile)
+                ? <Stat label="SÉANCES" value={thisWeek.length} icon={IconTrending} accent="var(--accent)" size="md" />
+                : <Stat label="CHARGE CUMULÉE" value={Math.round(weekTSS)} icon={IconTrending} accent="var(--accent)" size="md" />}
               <Stat label={`SEMAINE DERNIÈRE`} value={lastWeekKm.toFixed(1)} unit="km" icon={IconCheck} accent="var(--text-dim)" size="md" />
             </div>
           )}
@@ -8106,7 +8661,7 @@
               {filtered.map((item, i) => (
                 <div key={`${item.kind}-${item.date}-${i}`} className="fade-in" style={{ animationDelay: `${Math.min(i, 10) * 30}ms` }}>
                   {item.kind === 'activity' ? (
-                    <ActivityRow activity={item.data} cp={profile.cp} onView={() => onViewActivity(item.data)} onDelete={() => onDeleteActivity(item.data.id)} />
+                    <ActivityRow activity={item.data} cp={profile.cp} profile={profile} hidePower={isPaceMode(profile)} onView={() => onViewActivity(item.data)} onDelete={() => onDeleteActivity(item.data.id)} />
                   ) : (
                     <CheckinRow checkin={item.data} profile={profile} />
                   )}
@@ -8118,9 +8673,12 @@
       );
     }
 
-    function ActivityRow({ activity, cp, onView, onDelete }) {
+    function ActivityRow({ activity, cp, onView, onDelete, hidePower = false, profile = null }) {
       const dialog = useDialog();
-      const tss = computeTSS(activity, cp);
+      // En mode pace, on calcule quand même un TSS à partir de l'allure (path
+      // pace-mode du nouveau computeTSS). hidePower contrôle UNIQUEMENT
+      // l'affichage de la puissance, pas la charge.
+      const tss = computeTSS(activity, profile || cp);
       const dateLabel = isToday(activity.startMs) ? "AUJOURD'HUI" : isYesterday(activity.startMs) ? 'HIER' : fmtDate(activity.startMs).toUpperCase();
       return (
         <Card className="p-4 lift">
@@ -8135,7 +8693,7 @@
               <div className="font-mono text-[10px] mt-1 tabular flex flex-wrap gap-x-3" style={{ color: 'var(--text-dim)' }}>
                 <span>{dateLabel}</span>
                 {activity.paceMinPerKm && <span>{fmtPace(activity.paceMinPerKm)}</span>}
-                {activity.normalizedPower && <span>NP {activity.normalizedPower}W</span>}
+                {!hidePower && activity.normalizedPower && <span>NP {activity.normalizedPower}W</span>}
                 {activity.avgHr && <span>FC {activity.avgHr}</span>}
               </div>
             </div>
@@ -8359,7 +8917,7 @@
 
     function ActivityDetailModal({ activity, cp, onClose, profile, allActivities, onNavigate }) {
       if (!activity) return null;
-      const tss = computeTSS(activity, cp);
+      const tss = computeTSS(activity, profile || cp);
       const intensityFactor = activity.normalizedPower && cp ? (activity.normalizedPower / cp) : null;
       const efforts = activity.bestEfforts || {};
       const effortRows = Object.entries(efforts).filter(([d]) => [60, 180, 300, 600, 1200, 1800].includes(parseInt(d))).map(([d, p]) => ({ d: parseInt(d), p }));
@@ -8520,20 +9078,26 @@
                 <Stat label="DISTANCE" value={(activity.distanceMeters/1000).toFixed(2)} unit="km" accent="var(--compass)" />
                 <Stat label="DURÉE" value={fmtDuration(activity.durationSec)} accent="var(--text)" />
                 <Stat label="ALLURE" value={activity.paceMinPerKm ? `${Math.floor(activity.paceMinPerKm)}:${String(Math.round((activity.paceMinPerKm % 1) * 60)).padStart(2,'0')}` : '—'} unit="/km" accent="var(--text)" />
-                <Stat label="CHARGE" value={tss || '—'} accent="var(--accent)" />
+                {isPaceMode(profile)
+                  ? <Stat label="FC MOY" value={activity.avgHr || '—'} unit={activity.avgHr ? 'bpm' : ''} accent="var(--accent)" />
+                  : <Stat label="CHARGE" value={tss || '—'} accent="var(--accent)" />}
               </div>
-              {/* Power & HR */}
+              {/* Power & HR panel — pace mode hides the power columns */}
               <Card className="p-5">
-                <div className="font-mono text-[10px] tracking-widest mb-3" style={{ color: 'var(--text-dim)' }}>PUISSANCE · CARDIO · CADENCE</div>
+                <div className="font-mono text-[10px] tracking-widest mb-3" style={{ color: 'var(--text-dim)' }}>{isPaceMode(profile) ? 'CARDIO · CADENCE' : 'PUISSANCE · CARDIO · CADENCE'}</div>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <MiniStat label="P. MOYENNE" value={activity.avgPower || '—'} unit={activity.avgPower ? 'W' : ''} />
-                  <MiniStat label="P. PONDÉRÉE" value={activity.normalizedPower || '—'} unit={activity.normalizedPower ? 'W' : ''} accent="var(--compass)" />
-                  <MiniStat label="P. MAX" value={activity.maxPower || '—'} unit={activity.maxPower ? 'W' : ''} />
-                  <MiniStat label="INTENSITÉ" value={intensityFactor ? intensityFactor.toFixed(2) : '—'} accent="var(--accent)" />
+                  {!isPaceMode(profile) && (
+                    <>
+                      <MiniStat label="P. MOYENNE" value={activity.avgPower || '—'} unit={activity.avgPower ? 'W' : ''} />
+                      <MiniStat label="P. PONDÉRÉE" value={activity.normalizedPower || '—'} unit={activity.normalizedPower ? 'W' : ''} accent="var(--compass)" />
+                      <MiniStat label="P. MAX" value={activity.maxPower || '—'} unit={activity.maxPower ? 'W' : ''} />
+                      <MiniStat label="INTENSITÉ" value={intensityFactor ? intensityFactor.toFixed(2) : '—'} accent="var(--accent)" />
+                    </>
+                  )}
                   <MiniStat label="FC MOY" value={activity.avgHr || '—'} unit={activity.avgHr ? 'bpm' : ''} />
                   <MiniStat label="FC MAX" value={activity.maxHr || '—'} unit={activity.maxHr ? 'bpm' : ''} />
                   <MiniStat label="CADENCE" value={activity.avgCadence || '—'} unit={activity.avgCadence ? 'spm' : ''} />
-                  <MiniStat label="CHARGE" value={tss || '—'} accent="var(--accent)" />
+                  {!isPaceMode(profile) && <MiniStat label="CHARGE" value={tss || '—'} accent="var(--accent)" />}
                 </div>
               </Card>
               {/* Cardiac drift — only shown for steady-state efforts (excluded for intervals) */}
@@ -8561,14 +9125,14 @@
                         <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>1ʳᵉ MOITIÉ (APRÈS ÉCHAUFFEMENT)</div>
                         <div className="font-mono text-sm tabular">
                           {activity.splits.first.avgHr && <span>FC {activity.splits.first.avgHr}</span>}
-                          {activity.splits.first.avgPower && <span className="ml-3">P {activity.splits.first.avgPower}W</span>}
+                          {!isPaceMode(profile) && activity.splits.first.avgPower && <span className="ml-3">P {activity.splits.first.avgPower}W</span>}
                         </div>
                       </div>
                       <div>
                         <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>2ᵉ MOITIÉ</div>
                         <div className="font-mono text-sm tabular">
                           {activity.splits.second.avgHr && <span>FC {activity.splits.second.avgHr}</span>}
-                          {activity.splits.second.avgPower && <span className="ml-3">P {activity.splits.second.avgPower}W</span>}
+                          {!isPaceMode(profile) && activity.splits.second.avgPower && <span className="ml-3">P {activity.splits.second.avgPower}W</span>}
                         </div>
                       </div>
                     </div>
@@ -8714,10 +9278,11 @@
     // ========================================================================
     // PROFILE VIEW — Tony's data, editable
     // ========================================================================
-    function ProfileView({ profile, onSave, activities, planOverrides, onRecalibratePlan, onShowAllActivities, phaseGraduations = [], races = [], onAddRace, onUpdateRace }) {
+    function ProfileView({ profile, onSave, activities, planOverrides, onRecalibratePlan, onRecalibratePlanPace, onShowAllActivities, phaseGraduations = [], races = [], onAddRace, onUpdateRace }) {
       const [editing, setEditing] = useState(false);
       const [draft, setDraft] = useState(profile);
       const dialog = useDialog();
+      const toast = useToast();
 
       const age = profile.birthYear ? getAge(profile.birthYear) : null;
       const totalAct = activities.length;
@@ -8736,7 +9301,67 @@
         return estimateCPFromBests(merged);
       }, [activities]);
 
-      function save() {
+      const detectedVmaProgress = useMemo(() => {
+        if (!isPaceMode(profile) || !profile.vma) return null;
+        return detectVMAProgression(activities, profile.vma);
+      }, [activities, profile]);
+
+      async function save() {
+        // Validation : bornes physiologiquement plausibles. Bloque les valeurs
+        // aberrantes (typos type "170" pour 17.0 km/h VMA), demande confirmation
+        // pour les variations >20 % depuis l'ancienne valeur (catch les unités
+        // mélangées : minutes vs secondes, kg vs lb).
+        const errors = [];
+        if (draft.weightKg != null && draft.weightKg !== '') {
+          const w = parseFloat(draft.weightKg);
+          if (!isFinite(w) || w < 30 || w > 200) errors.push('Poids doit être entre 30 et 200 kg.');
+        }
+        if (draft.fcMax != null && draft.fcMax !== '') {
+          const fc = parseInt(draft.fcMax);
+          if (!isFinite(fc) || fc < 120 || fc > 230) errors.push('FC max doit être entre 120 et 230 bpm.');
+        }
+        if (draft.fcRest != null && draft.fcRest !== '') {
+          const fc = parseInt(draft.fcRest);
+          if (!isFinite(fc) || fc < 30 || fc > 100) errors.push('FC repos doit être entre 30 et 100 bpm.');
+        }
+        if (draft.cp != null && draft.cp !== '') {
+          const cp = parseInt(draft.cp);
+          if (!isFinite(cp) || cp < 50 || cp > 500) errors.push('CP doit être entre 50 et 500 W.');
+        }
+        if (draft.vma != null && draft.vma !== '') {
+          const v = parseFloat(draft.vma);
+          if (!isFinite(v) || v < 8 || v > 25) errors.push('VMA doit être entre 8 et 25 km/h (saisie typique : 16.5, pas 165).');
+        }
+        if (draft.easyPaceMinPerKm != null) {
+          const p = typeof draft.easyPaceMinPerKm === 'string' ? parsePace(draft.easyPaceMinPerKm) : draft.easyPaceMinPerKm;
+          if (p != null && (p < 3 || p > 12)) errors.push('Allure footing doit être entre 3:00 et 12:00 /km.');
+        }
+        if (errors.length) {
+          toast.push(errors[0], { kind: 'danger' });
+          return;
+        }
+
+        // Sanity check on big jumps (typos type 240 → 24 W ou 17 → 1.7 km/h).
+        const bigJump = (oldV, newV, threshold = 0.20) => {
+          if (!oldV || !newV) return false;
+          return Math.abs(newV - oldV) / oldV > threshold;
+        };
+        const jumps = [];
+        if (bigJump(profile.cp, draft.cp)) jumps.push(`CP ${profile.cp}W → ${draft.cp}W`);
+        if (bigJump(profile.vma, draft.vma)) jumps.push(`VMA ${profile.vma} → ${draft.vma} km/h`);
+        if (bigJump(profile.weightKg, draft.weightKg)) jumps.push(`Poids ${profile.weightKg} → ${draft.weightKg} kg`);
+        const oldEasyP = profile.easyPaceMinPerKm;
+        const newEasyP = typeof draft.easyPaceMinPerKm === 'string' ? parsePace(draft.easyPaceMinPerKm) : draft.easyPaceMinPerKm;
+        if (bigJump(oldEasyP, newEasyP)) jumps.push(`Footing ${fmtPace(oldEasyP)} → ${fmtPace(newEasyP)}`);
+        if (jumps.length) {
+          const ok = await dialog.confirm({
+            title: 'Changement important — tu es sûr ?',
+            message: `${jumps.join(' · ')}.\nVérifie qu'il n'y a pas une typo (unité, virgule).`,
+            confirmLabel: 'Oui, confirmer',
+          });
+          if (!ok) return;
+        }
+
         // If CP changed, add an entry to cpHistory so the projection chart updates
         let toSave = draft;
         if (profile.cp && draft.cp && profile.cp !== draft.cp) {
@@ -8942,7 +9567,11 @@
             <Stat label="ACTIVITÉS" value={totalAct} icon={IconActivity} accent="var(--compass)" />
             <Stat label="DISTANCE TOTALE" value={totalKm.toFixed(0)} unit="km" icon={IconTrending} accent="var(--text)" />
             <Stat label="HEURES" value={totalHours.toFixed(0)} unit="h" icon={IconClock} accent="var(--text)" />
-            <Stat label={profile.unitMode === 'pace' ? 'RECORD 10K' : 'PUISSANCE SEUIL'} value={profile.unitMode === 'pace' ? (profile.prs['10k'] || '—') : (profile.cp || '—')} unit={profile.unitMode === 'pace' ? '' : 'W'} icon={IconZap} accent="var(--accent)" />
+            {isPaceMode(profile) ? (
+              <Stat label="VMA" value={profile.vma || '—'} unit={profile.vma ? 'km/h' : ''} icon={IconZap} accent="var(--accent)" />
+            ) : (
+              <Stat label="PUISSANCE SEUIL" value={profile.cp || '—'} unit={profile.cp ? 'W' : ''} icon={IconZap} accent="var(--accent)" />
+            )}
           </div>
 
           {/* Physiology */}
@@ -8954,10 +9583,17 @@
                 <ProfileField label="Poids" value={profile.weightKg ? `${profile.weightKg} kg` : '—'} />
                 <ProfileField label="FC repos" value={profile.fcRest ? `${profile.fcRest} bpm` : '—'} />
                 <ProfileField label="FC max" value={profile.fcMax ? `${profile.fcMax} bpm` : '—'} />
-                {profile.unitMode !== 'pace' && <>
-                  <ProfileField label="Puissance seuil (CP)" value={profile.cp ? `${profile.cp} W` : '—'} accent="var(--accent)" />
-                  <ProfileField label="W/kg" value={profile.cp && profile.weightKg ? (profile.cp / profile.weightKg).toFixed(2) : '—'} accent="var(--accent)" />
-                </>}
+                {isPaceMode(profile) ? (
+                  <>
+                    <ProfileField label="VMA" value={profile.vma ? `${profile.vma} km/h` : '—'} accent="var(--accent)" />
+                    <ProfileField label="Allure footing" value={profile.easyPaceMinPerKm ? fmtPace(profile.easyPaceMinPerKm) : '—'} accent="var(--accent)" />
+                  </>
+                ) : (
+                  <>
+                    <ProfileField label="Puissance seuil (CP)" value={profile.cp ? `${profile.cp} W` : '—'} accent="var(--accent)" />
+                    <ProfileField label="W/kg" value={profile.cp && profile.weightKg ? (profile.cp / profile.weightKg).toFixed(2) : '—'} accent="var(--accent)" />
+                  </>
+                )}
                 <ProfileField label="Réserve cardiaque" value={profile.fcMax && profile.fcRest ? `${profile.fcMax - profile.fcRest} bpm` : '—'} />
               </div>
             ) : (
@@ -8967,11 +9603,11 @@
                 <EditField label="FC repos" value={draft.fcRest || ''} onChange={(v) => setDraft({...draft, fcRest: v ? parseInt(v) : null})} />
                 <EditField label="FC max" value={draft.fcMax || ''} onChange={(v) => setDraft({...draft, fcMax: v ? parseInt(v) : null})} />
                 {draft.unitMode !== 'pace' && <EditField label="Puissance seuil (W)" value={draft.cp || ''} onChange={(v) => setDraft({...draft, cp: v ? parseInt(v) : null})} />}
-                {draft.unitMode === 'pace' && <EditField label="Allure footing (mm:ss)" type="text" value={draft.easyPaceMinPerKm ? fmtPace(draft.easyPaceMinPerKm).replace('/km', '') : ''} onChange={(v) => setDraft({...draft, easyPaceMinPerKm: parsePace(v)})} />}
+                {draft.unitMode === 'pace' && <PaceInput label="Allure footing (mm:ss)" value={draft.easyPaceMinPerKm} onChange={(v) => setDraft({...draft, easyPaceMinPerKm: v})} />}
                 {draft.unitMode === 'pace' && <EditField label="VMA (km/h)" value={draft.vma || ''} onChange={(v) => setDraft({...draft, vma: v ? parseFloat(v) : null})} />}
               </div>
             )}
-            {detectedCp && profile.cp && Math.abs(detectedCp - profile.cp) > 5 && (
+            {!isPaceMode(profile) && detectedCp && profile.cp && Math.abs(detectedCp - profile.cp) > 5 && (
               <div className="mt-4 rounded-lg p-3 flex items-start gap-2" style={{ background: 'rgba(212, 255, 0, 0.06)', border: '1px solid rgba(212, 255, 0, 0.2)' }}>
                 <IconTrending size={14} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />
                 <div className="text-xs leading-relaxed">
@@ -8980,7 +9616,19 @@
                 </div>
               </div>
             )}
-            {!editing && profile.cp && profile.planSourceCp && profile.cp !== profile.planSourceCp && planOverrides && Object.keys(planOverrides).length > 0 && onRecalibratePlan && (
+            {isPaceMode(profile) && detectedVmaProgress && !editing && (
+              <div className="mt-4 rounded-lg p-3 flex items-start gap-3" style={{ background: 'rgba(212, 255, 0, 0.06)', border: '1px solid rgba(212, 255, 0, 0.2)' }}>
+                <IconTrending size={14} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />
+                <div className="text-xs leading-relaxed flex-1">
+                  <span className="font-display font-bold" style={{ color: 'var(--accent)' }}>Progression détectée : VMA estimée {detectedVmaProgress.suggestedVMA} km/h</span>
+                  <div style={{ color: 'var(--text-dim)' }} className="mt-0.5">
+                    Sur tes {detectedVmaProgress.sampleCount} efforts courts récents (5-30 min), ta vitesse moyenne suggère une VMA de {detectedVmaProgress.suggestedVMA} km/h (+{detectedVmaProgress.delta} vs ta valeur actuelle de {profile.vma} km/h). Si tu as fait un test propre, mets à jour ta VMA pour recaler tes zones.
+                  </div>
+                </div>
+                <button onClick={() => { setDraft({ ...draft, vma: detectedVmaProgress.suggestedVMA }); setEditing(true); }} className="btn rounded-lg px-3 py-2 font-mono text-[10px] tracking-widest whitespace-nowrap" style={{ background: 'var(--accent)', color: '#000', border: '1px solid var(--accent)' }}>METTRE À JOUR</button>
+              </div>
+            )}
+            {!isPaceMode(profile) && !editing && profile.cp && profile.planSourceCp && profile.cp !== profile.planSourceCp && planOverrides && Object.keys(planOverrides).length > 0 && onRecalibratePlan && (
               <div className="mt-4 rounded-lg p-3 flex items-start gap-3" style={{ background: 'rgba(74, 158, 255, 0.06)', border: '1px solid rgba(74, 158, 255, 0.25)' }}>
                 <IconZap size={14} style={{ color: 'var(--compass)', flexShrink: 0, marginTop: 2 }} />
                 <div className="text-xs leading-relaxed flex-1">
@@ -8990,6 +9638,23 @@
                   </div>
                 </div>
                 <button onClick={onRecalibratePlan} className="btn rounded-lg px-3 py-2 font-mono text-[10px] tracking-widest whitespace-nowrap" style={{ background: 'var(--compass)', color: '#000', border: '1px solid var(--compass)' }}>RECALIBRER</button>
+              </div>
+            )}
+            {isPaceMode(profile) && !editing && profile.vma && profile.planSourceVma && (profile.vma !== profile.planSourceVma || profile.easyPaceMinPerKm !== profile.planSourceEasyPace) && planOverrides && Object.keys(planOverrides).length > 0 && onRecalibratePlanPace && (
+              <div className="mt-4 rounded-lg p-3 flex items-start gap-3" style={{ background: 'rgba(74, 158, 255, 0.06)', border: '1px solid rgba(74, 158, 255, 0.25)' }}>
+                <IconZap size={14} style={{ color: 'var(--compass)', flexShrink: 0, marginTop: 2 }} />
+                <div className="text-xs leading-relaxed flex-1">
+                  <span className="font-display font-bold" style={{ color: 'var(--compass)' }}>Allures du plan désynchronisées</span>
+                  <div style={{ color: 'var(--text-dim)' }} className="mt-0.5">
+                    {(() => {
+                      const bits = [];
+                      if (profile.vma !== profile.planSourceVma) bits.push(`VMA ${profile.planSourceVma} → ${profile.vma} km/h`);
+                      if (profile.easyPaceMinPerKm !== profile.planSourceEasyPace) bits.push(`footing ${profile.planSourceEasyPace ? fmtPace(profile.planSourceEasyPace) : '—'} → ${profile.easyPaceMinPerKm ? fmtPace(profile.easyPaceMinPerKm) : '—'}`);
+                      return bits.join(' · ');
+                    })()}. Les allures cibles ne sont plus à l'échelle.
+                  </div>
+                </div>
+                <button onClick={onRecalibratePlanPace} className="btn rounded-lg px-3 py-2 font-mono text-[10px] tracking-widest whitespace-nowrap" style={{ background: 'var(--compass)', color: '#000', border: '1px solid var(--compass)' }}>RECALIBRER</button>
               </div>
             )}
           </Card>
@@ -9308,6 +9973,56 @@
         </div>
       );
     }
+    // Pace input with local text state so the user can type "5:30", "05:40",
+    // "4:" mid-edit without parsePace() flipping the field back to the last
+    // valid integer. We commit to the parent only when parsing yields a valid
+    // value. The ref tracks our last commit, so a parent re-render caused by
+    // our own onChange does NOT re-sync the field (which would erase typing
+    // in progress like "05:" → "5:00"). Only TRULY external value changes
+    // trigger a resync.
+    function PaceInput({ label, value, onChange }) {
+      const [txt, setTxt] = useState(value ? fmtPace(value).replace('/km', '') : '');
+      const lastCommittedRef = useRef(value);
+      useEffect(() => {
+        if (value !== lastCommittedRef.current) {
+          setTxt(value ? fmtPace(value).replace('/km', '') : '');
+          lastCommittedRef.current = value;
+        }
+      }, [value]);
+      return (
+        <div>
+          <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>{label}</div>
+          <input
+            type="text"
+            inputMode="numeric"
+            className="input input-mono"
+            placeholder="5:30"
+            value={txt}
+            onChange={(e) => {
+              const v = e.target.value;
+              setTxt(v);
+              const parsed = parsePace(v);
+              if (parsed != null) {
+                onChange(parsed);
+                lastCommittedRef.current = parsed;
+              }
+            }}
+            onBlur={() => {
+              const parsed = parsePace(txt);
+              if (parsed != null) {
+                const formatted = fmtPace(parsed).replace('/km', '');
+                setTxt(formatted);
+                onChange(parsed);
+                lastCommittedRef.current = parsed;
+              } else if (txt === '') {
+                onChange(null);
+                lastCommittedRef.current = null;
+              }
+            }}
+          />
+        </div>
+      );
+    }
     // Structured H:MM:SS input. Reads/writes a normalized "m:ss" or "h:mm:ss" string
     // (same format as race objectives) so the value is directly parseable by parsePRSec.
     function GoalTimeInput({ value, onChange }) {
@@ -9364,7 +10079,7 @@
           <div className="mb-6">
             <div className="t-meta mb-2" style={{ color: 'var(--compass)' }}>BIBLIOTHÈQUE</div>
             <h1 className="t-h1">Tes séances types</h1>
-            <p className="t-body-dim mt-2 max-w-2xl">Sauvegarde tes séances habituelles depuis Plan pour les ré-injecter sur n'importe quel jour en un clic. Les watts cibles sont automatiquement ajustés à ta puissance seuil actuelle.</p>
+            <p className="t-body-dim mt-2 max-w-2xl">Sauvegarde tes séances habituelles depuis Plan pour les ré-injecter sur n'importe quel jour en un clic.{isPaceMode(profile) ? ' Les allures cibles suivent ta VMA et ta base aérobie actuelles.' : ' Les watts cibles sont automatiquement ajustés à ta puissance seuil actuelle.'}</p>
           </div>
 
           <MySessionsView templates={sessionTemplates} onDelete={onDeleteTemplate} onRename={onRenameTemplate} profile={profile} />
@@ -9500,7 +10215,7 @@
                       )}
                       <div className="mt-3 font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
                         Créée le {fmtDate(new Date(tpl.createdAt), true)}
-                        {cp && Array.isArray(tpl.blocks) && tpl.blocks.length > 0 && (
+                        {!isPaceMode(profile) && cp && Array.isArray(tpl.blocks) && tpl.blocks.length > 0 && (
                           <> · Watts cibles ajustés à ta puissance seuil actuelle ({cp}W) si tu modifies ta valeur plus tard</>
                         )}
                       </div>
@@ -9535,7 +10250,18 @@
         if (s === 0) return `${m} min`;
         return `${m}'${String(s).padStart(2, '0')}"`;
       })();
-      const watts = (block.powerLow != null && block.powerHigh != null)
+      // Pace block (no watts) → show "M:SS-M:SS/km" target
+      const fmtSec = (sec) => {
+        const m = Math.floor(sec / 60);
+        const s = Math.round(sec % 60);
+        return `${m}:${String(s).padStart(2, '0')}`;
+      };
+      const pace = (block.paceSecLow != null && block.paceSecHigh != null)
+        ? (block.paceSecLow === block.paceSecHigh
+            ? `${fmtSec(block.paceSecLow)}/km`
+            : `${fmtSec(block.paceSecLow)}-${fmtSec(block.paceSecHigh)}/km`)
+        : null;
+      const watts = !pace && (block.powerLow != null && block.powerHigh != null)
         ? (block.powerLow === block.powerHigh ? `${block.powerLow}W` : `${block.powerLow}-${block.powerHigh}W`)
         : null;
       const ifRange = (cp && watts && block.powerLow != null && block.powerHigh != null)
@@ -9545,6 +10271,7 @@
         <div className="font-mono flex items-center gap-2" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
           <span style={{ color: kindColors[block.blockKind], fontWeight: 600, minWidth: 110 }}>{kindLabels[block.blockKind] || block.blockKind}</span>
           <span style={{ color: 'var(--text)' }}>{dur}</span>
+          {pace && <span style={{ color: 'var(--text)' }}>· {pace}</span>}
           {watts && <span style={{ color: 'var(--text)' }}>· {watts}</span>}
           {ifRange && <span style={{ color: 'var(--text-faint)' }}>({ifRange})</span>}
         </div>
@@ -9619,7 +10346,11 @@
       const thisWeekCheckins = checkins.filter(c => c.date >= weekStartMs && c.date < weekEndMs);
 
       const last14Acts = activities.filter(a => now - a.startMs < 14 * dayMs);
-      const hasPower = activities.some(a => a.avgPower);
+      // hasLoadData = on peut calculer TSS pour au moins une activité (path
+      // puissance OU path allure via le nouveau computeTSS). Remplace
+      // l'ancien hasPower qui excluait silencieusement les utilisateurs pace.
+      const hasLoadData = activities.some(a => computeTSS(a, profile) != null);
+      const hasPower = hasLoadData; // alias rétrocompat dans le reste de la fonction
 
       const avgReadiness = thisWeekCheckins.length ? Math.round(thisWeekCheckins.reduce((s, c) => s + c.score, 0) / thisWeekCheckins.length) : null;
       const kneeVals = recentCheckins.slice(0, 7).map(c => c.inputs.soreness);
@@ -9702,7 +10433,7 @@
 
       // Look at last 14 days as a complement to "this calendar week"
       const last14Kms = last14Acts.reduce((s, a) => s + (a.distanceMeters || 0), 0) / 1000;
-      const last14TSS = last14Acts.reduce((s, a) => s + (computeTSS(a, profile.cp) || 0), 0);
+      const last14TSS = last14Acts.reduce((s, a) => s + (computeTSS(a, profile) || 0), 0);
 
       if ((thisWeekActs.length >= 2 || last14Acts.length >= 5) && (avgReadiness === null || avgReadiness >= 60)) {
         let projInfo = '';
@@ -10208,7 +10939,9 @@
       const [hoverIdx, setHoverIdx] = useState(null);
       const svgRef = useRef(null);
       const projection = useMemo(() => {
-        if (!profile.cp) return null;
+        // Marche en puissance OU en allure : computeTSS et deriveDurationFromKm
+        // ont chacun un fallback pace-mode.
+        if (!profile.cp && !profile.vma) return null;
         const powerPaceTable = buildPowerPaceTable(activities || []);
         const today = new Date();
         today.setHours(0, 0, 0, 0);
@@ -10221,7 +10954,7 @@
         // what FormTrendCard does. Otherwise activities done earlier today would be excluded
         // from computeFitness's daily bucketing (dayDiff would be negative), giving slightly
         // lower CTL/ATL than the card shown elsewhere.
-        const activitiesWithTss = activities.map(a => ({ ...a, tss: computeTSS(a, profile.cp) }));
+        const activitiesWithTss = activities.map(a => ({ ...a, tss: computeTSS(a, profile) }));
         const fitnessNow = computeFitness(activitiesWithTss);
         const ctlToday = fitnessNow.ctl;
         const atlToday = fitnessNow.atl;
@@ -10306,7 +11039,7 @@
               : (estimatedDur > 0
                   ? estimatedDur
                   : (hasExplicitKm
-                      ? deriveDurationFromKm(planned.type, profile.cp, profile.weightKg, planned.plannedKm, powerPaceTable)
+                      ? deriveDurationFromKm(planned.type, profile.cp, profile.weightKg, planned.plannedKm, powerPaceTable, profile)
                       : 0));
             if (dur > 0) tss = estimateSessionTSS(planned.type, profile.cp, dur);
           }
@@ -10529,7 +11262,10 @@
       const svgRef = useRef(null);
 
       const projection = useMemo(() => {
-        if (!profile.cp) return { insufficient: 'no_cp' };
+        // CP ou VMA suffit — la projection ACWR repose sur la TSS estimée des
+        // sessions futures, qui passe par deriveDurationFromKm + estimateSessionTSS
+        // (deux fonctions désormais pace-aware).
+        if (!profile.cp && !profile.vma) return { insufficient: 'no_cp' };
 
         const dayMs = 86400000;
         const today = new Date();
@@ -10555,7 +11291,7 @@
         const futureDays = Math.round((lastPlannedMs - todayMs) / dayMs) + 7;
 
         // ===== STEP 2: history sufficiency check (mirror computeACWR rules) =====
-        const activitiesWithTss = activities.map(a => ({ ...a, tss: computeTSS(a, profile.cp) }));
+        const activitiesWithTss = activities.map(a => ({ ...a, tss: computeTSS(a, profile) }));
         let earliestMs = todayMs;
         let activityCount28 = 0;
         activitiesWithTss.forEach(a => {
@@ -10595,7 +11331,7 @@
             const estimatedDur = estimateSessionDuration(planned.detail, planned.type);
             const dur = hasExplicitMin
               ? planned.plannedMin
-              : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(planned.type, profile.cp, profile.weightKg, planned.plannedKm, powerPaceTable) : 0));
+              : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(planned.type, profile.cp, profile.weightKg, planned.plannedKm, powerPaceTable, profile) : 0));
             if (dur > 0) futureTssByDay[d - 1] = estimateSessionTSS(planned.type, profile.cp, dur);
           }
         }
@@ -10971,7 +11707,7 @@
         const ctlAlpha = 1 - Math.exp(-1/42);
         const atlAlpha = 1 - Math.exp(-1/7);
         const powerPaceTable = buildPowerPaceTable(activities || []);
-        const activitiesWithTss = activities.map(a => ({ ...a, tss: computeTSS(a, profile.cp) }));
+        const activitiesWithTss = activities.map(a => ({ ...a, tss: computeTSS(a, profile) }));
         const fitnessNow = computeFitness(activitiesWithTss);
         const ctlBaseline = fitnessNow.ctl;
         const baseCp = profile.cp;
@@ -11013,7 +11749,7 @@
               const estimatedDur = estimateSessionDuration(planned.detail, planned.type);
               const dur = hasExplicitMin
                 ? planned.plannedMin
-                : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(planned.type, baseCp, profile.weightKg, planned.plannedKm, powerPaceTable) : 0));
+                : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(planned.type, baseCp, profile.weightKg, planned.plannedKm, powerPaceTable, profile) : 0));
               if (dur > 0) tss = estimateSessionTSS(planned.type, baseCp, dur);
             }
             ctl = ctl + ctlAlpha * (tss - ctl);
@@ -11204,6 +11940,29 @@
         verdictDesc = `Ton plan stabilise ta forme autour de ${baseCp}W. Bien pour consolider, à pousser un peu pour progresser.`;
       }
 
+      // Narration delta d'allure : traduit le gain de CP en gain d'allure concret
+      // sur la distance la plus pertinente (course visée > 10K par défaut).
+      // L'idée : "+10W projeté" reste abstrait, mais "−18s/km au 10K" est concret.
+      const paceDeltaNarration = useMemo(() => {
+        if (!todayPoint || !finalPoint || futureDays < 14) return null;
+        const targetRaces = Object.values(targets);
+        const preferredDist = targetRaces.length > 0 ? targetRaces[0].distKey : '10k';
+        const todayPace = todayPoint.paces[preferredDist];
+        const finalPace = finalPoint.paces[preferredDist];
+        if (!todayPace || !finalPace) return null;
+        const deltaSec = Math.round(finalPace - todayPace); // négatif = amélioration
+        if (Math.abs(deltaSec) < 2) return null; // pas pertinent sous 2s/km
+        const months = futureDays / 30;
+        const horizonLabel = months >= 0.9
+          ? `dans ${Math.round(months)} mois`
+          : `dans ${futureDays} jours`;
+        const distLabel = { '5k': '5K', '10k': '10K', semi: 'semi', marathon: 'marathon' }[preferredDist];
+        const sign = deltaSec < 0 ? '−' : '+';
+        const abs = Math.abs(deltaSec);
+        const tone = deltaSec < 0 ? 'var(--go)' : 'var(--warn)';
+        return { text: `${sign}${abs}s/km au ${distLabel} ${horizonLabel}`, tone };
+      }, [todayPoint, finalPoint, futureDays, targets]);
+
       return (
         <Card className="p-6 md:p-7" accent={verdictColor}>
           <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
@@ -11238,6 +11997,11 @@
           <div className="mb-4">
             <div className="font-display text-lg font-bold" style={{ color: verdictColor }}>{verdict}</div>
             <div className="text-sm leading-relaxed mt-1" style={{ color: 'var(--text-dim)' }}>{verdictDesc}</div>
+            {paceDeltaNarration && (
+              <div className="font-display text-base font-bold mt-2 tabular" style={{ color: paceDeltaNarration.tone }}>
+                {paceDeltaNarration.text}
+              </div>
+            )}
           </div>
 
           {hovered ? (
@@ -11576,7 +12340,7 @@
       const [tab, setTab] = useState('etat'); // etat | tendances | performance
 
       const activitiesWithTss = useMemo(() =>
-        activities.map(a => ({ ...a, tss: computeTSS(a, profile.cp) })),
+        activities.map(a => ({ ...a, tss: computeTSS(a, profile) })),
       [activities, profile.cp]);
 
       const fitness = useMemo(() => computeFitness(activitiesWithTss), [activitiesWithTss]);
@@ -11618,10 +12382,14 @@
         return weeks;
       }, [activitiesWithTss]);
 
-      // Detect if we have power data at all
+      // Detect if we have power data at all (Stryd/COROS pod NP+avgPower).
       const hasPowerData = useMemo(() =>
         activities.some(a => a.avgPower && a.normalizedPower),
       [activities]);
+      // hasFitnessData = on a de quoi calculer charge/forme/fraîcheur, soit
+      // via puissance, soit via allure (path pace-mode du nouveau computeTSS).
+      // C'est cette variable qui pilote l'affichage de la trio + ACWR.
+      const hasFitnessData = useMemo(() => activitiesWithTss.some(a => a.tss != null && a.tss > 0), [activitiesWithTss]);
       const tssCoverage = useMemo(() => {
         const withTss = activitiesWithTss.filter(a => a.tss).length;
         return activities.length > 0 ? withTss / activities.length : 0;
@@ -11734,14 +12502,16 @@
           {/* Coach verdict — always at the top, regardless of tab */}
           <div className="mb-4"><CoachCard verdict={verdict} /></div>
 
-          {/* Power data warning */}
-          {!hasPowerData && (
+          {/* Power data warning — uniquement quand on n'a NI puissance NI pace
+              utilisable. En pace-mode avec une VMA renseignée, on calcule
+              charge/forme/fraîcheur depuis l'allure → pas de bannière. */}
+          {!hasPowerData && !hasFitnessData && (
             <Card className="p-4 mb-4" accent="var(--warn)">
               <div className="flex items-start gap-3">
                 <IconAlert size={18} style={{ color: 'var(--warn)', flexShrink: 0, marginTop: 2 }} />
                 <div className="flex-1">
-                  <div className="font-display text-sm font-bold mb-1">Aucune donnée de puissance détectée</div>
-                  <div className="text-xs leading-relaxed" style={{ color: 'var(--text-dim)' }}>Les indicateurs de charge (forme, fatigue, fraîcheur, ratio de charge) et la courbe de puissance nécessitent des fichiers contenant la puissance Stryd. <span style={{ color: 'var(--text)' }}>Recommandation : importe le TCX depuis Garmin Connect</span> qui contient toutes les données. En attendant, tu vois ton volume hebdomadaire en km.</div>
+                  <div className="font-display text-sm font-bold mb-1">Données de charge indisponibles</div>
+                  <div className="text-xs leading-relaxed" style={{ color: 'var(--text-dim)' }}>Pour calculer forme/fatigue/fraîcheur, il faut soit des fichiers avec puissance (Stryd, Garmin Running Power), soit une VMA renseignée dans le Profil pour dériver la charge depuis l'allure.</div>
                 </div>
               </div>
             </Card>
@@ -11780,7 +12550,7 @@
           {/* Tab content: État — trio/ACWR + projections + narrative insights, fused */}
           {tab === 'etat' && (
             <>
-              {hasPowerData && (
+              {hasFitnessData && (
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-4">
                   <div className="lg:col-span-2"><FitnessTrioCard fitness={fitness} /></div>
                   <div><ACWRCard acwr={acwr} /></div>
@@ -11794,9 +12564,9 @@
           {/* Tab content: Tendances */}
           {tab === 'tendances' && (
             <>
-              {hasPowerData && <div className="mb-4"><UnifiedFitnessChartCard activities={activities} profile={profile} planOverrides={planOverrides} /></div>}
+              {hasFitnessData && <div className="mb-4"><UnifiedFitnessChartCard activities={activities} profile={profile} planOverrides={planOverrides} /></div>}
               <div className={`grid grid-cols-1 ${hasPowerData ? 'lg:grid-cols-2' : ''} gap-3 mb-4`}>
-                <WeeklyTSSCard weeks={weeklyTss} hasPowerData={hasPowerData} />
+                <WeeklyTSSCard weeks={weeklyTss} hasPowerData={hasFitnessData} />
                 {hasPowerData && <PowerCurveCard data={powerCurve} cp={profile.cp} />}
               </div>
               <div className="mb-4"><YearHeatmapCard activities={activities} profile={profile} onViewActivity={onViewActivity} /></div>
@@ -11846,7 +12616,7 @@
           const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
           if (!byDay[key]) byDay[key] = { km: 0, tss: 0, count: 0, date: new Date(d.getFullYear(), d.getMonth(), d.getDate()), activities: [] };
           byDay[key].km += (a.distanceMeters || 0) / 1000;
-          byDay[key].tss += computeTSS(a, profile.cp) || 0;
+          byDay[key].tss += computeTSS(a, profile) || 0;
           byDay[key].count += 1;
           byDay[key].activities.push(a);
         });
@@ -12201,7 +12971,7 @@
       const [zoom, setZoom] = useState('90j'); // '30j' | '90j' | 'all'
 
       const data = useMemo(() => {
-        if (!profile.cp || !activities) return null;
+        if ((!profile.cp && !profile.vma) || !activities) return null;
         const dayMs = 86400000;
         const today = new Date();
         today.setHours(0, 0, 0, 0);
@@ -12209,7 +12979,7 @@
 
         // ---- PAST: 90 days of actual data ----
         const PAST_DAYS = 90;
-        const activitiesWithTss = activities.map(a => ({ ...a, tss: computeTSS(a, profile.cp) }));
+        const activitiesWithTss = activities.map(a => ({ ...a, tss: computeTSS(a, profile) }));
         const fitnessNow = computeFitness(activitiesWithTss);
         // computeFitness returns series.{ctl,atl,tsb,dailyTss} as arrays oldest→today
         const pastCtl = fitnessNow.series.ctl;
@@ -12260,7 +13030,7 @@
             const estimatedDur = estimateSessionDuration(planned.detail, planned.type);
             const dur = hasExplicitMin
               ? planned.plannedMin
-              : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(planned.type, profile.cp, profile.weightKg, planned.plannedKm, powerPaceTable) : 0));
+              : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(planned.type, profile.cp, profile.weightKg, planned.plannedKm, powerPaceTable, profile) : 0));
             if (dur > 0) tss = estimateSessionTSS(planned.type, profile.cp, dur);
           }
           ctl = ctl + ctlAlpha * (tss - ctl);
@@ -13416,7 +14186,7 @@
     // ========================================================================
     // MANUAL ACTIVITY ENTRY — fallback when imports fail
     // ========================================================================
-    function ManualActivityModal({ onSave, onCancel }) {
+    function ManualActivityModal({ onSave, onCancel, hidePower = false }) {
       const today = new Date().toISOString().slice(0, 10);
       const toast = useToast();
       const [form, setForm] = useState({
@@ -13504,12 +14274,16 @@
                 <div><div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>DISTANCE (KM) *</div><input type="text" inputMode="decimal" className="input input-mono" placeholder="9.5" value={form.distanceKm} onChange={(e) => setForm({...form, distanceKm: e.target.value})} /></div>
                 <div><div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>DURÉE *</div><input type="text" className="input input-mono" placeholder="50 ou 50:30 ou 1:30:00" value={form.duration} onChange={(e) => setForm({...form, duration: e.target.value})} /></div>
               </div>
-              <div className="pt-2 pb-1"><div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>PUISSANCE STRYD</div></div>
-              <div className="grid grid-cols-3 gap-2">
-                <div><div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>P. MOYENNE (W)</div><input type="text" inputMode="decimal" className="input input-mono" placeholder="195" value={form.avgPower} onChange={(e) => setForm({...form, avgPower: e.target.value})} /></div>
-                <div><div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--accent)' }}>P. PONDÉRÉE (W)</div><input type="text" inputMode="decimal" className="input input-mono" placeholder="220" value={form.normalizedPower} onChange={(e) => setForm({...form, normalizedPower: e.target.value})} /></div>
-                <div><div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>P. MAX (W)</div><input type="text" inputMode="decimal" className="input input-mono" placeholder="290" value={form.maxPower} onChange={(e) => setForm({...form, maxPower: e.target.value})} /></div>
-              </div>
+              {!hidePower && (
+                <>
+                  <div className="pt-2 pb-1"><div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>PUISSANCE STRYD</div></div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div><div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>P. MOYENNE (W)</div><input type="text" inputMode="decimal" className="input input-mono" placeholder="195" value={form.avgPower} onChange={(e) => setForm({...form, avgPower: e.target.value})} /></div>
+                    <div><div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--accent)' }}>P. PONDÉRÉE (W)</div><input type="text" inputMode="decimal" className="input input-mono" placeholder="220" value={form.normalizedPower} onChange={(e) => setForm({...form, normalizedPower: e.target.value})} /></div>
+                    <div><div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>P. MAX (W)</div><input type="text" inputMode="decimal" className="input input-mono" placeholder="290" value={form.maxPower} onChange={(e) => setForm({...form, maxPower: e.target.value})} /></div>
+                  </div>
+                </>
+              )}
               <div className="pt-2 pb-1"><div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>CARDIO & CADENCE</div></div>
               <div className="grid grid-cols-3 gap-2">
                 <div><div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>FC MOY</div><input type="text" inputMode="numeric" className="input input-mono" placeholder="165" value={form.avgHr} onChange={(e) => setForm({...form, avgHr: e.target.value})} /></div>
@@ -13581,7 +14355,7 @@
         const ctlAlpha = 1 - Math.exp(-1/42);
         const atlAlpha = 1 - Math.exp(-1/7);
         const powerPaceTable = buildPowerPaceTable(activities || []);
-        const activitiesWithTss = activities.map(a => ({ ...a, tss: computeTSS(a, profile.cp) }));
+        const activitiesWithTss = activities.map(a => ({ ...a, tss: computeTSS(a, profile) }));
         const fitnessNow = computeFitness(activitiesWithTss);
 
         const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
@@ -13612,7 +14386,7 @@
               const estimatedDur = estimateSessionDuration(planned.detail, planned.type);
               dur = hasExplicitMin
                 ? planned.plannedMin
-                : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(planned.type, baseCp, profile.weightKg, planned.plannedKm, powerPaceTable) : 0));
+                : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(planned.type, baseCp, profile.weightKg, planned.plannedKm, powerPaceTable, profile) : 0));
               if (dur > 0) {
                 tss = estimateSessionTSS(planned.type, baseCp, dur);
                 daysWithSession++;
@@ -15042,6 +15816,379 @@
       return null;
     }
 
+    // Pace-mode constants for users without a power meter.
+    // SCAFFOLD_CP is an arbitrary numeric anchor used by the watt-based generator
+    // (templates use `cp × fraction` to drive intensity). It carries no physical
+    // meaning — the displayed pace comes from VMA, NOT from this scaffold.
+    const PACE_SCAFFOLD_CP = 250;
+
+    // ════════════════════════════════════════════════════════════════════════
+    // AEROBIC BASE — calibrates how zones spread for VMA-only users.
+    //
+    // The classical "X % VMA" zone tables assume an average aerobic profile.
+    // But the same VMA hides very different bases : a runner with weak base
+    // can't hold 80 % VMA on a marathon, an elite holds 86 %.
+    //
+    // Signals used, in order of reliability:
+    //   1. Observed median HR % on easy runs (most physiological)
+    //   2. Observed median pace on easy runs (terrain truth)
+    //   3. Typed easyPaceMinPerKm at signup (declaration)
+    //
+    // The score lives in [0, 1] : 0 = weak base, 0.5 = average, 1 = strong.
+    // It drives `vmaFracFromCpFrac` which interpolates between weak/strong
+    // anchor tables, so marathon target slides from 65 % VMA to 86 % VMA.
+    // ════════════════════════════════════════════════════════════════════════
+
+    // Filters activities to "easy" runs done in the last 8 weeks.
+    // Easy = pace slower than 75 % VMA (anything above tempo). Discards <20 min
+    // (HR not stabilised) and obviously bogus values.
+    function filterRecentEasyActivities(activities, vma) {
+      if (!Array.isArray(activities) || !vma) return [];
+      const vmaPaceMin = 60 / vma;
+      const easyPaceThreshold = vmaPaceMin / 0.75;
+      const cutoffMs = Date.now() - 8 * 7 * 86400000;
+      return activities.filter(a => {
+        if (!a || !a.paceMinPerKm || !a.startMs) return false;
+        if (a.startMs < cutoffMs) return false;
+        if (a.paceMinPerKm < easyPaceThreshold) return false; // too fast → not easy
+        if (a.durationSec && a.durationSec < 20 * 60) return false;
+        return true;
+      });
+    }
+
+    // Median observed easy pace (min/km) from recent activities. Null if <3 obs.
+    function deriveObservedEasyPace(activities, vma) {
+      const easy = filterRecentEasyActivities(activities, vma);
+      if (easy.length < 3) return null;
+      const paces = easy.map(a => a.paceMinPerKm).sort((a, b) => a - b);
+      return paces[Math.floor(paces.length / 2)];
+    }
+
+    // Median %FCmax across recent easy activities. Null if <3 obs with HR.
+    function deriveObservedEasyHrPct(activities, fcMax, vma) {
+      if (!fcMax) return null;
+      const easy = filterRecentEasyActivities(activities, vma)
+        .filter(a => a.avgHr && a.avgHr > 80 && a.avgHr < fcMax * 1.05);
+      if (easy.length < 3) return null;
+      const pcts = easy.map(a => a.avgHr / fcMax).sort((a, b) => a - b);
+      return pcts[Math.floor(pcts.length / 2)];
+    }
+
+    // Aerobic base score in [0, 1]. Blends pace (40 %) + HR (60 %) when HR
+    // data is available, otherwise pace alone. Returns extra metadata so the
+    // UI can show a "base détectée" badge + source.
+    function deriveAerobicBaseScore(profile, activities = []) {
+      const out = { score: 0.5, source: 'neutral', paceScore: null, hrScore: null, observedPace: null, observedHrPct: null, easyCount: 0, hrCount: 0 };
+      if (!profile || !profile.vma) return out;
+      const vma = profile.vma;
+
+      const observedPace = deriveObservedEasyPace(activities, vma);
+      const easyCount = filterRecentEasyActivities(activities, vma).length;
+      const easyPace = observedPace || profile.easyPaceMinPerKm;
+      out.observedPace = observedPace;
+      out.easyCount = easyCount;
+
+      if (easyPace) {
+        const easySpeed = 60 / easyPace;
+        const ratio = easySpeed / vma;
+        // ratio 0.60 → 1.0 (wide range / strong) ; 0.80 → 0.0 (narrow / weak)
+        out.paceScore = Math.max(0, Math.min(1, 1 - (ratio - 0.60) / 0.20));
+      }
+
+      if (profile.fcMax) {
+        const hrPct = deriveObservedEasyHrPct(activities, profile.fcMax, vma);
+        const hrEasy = filterRecentEasyActivities(activities, vma).filter(a => a.avgHr && a.avgHr > 80 && a.avgHr < profile.fcMax * 1.05);
+        out.observedHrPct = hrPct;
+        out.hrCount = hrEasy.length;
+        if (hrPct != null) {
+          // 65 % → 1.0, 72 % → 0.75, 78 % → 0.50, 85 % → 0.20, ≥88 % → 0.05
+          let s;
+          if (hrPct <= 0.65) s = 1.0;
+          else if (hrPct <= 0.72) s = 1.0 - (hrPct - 0.65) / 0.07 * 0.25;
+          else if (hrPct <= 0.78) s = 0.75 - (hrPct - 0.72) / 0.06 * 0.25;
+          else if (hrPct <= 0.85) s = 0.50 - (hrPct - 0.78) / 0.07 * 0.30;
+          else if (hrPct <= 0.88) s = 0.20 - (hrPct - 0.85) / 0.03 * 0.15;
+          else s = 0.05;
+          out.hrScore = Math.max(0, Math.min(1, s));
+        }
+      }
+
+      if (out.paceScore != null && out.hrScore != null) {
+        out.score = 0.4 * out.paceScore + 0.6 * out.hrScore;
+        out.source = observedPace ? 'observed_pace_hr' : 'typed_pace_hr';
+      } else if (out.paceScore != null) {
+        out.score = out.paceScore;
+        out.source = observedPace ? 'observed_pace' : 'typed_pace';
+      }
+
+      // Conflict flag : pace says strong, HR says weak (or vice versa)
+      out.conflict = (out.paceScore != null && out.hrScore != null && Math.abs(out.paceScore - out.hrScore) > 0.4);
+
+      return out;
+    }
+
+    // Weak/strong CP-fraction → VMA-fraction anchors. At score=0 the weak table
+    // applies (marathon ≈ 65 % VMA), at score=1 the strong one (marathon ≈ 83 %).
+    // Both tables sourced from Cottereau / Cazorla literature; gap reflects the
+    // observed VMA-percentage variability across runners with the same VMA.
+    const VMA_FRAC_ANCHORS = [
+      // cpFrac, weak (poor base), strong (solid base)
+      [0.55, 0.50, 0.60],
+      [0.60, 0.55, 0.65],
+      [0.65, 0.58, 0.68],
+      [0.70, 0.60, 0.72],
+      [0.72, 0.62, 0.74],
+      [0.75, 0.64, 0.76],
+      [0.78, 0.66, 0.79],
+      [0.85, 0.70, 0.83],   // marathon zone — widest spread
+      [0.88, 0.74, 0.86],
+      [0.92, 0.78, 0.88],   // threshold/tempo
+      [0.95, 0.81, 0.90],
+      [0.97, 0.83, 0.91],
+      [1.00, 0.86, 0.93],   // CP / 1-hour pace
+      [1.04, 0.89, 0.95],   // 10K
+      [1.10, 0.93, 0.99],
+      [1.15, 0.96, 1.02],
+      [1.20, 1.00, 1.06],   // VMA-pure
+      [1.30, 1.08, 1.15],
+      [1.40, 1.15, 1.22],
+    ];
+
+    // Internal : pure weak/strong table interpolation (no personal anchor).
+    // Used as fallback when the user hasn't declared an easy pace.
+    function vmaFracFromCpFracTable(cpFrac, aerobicScore = 0.5) {
+      const t = Math.max(0, Math.min(1, aerobicScore));
+      const anchors = VMA_FRAC_ANCHORS;
+      if (cpFrac <= anchors[0][0]) {
+        return anchors[0][1] + (anchors[0][2] - anchors[0][1]) * t;
+      }
+      const last = anchors[anchors.length - 1];
+      if (cpFrac >= last[0]) {
+        return last[1] + (last[2] - last[1]) * t;
+      }
+      for (let i = 0; i < anchors.length - 1; i++) {
+        const [cp0, w0, s0] = anchors[i];
+        const [cp1, w1, s1] = anchors[i + 1];
+        if (cpFrac >= cp0 && cpFrac <= cp1) {
+          const r = (cpFrac - cp0) / (cp1 - cp0);
+          const w = w0 + (w1 - w0) * r;
+          const s = s0 + (s1 - s0) * r;
+          return w + (s - w) * t;
+        }
+      }
+      return 0.75;
+    }
+
+    // 3-anchor physiological model :
+    //   - cpFrac 0.72 → easyVmaFrac (the user's declared/observed easy ratio)
+    //   - cpFrac 1.00 → cpVmaFrac (CP, from weak/strong table at aerobicScore)
+    //   - cpFrac 1.20 → 1.00 (VMA-pure, by definition)
+    // Linear interpolation between anchors. Below 0.72 we extrapolate with the
+    // 0.72→1.00 slope so récup/cooldown end up SLOWER than the declared easy
+    // pace, which is the whole point of the model.
+    //
+    // Why this over the old weak/strong table : the table predicted easy pace
+    // from aerobic score, ignoring the pace the user actually typed. A user
+    // declaring 5:40/km could end up with a "récup" target at 5:17/km — faster
+    // than their own footing. Anchoring on the declared pace eliminates that.
+    const EASY_ANCHOR_CP = 0.72;
+    const CP_ANCHOR_CP   = 1.00;
+    const VMA_ANCHOR_CP  = 1.20;
+
+    function vmaFracFromCpFrac(cpFrac, aerobicScore = 0.5, easyVmaFrac = null) {
+      // No personal anchor → use original weak/strong table.
+      if (easyVmaFrac == null || !isFinite(easyVmaFrac)) {
+        return vmaFracFromCpFracTable(cpFrac, aerobicScore);
+      }
+
+      const cpVmaFrac = vmaFracFromCpFracTable(CP_ANCHOR_CP, aerobicScore);
+      const vmaPureFrac = 1.00;
+
+      // Safety : if declared easy is faster than CP minus a small margin,
+      // the curve would be non-monotonic. Fall back to the table.
+      if (easyVmaFrac >= cpVmaFrac - 0.03) {
+        return vmaFracFromCpFracTable(cpFrac, aerobicScore);
+      }
+
+      const slopeLow = (cpVmaFrac - easyVmaFrac) / (CP_ANCHOR_CP - EASY_ANCHOR_CP);
+      const slopeHigh = (vmaPureFrac - cpVmaFrac) / (VMA_ANCHOR_CP - CP_ANCHOR_CP);
+
+      if (cpFrac <= EASY_ANCHOR_CP) {
+        // Extrapolation below easy : keep the 0.72→1.00 slope.
+        const v = easyVmaFrac + (cpFrac - EASY_ANCHOR_CP) * slopeLow;
+        return Math.max(0.30, v); // floor at 30 % VMA to avoid absurd paces
+      }
+      if (cpFrac <= CP_ANCHOR_CP) {
+        return easyVmaFrac + (cpFrac - EASY_ANCHOR_CP) * slopeLow;
+      }
+      if (cpFrac <= VMA_ANCHOR_CP) {
+        return cpVmaFrac + (cpFrac - CP_ANCHOR_CP) * slopeHigh;
+      }
+      // Above VMA : extrapolate with the 1.00→1.20 slope.
+      return vmaPureFrac + (cpFrac - VMA_ANCHOR_CP) * slopeHigh;
+    }
+
+    // Helper : computes easyVmaFrac from a declared/observed easy pace.
+    // Returns null if inputs are missing or inconsistent.
+    function easyVmaFracFromPace(easyPaceMinPerKm, vma) {
+      if (!easyPaceMinPerKm || !vma) return null;
+      const easySpeed = 60 / easyPaceMinPerKm;
+      const ratio = easySpeed / vma;
+      if (!isFinite(ratio) || ratio <= 0 || ratio >= 1) return null;
+      return ratio;
+    }
+
+    // Pace (sec/km) at a given CP intensity fraction, calibrated for the user's
+    // VMA + aerobic base. When easyPaceMinPerKm is provided, the curve is
+    // anchored on that declared/observed easy pace so all other zones are
+    // coherent with what the user actually runs.
+    function paceForIntensity(cpFrac, vma, aerobicScore = 0.5, easyPaceMinPerKm = null) {
+      if (!vma) return null;
+      const easyVmaFrac = easyVmaFracFromPace(easyPaceMinPerKm, vma);
+      const vmaFrac = vmaFracFromCpFrac(cpFrac, aerobicScore, easyVmaFrac);
+      const speedKmH = vma * vmaFrac;
+      return 3600 / speedKmH;
+    }
+
+    // Inverse of the weak/strong table : given a vmaFrac and aerobic score,
+    // walks the score-interpolated anchors to find the matching cpFrac.
+    function cpFracFromVmaFracTable(vmaFrac, aerobicScore = 0.5) {
+      const t = Math.max(0, Math.min(1, aerobicScore));
+      const points = VMA_FRAC_ANCHORS.map(([cp, w, s]) => [cp, w + (s - w) * t]);
+      if (vmaFrac <= points[0][1]) return points[0][0];
+      const last = points[points.length - 1];
+      if (vmaFrac >= last[1]) return last[0];
+      for (let i = 0; i < points.length - 1; i++) {
+        const [cp0, v0] = points[i];
+        const [cp1, v1] = points[i + 1];
+        if (vmaFrac >= v0 && vmaFrac <= v1) {
+          const r = (v1 === v0) ? 0 : (vmaFrac - v0) / (v1 - v0);
+          return cp0 + (cp1 - cp0) * r;
+        }
+      }
+      return 0.75;
+    }
+
+    // Inverse of paceForIntensity : given a pace, profile (vma + easy + score),
+    // returns the cpFrac (intensity fraction) it corresponds to. Used by
+    // recalibratePlanForPace to preserve a block's relative intensity when the
+    // user's VMA or easy pace changes.
+    function cpFracFromPace(paceSec, vma, aerobicScore = 0.5, easyPaceMinPerKm = null) {
+      if (!paceSec || !vma) return null;
+      const vmaFrac = (3600 / paceSec) / vma;
+      if (!isFinite(vmaFrac) || vmaFrac <= 0) return null;
+      const easyVmaFrac = easyVmaFracFromPace(easyPaceMinPerKm, vma);
+      if (easyVmaFrac != null) {
+        const cpVmaFrac = vmaFracFromCpFracTable(CP_ANCHOR_CP, aerobicScore);
+        // Only use 3-anchor inverse if the model was actually active
+        // (consistent declared easy — same guard as the forward function).
+        if (easyVmaFrac < cpVmaFrac - 0.03) {
+          const slopeLow = (cpVmaFrac - easyVmaFrac) / (CP_ANCHOR_CP - EASY_ANCHOR_CP);
+          const slopeHigh = (1.00 - cpVmaFrac) / (VMA_ANCHOR_CP - CP_ANCHOR_CP);
+          if (vmaFrac <= cpVmaFrac) {
+            // Below CP (covers récup/footing/marathon/tempo) — extrapolation
+            // is linear with slopeLow from (EASY_ANCHOR_CP, easyVmaFrac).
+            return EASY_ANCHOR_CP + (vmaFrac - easyVmaFrac) / slopeLow;
+          }
+          if (vmaFrac <= 1.00) {
+            return CP_ANCHOR_CP + (vmaFrac - cpVmaFrac) / slopeHigh;
+          }
+          return VMA_ANCHOR_CP + (vmaFrac - 1.00) / slopeHigh;
+        }
+      }
+      return cpFracFromVmaFracTable(vmaFrac, aerobicScore);
+    }
+
+    // Builds a power→pace table where each entry's pace comes from VMA scaled
+    // by the aerobic base score AND anchored on the user's declared easy pace
+    // when available (otherwise falls back to weak/strong interpolation only).
+    function buildVirtualPpt(profile, scaffoldCP, aerobicScore = 0.5, easyPaceOverride = null) {
+      if (!scaffoldCP || !profile || !profile.vma) return [];
+      const vma = profile.vma;
+      const easyPace = easyPaceOverride || profile.easyPaceMinPerKm || null;
+      const ppt = VMA_FRAC_ANCHORS.map(([cpFrac]) => {
+        const power = Math.round(scaffoldCP * cpFrac);
+        const paceSecPerKm = Math.round(paceForIntensity(cpFrac, vma, aerobicScore, easyPace));
+        return { power, paceSecPerKm, date: null };
+      });
+      return ppt.sort((a, b) => a.power - b.power);
+    }
+
+    // Format sec/km as "M:SS"
+    function fmtPaceSec(sec) {
+      const m = Math.floor(sec / 60);
+      const s = Math.round(sec % 60);
+      return `${m}:${String(s).padStart(2, '0')}`;
+    }
+
+    // Default tolerance applied when a session detail (or block) carries a
+    // single pace target — running pace is more sensitive to feel/conditions
+    // than watts, so we always present a range. ±10 s/km ≈ ±3 % effort, which
+    // is the typical day-to-day variation Tony asked us to surface.
+    const PACE_TOLERANCE_SEC = 10;
+
+    // Replace watt patterns in a detail string with the VMA-derived pace.
+    // Single watt targets become a ±PACE_TOLERANCE_SEC range so the user
+    // sees a usable window (e.g., "5:30" → "5:20-5:40/km").
+    function convertDetailToPace(detail, ppt) {
+      if (!detail || !ppt || !ppt.length) return detail;
+      const wToPaceSec = (w) => {
+        const sec = estimatePaceForPower(w, ppt);
+        return sec || null;
+      };
+      let out = String(detail);
+      out = out.replace(/(\d{2,3})\s*[-–]\s*(\d{2,3})\s*[wW]\b/g, (m, lo, hi) => {
+        const loSec = wToPaceSec(parseInt(lo, 10));
+        const hiSec = wToPaceSec(parseInt(hi, 10));
+        if (loSec == null || hiSec == null) return m;
+        // Lower watts = slower pace (higher sec/km). Display fast → slow.
+        const fast = Math.min(loSec, hiSec);
+        const slow = Math.max(loSec, hiSec);
+        return `${fmtPaceSec(Math.round(fast))}-${fmtPaceSec(Math.round(slow))}/km`;
+      });
+      out = out.replace(/(\d{2,3})\s*[wW]\b/g, (m, w) => {
+        const sec = wToPaceSec(parseInt(w, 10));
+        if (sec == null) return m;
+        const fast = Math.round(sec - PACE_TOLERANCE_SEC);
+        const slow = Math.round(sec + PACE_TOLERANCE_SEC);
+        return `${fmtPaceSec(fast)}-${fmtPaceSec(slow)}/km`;
+      });
+      return out;
+    }
+
+    // Rewrite blocks (recursively, for groups) replacing powerLow/powerHigh with
+    // paceSecLow/paceSecHigh. paceSecLow = the FAST end (higher watts → lower sec/km);
+    // paceSecHigh = the SLOW end. If the underlying watt span is narrow (≤ ±5 W,
+    // typical of a single watt target with parser tolerance), we widen the pace
+    // span to PACE_TOLERANCE_SEC × 2 so the user gets a usable range.
+    function blocksToPace(blocks, ppt) {
+      if (!Array.isArray(blocks) || !ppt || !ppt.length) return blocks;
+      return blocks.map(b => {
+        if (!b) return b;
+        if (b.kind === 'group') {
+          return { ...b, children: blocksToPace(b.children || [], ppt) };
+        }
+        if (b.powerLow != null || b.powerHigh != null) {
+          const lo = b.powerLow != null ? b.powerLow : b.powerHigh;
+          const hi = b.powerHigh != null ? b.powerHigh : b.powerLow;
+          const paceSlow = estimatePaceForPower(lo, ppt);
+          const paceFast = estimatePaceForPower(hi, ppt);
+          if (paceSlow == null && paceFast == null) return b;
+          let secLow = paceFast != null ? Math.round(paceFast) : Math.round(paceSlow);
+          let secHigh = paceSlow != null ? Math.round(paceSlow) : Math.round(paceFast);
+          // Widen if the range is too tight to act on (pace is more sensitive than W).
+          if (secHigh - secLow < 2 * PACE_TOLERANCE_SEC) {
+            const mid = (secLow + secHigh) / 2;
+            secLow = Math.round(mid - PACE_TOLERANCE_SEC);
+            secHigh = Math.round(mid + PACE_TOLERANCE_SEC);
+          }
+          const { powerLow, powerHigh, ...rest } = b;
+          return { ...rest, paceSecLow: secLow, paceSecHigh: secHigh };
+        }
+        return b;
+      });
+    }
+
     // Estimate km from duration using user's historical power→pace table when available.
     // Falls back to CP × blended IF × RE 1.04 if no data or explicit km in text.
     function estimateSessionKm(type, cp, weightKg, durationMin, detail = '', explicitKm = null, powerPaceTable = null) {
@@ -15093,7 +16240,7 @@
 
     // Inverse of estimateSessionKm: given a target km and session type, derive a plausible duration.
     // Used as a safety net when sessions have plannedKm but no plannedMin nor parsable detail.
-    function deriveDurationFromKm(type, cp, weightKg, km, powerPaceTable = null) {
+    function deriveDurationFromKm(type, cp, weightKg, km, powerPaceTable = null, profile = null) {
       if (!Number.isFinite(km) || km <= 0) return 0;
       const blendedIF = { rest: 0, easy: 0.72, long: 0.76, tempo: 0.78, intervals: 0.75, test: 0.82 }[type] || 0.72;
       const avgPower = cp ? cp * blendedIF : null;
@@ -15104,11 +16251,22 @@
           return Math.round((km * paceSec) / 60); // minutes
         }
       }
-      // Fallback: RE-based
+      // Fallback: RE-based (power)
       if (avgPower && weightKg) {
         const speedMs = avgPower / (weightKg * 1.04);
         const totalSec = (km * 1000) / speedMs;
         return Math.round(totalSec / 60);
+      }
+      // NEW pace-mode path : pas de CP mais une VMA → dérive l'allure cible
+      // depuis le modèle 3-ancrages au cpFrac correspondant à blendedIF.
+      // C'est ce qui débloque la projection de charge future pour les
+      // utilisateurs sans capteur de puissance.
+      if (profile && profile.vma && !cp) {
+        const targetCpFrac = blendedIF; // blendedIF s'interprète aussi comme cpFrac
+        const paceSec = paceForIntensity(targetCpFrac, profile.vma, 0.5, profile.easyPaceMinPerKm);
+        if (paceSec && isFinite(paceSec)) {
+          return Math.round((km * paceSec) / 60);
+        }
       }
       // Last resort: rough averages
       const fallbackPaceMinPerKm = { easy: 5.3, long: 5.2, tempo: 4.5, intervals: 4.4, test: 4.0 }[type] || 5.0;
@@ -15780,6 +16938,18 @@
       const powerPaceTable = useMemo(() => buildPowerPaceTable(activities || []), [activities]);
       const hasHistory = powerPaceTable.length >= 3;
 
+      // Pace mode est piloté par l'unité choisie dans le profil :
+      //   - unitMode === 'pace' → mode allure (ignore la CP cachée si présente)
+      //   - sinon, fallback en mode allure si pas de CP mais une VMA
+      //   - sinon mode watts classique
+      // En mode allure, on utilise PACE_SCAFFOLD_CP comme échafaudage numérique
+      // pour faire tourner le moteur watt-based ; le pace réel sort de VMA + score.
+      const paceMode = (profile.unitMode === 'pace' && !!profile.vma) || (!profile.cp && !!profile.vma);
+      const aerobicBase = useMemo(() => deriveAerobicBaseScore(profile, activities || []), [profile, activities]);
+      const virtualPpt = useMemo(() => buildVirtualPpt(profile, PACE_SCAFFOLD_CP, aerobicBase.score, aerobicBase.observedPace || profile.easyPaceMinPerKm), [profile, aerobicBase.score, aerobicBase.observedPace]);
+      const effectiveCp = paceMode ? PACE_SCAFFOLD_CP : profile.cp;
+      const effectivePpt = paceMode ? virtualPpt : (hasHistory ? powerPaceTable : virtualPpt);
+
       const selectedRace = futureRaces.find(r => r.id === selectedRaceId);
       const targetDate = mode === 'race' ? selectedRace?.date : customDate;
       const targetDistance = mode === 'race' ? selectedRace?.distance : customDistance;
@@ -15799,8 +16969,8 @@
       // Détection du niveau athlète (CP/kg, perfs course, allure). Sert à recommander
       // le bon nombre de séances et à scaler le volume/long/cap easy.
       const athleteTier = useMemo(() => getFitnessTier({
-        cp: profile.cp, weightKg: profile.weightKg, races, powerPaceTable,
-      }), [profile.cp, profile.weightKg, races, powerPaceTable]);
+        cp: effectiveCp, weightKg: profile.weightKg, races, powerPaceTable: effectivePpt,
+      }), [effectiveCp, profile.weightKg, races, effectivePpt]);
 
       // Recommandation auto du nb de séances/sem selon la course visée ET le niveau.
       const recommendedSessions = useMemo(() => {
@@ -15818,15 +16988,36 @@
       }, [recommendedSessions]);
 
       function generatePreview() {
-        if (!profile.cp) { toast.push('Renseigne ta CP dans Profil avant de générer un plan.', { kind: 'warn' }); return; }
+        if (!effectiveCp) {
+          toast.push(
+            profile.unitMode === 'pace'
+              ? 'Mode allure activé : renseigne ta VMA dans Profil pour générer un plan.'
+              : 'Renseigne ta CP (ou bascule en mode allure avec VMA) dans Profil avant de générer un plan.',
+            { kind: 'warn' }
+          );
+          return;
+        }
         if (!targetDate) { toast.push('Sélectionne une date cible.', { kind: 'warn' }); return; }
         if (totalWeeks < 4) { toast.push('Course trop proche : minimum 4 semaines pour un plan complet.', { kind: 'warn' }); return; }
         if (totalWeeks > 40) { toast.push('Course trop loin : maximum 40 semaines. Réduit la plage ou attends.', { kind: 'warn' }); return; }
         const plan = buildPlan({
-          raceDate: targetDate, totalWeeks, cp: profile.cp, weightKg: profile.weightKg || 70,
+          raceDate: targetDate, totalWeeks, cp: effectiveCp, weightKg: profile.weightKg || 70,
           sessionsPerWeek, strengthPerWeek, raceDistance: targetDistance,
-          powerPaceTable, races,
+          powerPaceTable: effectivePpt, races,
         });
+        // Pace mode : on ré-écrit le détail texte en allure (calé sur la VMA) ET
+        // on remplace powerLow/powerHigh → paceSecLow/paceSecHigh sur les blocs.
+        // Les watts internes étaient juste un échafaudage (scaffold CP) ; l'allure
+        // est calculée directement depuis la VMA. Plus aucun watt n'est exposé.
+        if (paceMode && plan && plan.weeks) {
+          plan.weeks.forEach(w => {
+            Object.values(w.days || {}).forEach(d => {
+              if (!d) return;
+              if (d.detail) d.detail = convertDetailToPace(d.detail, effectivePpt);
+              if (Array.isArray(d.blocks)) d.blocks = blocksToPace(d.blocks, effectivePpt);
+            });
+          });
+        }
         setPreview(plan);
       }
 
@@ -15891,7 +17082,9 @@
                           <span className="font-display text-base font-bold" style={{ color: 'var(--compass)' }}>{FITNESS_TIERS[athleteTier]?.label || 'Confirmé'}</span>
                         </div>
                         <div className="text-right font-mono text-[10px] tabular" style={{ color: 'var(--text-dim)' }}>
-                          {profile.cp && profile.weightKg ? (
+                          {paceMode ? (
+                            profile.vma ? <>VMA · {profile.vma} km/h</> : <>via allure footing</>
+                          ) : profile.cp && profile.weightKg ? (
                             <>CP/kg · {(profile.cp / profile.weightKg).toFixed(2)} W/kg</>
                           ) : (
                             <>via perfs course / allure</>
@@ -15944,7 +17137,9 @@
                     <div className="flex items-start gap-2">
                       <IconInfo size={13} style={{ color: hasHistory ? 'var(--go)' : 'var(--warn)', flexShrink: 0, marginTop: 2 }} />
                       <div className="text-xs leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-                        {hasHistory ? (
+                        {paceMode ? (
+                          <>Pas de capteur de puissance : le plan sera généré <span style={{ color: 'var(--compass)' }}>en allure</span>, calé sur ta VMA{profile.vma ? ` (${profile.vma} km/h)` : ''}. Les zones %VMA sont ajustées à ta base aérobie (voir ci-dessous).</>
+                        ) : hasHistory ? (
                           <>Les distances seront calibrées sur tes <span style={{ color: 'var(--go)' }}>{powerPaceTable.length} activités</span> avec données de puissance — le plan utilisera ton allure réelle à chaque niveau de watts.</>
                         ) : (
                           <>Pas assez d'historique (il faut ≥3 activités avec puissance). Les km seront estimés via une formule théorique (RE 1.04).</>
@@ -15953,13 +17148,54 @@
                     </div>
                   </div>
 
+                  {/* Aerobic base badge — pace mode only. Shows the detected
+                      base, the source of detection (HR > observed pace > typed)
+                      and a warning if pace and HR signals disagree strongly. */}
+                  {paceMode && (() => {
+                    const score = aerobicBase.score;
+                    const baseLabel = score < 0.33 ? 'Faible' : score < 0.66 ? 'Moyenne' : 'Forte';
+                    const baseColor = score < 0.33 ? 'var(--warn)' : score < 0.66 ? 'var(--compass)' : 'var(--go)';
+                    const srcText = {
+                      observed_pace_hr: `FC + allure observées (${aerobicBase.hrCount} act. avec FC)`,
+                      observed_pace: `allure observée sur ${aerobicBase.easyCount} footings récents`,
+                      typed_pace_hr: `FC observée + allure déclarée`,
+                      typed_pace: 'allure footing déclarée au profil',
+                      neutral: 'aucun signal disponible — score neutre',
+                    }[aerobicBase.source] || 'mixte';
+                    return (
+                      <div className="mb-5 rounded-lg p-3" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--border)' }}>
+                        <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                          <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>BASE AÉROBIE DÉTECTÉE</div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-display text-base font-bold" style={{ color: baseColor }}>{baseLabel}</span>
+                            <span className="font-mono text-[10px] tabular" style={{ color: 'var(--text-dim)' }}>score {(score * 100).toFixed(0)}/100</span>
+                          </div>
+                        </div>
+                        <div className="text-xs leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+                          Source : {srcText}.
+                          {aerobicBase.observedPace && <> Footing médian observé : <span style={{ color: 'var(--text)' }}>{fmtPace(aerobicBase.observedPace)}</span>.</>}
+                          {aerobicBase.observedHrPct && <> FC moyenne : <span style={{ color: 'var(--text)' }}>{(aerobicBase.observedHrPct * 100).toFixed(0)} % FCmax</span>.</>}
+                        </div>
+                        {aerobicBase.conflict && (
+                          <div className="mt-2 text-xs leading-relaxed flex items-start gap-1.5" style={{ color: 'var(--warn)' }}>
+                            <IconInfo size={11} style={{ flexShrink: 0, marginTop: 2 }} />
+                            <span>Allure et FC ne concordent pas — ta VMA déclarée est probablement à revoir (trop optimiste si la FC est haute, trop conservatrice si la FC est basse).</span>
+                          </div>
+                        )}
+                        <div className="mt-2 text-xs leading-relaxed" style={{ color: 'var(--text-faint)' }}>
+                          Plus tu importes de footings, plus ce score s'affine et tes zones s'auto-ajustent.
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   <div className="flex gap-2 pt-4">
                     <button onClick={onCancel} className="btn-base btn-secondary btn-lg flex-1">Annuler</button>
                     <button onClick={generatePreview} className="btn-base btn-primary btn-lg flex-1 flex items-center justify-center gap-2">Générer l'aperçu <IconArrowRight size={14} /></button>
                   </div>
                 </>
               ) : (
-                <PlanPreview preview={preview} cp={profile.cp} archetype={archetype} onBack={() => setPreview(null)} onConfirm={confirmPlan} />
+                <PlanPreview preview={preview} cp={effectiveCp} archetype={archetype} onBack={() => setPreview(null)} onConfirm={confirmPlan} />
               )}
             </div>
           </div>
@@ -16612,7 +17848,7 @@
       const plannedSession = useMemo(() => getPlannedSession(profile, planOverrides), [profile, planOverrides]);
       // Coach verdict — centralized
       const coachVerdict = useMemo(() => {
-        const actsWithTss = activities.map(a => ({ ...a, tss: computeTSS(a, profile.cp) }));
+        const actsWithTss = activities.map(a => ({ ...a, tss: computeTSS(a, profile) }));
         const fitness = computeFitness(actsWithTss);
         const acwr = computeACWR(actsWithTss);
         // Compute upcoming planned load: sum TSS of next week's planned sessions
@@ -16859,6 +18095,58 @@
         return ok;
       }
 
+      // Equivalent of handleRecalibratePlan but for pace mode : when the user
+      // edits their VMA and/or their declared easy pace, this walks every
+      // pace block in the future plan + templates and re-derives the targets,
+      // preserving each block's cpFrac (the *intent*, not the literal pace).
+      // Past sessions stay untouched — they were run at the old anchors.
+      async function handleRecalibratePlanPace(oldVma, oldEasy, newVma, newEasy) {
+        if (!oldVma || !newVma) return false;
+        if (oldVma === newVma && oldEasy === newEasy) return false;
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const futureOverridesCount = Object.keys(planOverrides || {}).filter(wsKey => {
+          const parts = wsKey.split('-');
+          if (parts.length !== 3) return false;
+          const weekStart = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+          const weekEnd = new Date(weekStart.getTime() + 6 * 86400000);
+          return weekEnd.getTime() >= today.getTime();
+        }).length;
+        const tplCount = sessionTemplates.length;
+        if (futureOverridesCount === 0 && tplCount === 0) {
+          toast.push('Aucune séance à venir ni template à recalibrer.', { kind: 'info' });
+          return false;
+        }
+        const parts = [];
+        if (futureOverridesCount > 0) parts.push(`tes séances à venir (${futureOverridesCount} semaine${futureOverridesCount > 1 ? 's' : ''})`);
+        if (tplCount > 0) parts.push(`tes ${tplCount} template${tplCount > 1 ? 's' : ''} de séance`);
+        const what = parts.join(' et ');
+        const changes = [];
+        if (oldVma !== newVma) changes.push(`VMA ${oldVma} → ${newVma} km/h`);
+        if (oldEasy !== newEasy) {
+          const fmtP = (p) => p ? `${Math.floor(p)}:${String(Math.round((p - Math.floor(p)) * 60)).padStart(2, '0')}` : '—';
+          changes.push(`footing ${fmtP(oldEasy)} → ${fmtP(newEasy)}/km`);
+        }
+        const ok = await dialog.confirm({
+          title: `Recalibrer ${what} ?`,
+          message: `${changes.join(' · ')}.\nLes allures cibles seront ajustées à partir d'aujourd'hui. Les séances passées gardent leurs allures d'origine.`,
+          confirmLabel: 'Recalibrer',
+        });
+        if (ok) {
+          // Use a single aerobic score for both old/new : the score is mostly
+          // driven by observed activity HR/pace, which doesn't change just
+          // because the user updated their declared values.
+          const score = deriveAerobicBaseScore({ ...profile, vma: newVma, easyPaceMinPerKm: newEasy }, activities || []).score;
+          const oldCtx = { vma: oldVma, easyPace: oldEasy, score };
+          const newCtx = { vma: newVma, easyPace: newEasy, score };
+          if (futureOverridesCount > 0) setPlanOverrides(recalibratePlanForPace(planOverrides, oldCtx, newCtx, today));
+          if (tplCount > 0) setSessionTemplates(sessionTemplates.map(t => rescaleTemplateForPace(t, oldCtx, newCtx)));
+          setProfile(p => ({ ...p, planSourceVma: newVma, planSourceEasyPace: newEasy }));
+          toast.push(`Allures recalibrées à partir d'aujourd'hui.`, { kind: 'success' });
+        }
+        return ok;
+      }
+
       // ========== Session Templates handlers ==========
       function handleSaveTemplate(day, customName) {
         if (!day || day.type === 'rest') {
@@ -17028,7 +18316,7 @@
                     // planSourceCp = CP qui a servi à calculer les watts cibles du plan.
                     // Sert au bouton « Recalibrer les watts » dans Profil : si profile.cp
                     // diverge de planSourceCp, le plan n'est plus à l'échelle.
-                    setProfile({ ...profile, planStartDate: meta.startDate, planTotalWeeks: meta.totalWeeks, planSource: 'COMPASS Generator', planSourceCp: profile.cp });
+                    setProfile({ ...profile, planStartDate: meta.startDate, planTotalWeeks: meta.totalWeeks, planSource: 'COMPASS Generator', planSourceCp: profile.cp, planSourceVma: profile.vma, planSourceEasyPace: profile.easyPaceMinPerKm });
                   }
                 }}
                 onDeletePlan={() => {
@@ -17048,7 +18336,7 @@
                     next = {};
                   }
                   setPlanOverrides(next);
-                  setProfile({ ...profile, planStartDate: null, planTotalWeeks: 12, planSource: null, planSourceCp: null });
+                  setProfile({ ...profile, planStartDate: null, planTotalWeeks: 12, planSource: null, planSourceCp: null, planSourceVma: null, planSourceEasyPace: null });
                   toast.push('Plan supprimé.', { kind: 'info', undo: () => {
                     setPlanOverrides(prev);
                     setProfile(profile);
@@ -17101,12 +18389,20 @@
                 onSave={async (newProfile) => {
                   const oldCP = profile.cp;
                   const newCP = newProfile.cp;
+                  const oldVma = profile.vma;
+                  const newVma = newProfile.vma;
+                  const oldEasy = profile.easyPaceMinPerKm;
+                  const newEasy = newProfile.easyPaceMinPerKm;
                   setProfile(newProfile);
                   if (oldCP && newCP && oldCP !== newCP) {
                     await handleRecalibratePlan(oldCP, newCP);
                   }
+                  if (newProfile.unitMode === 'pace' && oldVma && newVma && (oldVma !== newVma || oldEasy !== newEasy)) {
+                    await handleRecalibratePlanPace(oldVma, oldEasy, newVma, newEasy);
+                  }
                 }}
                 onRecalibratePlan={() => handleRecalibratePlan(profile.planSourceCp, profile.cp)}
+                onRecalibratePlanPace={() => handleRecalibratePlanPace(profile.planSourceVma, profile.planSourceEasyPace, profile.vma, profile.easyPaceMinPerKm)}
                 activities={activities}
                 planOverrides={planOverrides}
                 onShowAllActivities={() => setView('log')}
@@ -17121,7 +18417,7 @@
 
           {activityModal && <ActivityDetailModal activity={activityModal} cp={profile.cp} onClose={() => setActivityModal(null)} profile={profile} allActivities={activities} onNavigate={(a) => setActivityModal(a)} />}
           {pendingDateActivity && <DateConfirmModal activity={pendingDateActivity} onConfirm={handleConfirmDate} onCancel={() => setPendingDateActivity(null)} />}
-          {manualEntry && <ManualActivityModal onSave={(activity) => { doImport(activity); setManualEntry(false); }} onCancel={() => setManualEntry(false)} />}
+          {manualEntry && <ManualActivityModal onSave={(activity) => { doImport(activity); setManualEntry(false); }} onCancel={() => setManualEntry(false)} hidePower={isPaceMode(profile)} />}
           {pendingGraduation && <PhaseGraduationModal phase={pendingGraduation} onClose={acceptGraduation} />}
           {pendingPainCheckin && <PainCheckinModal activity={pendingPainCheckin} profile={profile} onSubmit={savePainCheckin} onSkip={() => setPendingPainCheckin(null)} />}
           {/* Hidden file input — triggered by Today's IMPORTER button (any view) */}
