@@ -7669,232 +7669,10 @@
       );
     }
 
-    // ========================================================================
-    // PAIN VS RENFO CTL CHART — visual feedback loop tying strength to knee health
-    // ========================================================================
-    // X = last N weeks, two lines:
-    //   - blue: renfo CTL (EWMA of weekly session count, α = 1 − e^(−1/14))
-    //   - red:  post-run knee pain (smoothed across activities with postRunKneePain)
-    // Watching the red descend as the blue rises = the strongest motivator.
-    function PainVsRenfoChart({ activities, strengthSessions, profile, weeksBack = 12 }) {
-      const [hoverIdx, setHoverIdx] = useState(null);
-      const svgRef = useRef(null);
-      // Label dynamique selon les zones surveillées (était hardcodé "GENOU").
-      // Si plusieurs zones, on affiche la liste compacte ; si une seule, on
-      // prend son label "base" pour rester court ("Genou", "Tendon d'Achille").
-      const zonesTracked = Array.isArray(profile?.injuryZones) ? profile.injuryZones : [];
-      const zoneTitle = zonesTracked.length === 0
-        ? 'DOULEUR'
-        : zonesTracked.length === 1
-          ? `DOULEUR ${(INJURY_ZONE_MAP[zonesTracked[0]]?.base || INJURY_ZONE_MAP[zonesTracked[0]]?.short || INJURY_ZONE_MAP[zonesTracked[0]]?.label || zonesTracked[0]).toUpperCase()}`
-          : `DOULEUR ${zonesTracked.map(k => INJURY_ZONE_MAP[k]?.short || k).join('+').toUpperCase()}`;
-      const data = useMemo(() => {
-        const dayMs = 86400000;
-        const today = new Date(); today.setHours(0, 0, 0, 0);
-        const totalDays = weeksBack * 7;
-        const startMs = today.getTime() - totalDays * dayMs;
-
-        // Per-day renfo session count (binary: did at least one session that day)
-        const sessionByDay = new Array(totalDays + 1).fill(0);
-        (strengthSessions || []).forEach(s => {
-          const sd = new Date(s.date); sd.setHours(0, 0, 0, 0);
-          const dayIdx = Math.round((sd.getTime() - startMs) / dayMs);
-          if (dayIdx >= 0 && dayIdx <= totalDays) sessionByDay[dayIdx]++;
-        });
-
-        // Weekly count rolling 7-day sum
-        const weeklyCount = new Array(totalDays + 1).fill(0);
-        for (let i = 0; i <= totalDays; i++) {
-          let sum = 0;
-          for (let k = Math.max(0, i - 6); k <= i; k++) sum += sessionByDay[k];
-          weeklyCount[i] = sum;
-        }
-
-        // EWMA of weekly count, α for 14-day half-life ≈ 1 - exp(-1/14)
-        const alpha = 1 - Math.exp(-1 / 14);
-        const renfoCtl = new Array(totalDays + 1).fill(0);
-        let acc = 0;
-        for (let i = 0; i <= totalDays; i++) {
-          acc = alpha * weeklyCount[i] + (1 - alpha) * acc;
-          renfoCtl[i] = acc;
-        }
-
-        // Pain points: from activities with postRunKneePain in the window
-        const painPoints = [];
-        (activities || []).forEach(a => {
-          if (typeof a.postRunKneePain !== 'number') return;
-          const ad = new Date(a.startMs); ad.setHours(0, 0, 0, 0);
-          const dayIdx = Math.round((ad.getTime() - startMs) / dayMs);
-          if (dayIdx >= 0 && dayIdx <= totalDays) painPoints.push({ dayIdx, score: a.postRunKneePain, date: a.startMs });
-        });
-        painPoints.sort((a, b) => a.dayIdx - b.dayIdx);
-
-        // Smoothed pain: per-day, exponential moving avg of pain scores observed up to that day
-        // (decay 21 days). For days with no point, carry forward the running EMA.
-        const painAlpha = 1 - Math.exp(-1 / 21);
-        const painSmooth = new Array(totalDays + 1).fill(null);
-        let lastEma = null;
-        let pIdx = 0;
-        for (let i = 0; i <= totalDays; i++) {
-          while (pIdx < painPoints.length && painPoints[pIdx].dayIdx === i) {
-            lastEma = lastEma === null ? painPoints[pIdx].score : painAlpha * painPoints[pIdx].score + (1 - painAlpha) * lastEma;
-            pIdx++;
-          }
-          if (lastEma !== null) painSmooth[i] = lastEma;
-        }
-
-        return { renfoCtl, painSmooth, painPoints, totalDays, startMs };
-      }, [activities, strengthSessions, weeksBack]);
-
-      const { renfoCtl, painSmooth, painPoints, totalDays, startMs } = data;
-      const hasAnyPain = painPoints.length > 0;
-      const hasAnyRenfo = (strengthSessions || []).length > 0;
-
-      if (!hasAnyPain && !hasAnyRenfo) {
-        return (
-          <Card className="p-6 mb-4">
-            <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--text-dim)' }}>DOULEUR vs RENFO · {weeksBack} SEMAINES</div>
-            <div className="text-sm italic" style={{ color: 'var(--text-faint)' }}>Le graphique apparaîtra dès tes premières séances de renfo + ton premier check-in douleur post-course.</div>
-          </Card>
-        );
-      }
-
-      // SVG layout
-      const W = 760, H = 220;
-      const padL = 40, padR = 40, padT = 18, padB = 28;
-      const cw = W - padL - padR, ch = H - padT - padB;
-      const x = (i) => padL + (i / Math.max(1, totalDays)) * cw;
-
-      // Left axis (renfo CTL): 0 to max(3, ceil(maxCtl))
-      const maxCtl = Math.max(3, Math.ceil(Math.max(...renfoCtl) * 10) / 10 + 0.2);
-      const yL = (v) => padT + ch - (v / maxCtl) * ch;
-      // Right axis (pain): 0 to 10
-      const yR = (v) => padT + ch - (v / 10) * ch;
-
-      const ctlPath = renfoCtl.map((v, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${yL(v).toFixed(1)}`).join(' ');
-      // Pain path: only over the smoothed region (skip leading nulls)
-      const painSegments = [];
-      let cur = [];
-      for (let i = 0; i <= totalDays; i++) {
-        if (painSmooth[i] !== null) cur.push(`${cur.length === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${yR(painSmooth[i]).toFixed(1)}`);
-        else if (cur.length) { painSegments.push(cur.join(' ')); cur = []; }
-      }
-      if (cur.length) painSegments.push(cur.join(' '));
-
-      // Target line at renfo CTL = 2 (sessions/week target)
-      const targetSessions = profile?.showStrength === false ? 0 : 2;
-
-      // Date labels (start, today)
-      const fmtMonthDay = (ms) => { const d = new Date(ms); return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`; };
-
-      // Insight text
-      let insight = null;
-      if (hasAnyPain && hasAnyRenfo && painPoints.length >= 3) {
-        const recent = painPoints.slice(-Math.min(5, painPoints.length));
-        const old = painPoints.slice(0, Math.min(5, painPoints.length));
-        const recentAvg = recent.reduce((s, p) => s + p.score, 0) / recent.length;
-        const oldAvg = old.reduce((s, p) => s + p.score, 0) / old.length;
-        const ctlNow = renfoCtl[totalDays];
-        const ctlStart = renfoCtl[0];
-        if (ctlNow > ctlStart + 0.3 && recentAvg < oldAvg - 0.5) {
-          insight = { tone: 'positive', text: `Régularité renfo ${ctlStart.toFixed(1)} → ${ctlNow.toFixed(1)} séances/sem · Douleur ${oldAvg.toFixed(1)} → ${recentAvg.toFixed(1)}. La corrélation joue dans le bon sens.` };
-        } else if (ctlNow < ctlStart - 0.3 && recentAvg > oldAvg + 0.5) {
-          insight = { tone: 'negative', text: `Renfo en baisse (${ctlStart.toFixed(1)} → ${ctlNow.toFixed(1)} séances/sem) et douleur qui remonte (${oldAvg.toFixed(1)} → ${recentAvg.toFixed(1)}). Le lien est net.` };
-        }
-      }
-
-      function handleMouseMove(e) {
-        if (!svgRef.current) return;
-        const rect = svgRef.current.getBoundingClientRect();
-        const svgX = ((e.clientX - rect.left) / rect.width) * W;
-        const idx = Math.round((svgX - padL) / cw * totalDays);
-        if (idx >= 0 && idx <= totalDays) setHoverIdx(idx);
-        else setHoverIdx(null);
-      }
-      const hoverPainScore = hoverIdx != null && painSmooth[hoverIdx] != null ? painSmooth[hoverIdx] : null;
-      const hoverRenfoCtl = hoverIdx != null ? renfoCtl[hoverIdx] : null;
-      const hoverDate = hoverIdx != null ? new Date(startMs + hoverIdx * 86400000) : null;
-      // Point de douleur exact à cet index (si dispo) — pour distinguer un score
-      // observé d'une simple interpolation lissée.
-      const hoverPainPoint = hoverIdx != null ? painPoints.find(p => p.dayIdx === hoverIdx) : null;
-      return (
-        <Card className="p-6 mb-4">
-          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-            <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>{zoneTitle} vs RÉGULARITÉ RENFO · {weeksBack} SEMAINES</div>
-            <div className="flex items-center gap-3 font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
-              <span className="flex items-center gap-1.5" title="Moyenne lissée des séances de renfo par semaine — l'idée est de voir si tu en fais régulièrement, pas juste si tu en as fait une cette semaine"><span className="w-3 h-0.5" style={{ background: 'var(--compass)' }} />SÉANCES RENFO/SEM</span>
-              <span className="flex items-center gap-1.5" title="Tes notes de douleur après chaque course (0-10), lissées sur 3 semaines"><span className="w-3 h-0.5" style={{ background: 'var(--critical)' }} />NIVEAU DE DOULEUR</span>
-            </div>
-          </div>
-          <div className="mb-3 font-mono text-[10px] leading-relaxed" style={{ color: 'var(--text-faint)' }}>
-            La ligne bleue = ta moyenne de séances de renfo par semaine (lissée sur 14 jours pour éviter les sauts). Une semaine avec 2 séances renfo te tire vers le haut, 0 séance te tire vers le bas — le but est de voir ta <strong>régularité</strong>, pas juste tes pics.
-          </div>
-          {hoverIdx != null ? (
-            <div className="mb-2 font-mono text-xs" style={{ color: 'var(--text-dim)' }}>
-              <span style={{ color: 'var(--compass)' }}>{fmtDate(hoverDate.getTime(), true)}</span>
-              {hoverRenfoCtl != null && <span className="ml-3">Renfo (lissé) : <span className="tabular" style={{ color: 'var(--text)' }}>{hoverRenfoCtl.toFixed(2)}</span><span style={{ color: 'var(--text-faint)' }}> séances/sem</span></span>}
-              {hoverPainScore != null && (
-                <span className="ml-3">
-                  Douleur (lissée) : <span className="tabular" style={{ color: 'var(--critical)' }}>{hoverPainScore.toFixed(1)}/10</span>
-                  {hoverPainPoint && <span className="ml-1" style={{ color: 'var(--text-faint)' }}>(check-in du jour : {hoverPainPoint.score}/10)</span>}
-                </span>
-              )}
-            </div>
-          ) : (
-            <div className="mb-2 font-mono text-xs italic" style={{ color: 'var(--text-faint)' }}>Survole le graphique pour voir les valeurs au jour le jour</div>
-          )}
-          <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: 'block', cursor: 'crosshair' }} onMouseMove={handleMouseMove} onMouseLeave={() => setHoverIdx(null)}>
-            {/* Y-axis ticks left (renfo) */}
-            {[0, 1, 2, 3].map(v => v <= maxCtl && (
-              <g key={`l${v}`}>
-                <line x1={padL} y1={yL(v)} x2={W - padR} y2={yL(v)} stroke="var(--border)" strokeWidth="0.5" opacity="0.5" />
-                <text x={padL - 6} y={yL(v) + 3} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="var(--compass)">{v}</text>
-              </g>
-            ))}
-            {/* Right axis ticks (pain) */}
-            {[0, 5, 10].map(v => (
-              <g key={`r${v}`}>
-                <text x={W - padR + 6} y={yR(v) + 3} textAnchor="start" fontFamily="JetBrains Mono" fontSize="9" fill="var(--critical)">{v}</text>
-              </g>
-            ))}
-            {/* Target line */}
-            {targetSessions > 0 && (
-              <g>
-                <line x1={padL} y1={yL(targetSessions)} x2={W - padR} y2={yL(targetSessions)} stroke="var(--compass)" strokeWidth="1" strokeDasharray="3,3" opacity="0.4" />
-                <text x={W - padR - 4} y={yL(targetSessions) - 4} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="var(--compass)" opacity="0.6">cible {targetSessions}/sem</text>
-              </g>
-            )}
-            {/* Renfo CTL line */}
-            {hasAnyRenfo && <path d={ctlPath} fill="none" stroke="var(--compass)" strokeWidth="2" />}
-            {/* Pain smoothed line */}
-            {painSegments.map((p, i) => <path key={i} d={p} fill="none" stroke="var(--critical)" strokeWidth="1.8" strokeDasharray="4,2" />)}
-            {/* Pain points (dots) */}
-            {painPoints.map((p, i) => (
-              <circle key={i} cx={x(p.dayIdx)} cy={yR(p.score)} r="3" fill="var(--critical)" stroke="var(--bg)" strokeWidth="1" />
-            ))}
-            {/* Hover crosshair + indicators */}
-            {hoverIdx != null && (
-              <g>
-                <line x1={x(hoverIdx)} y1={padT} x2={x(hoverIdx)} y2={padT + ch} stroke="#8A8A8A" strokeWidth="0.8" strokeDasharray="3,3" opacity="0.6" />
-                {hoverRenfoCtl != null && <circle cx={x(hoverIdx)} cy={yL(hoverRenfoCtl)} r="4" fill="var(--compass)" stroke="var(--bg)" strokeWidth="1.5" />}
-                {hoverPainScore != null && <circle cx={x(hoverIdx)} cy={yR(hoverPainScore)} r="4" fill="var(--critical)" stroke="var(--bg)" strokeWidth="1.5" />}
-              </g>
-            )}
-            {/* X-axis labels */}
-            <text x={padL} y={H - 8} textAnchor="start" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{fmtMonthDay(startMs)}</text>
-            <text x={W - padR} y={H - 8} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#555">aujourd'hui</text>
-          </svg>
-          {!hasAnyPain && (
-            <div className="mt-3 text-xs italic" style={{ color: 'var(--text-faint)' }}>Aucun check-in douleur encore. Après chaque course importée, l'app te demande 3 secondes pour noter tes zones surveillées.</div>
-          )}
-          {insight && (
-            <div className="mt-3 rounded-lg p-3 text-sm leading-relaxed" style={{ background: insight.tone === 'positive' ? 'var(--positive-dim)' : 'var(--critical-dim)', border: `1px solid ${insight.tone === 'positive' ? 'var(--positive)' : 'var(--critical)'}40`, color: insight.tone === 'positive' ? 'var(--positive)' : 'var(--critical)' }}>
-              {insight.text}
-            </div>
-          )}
-        </Card>
-      );
-    }
+    // PainVsRenfoChart supprimé : le couple "régularité renfo vs douleur" ne
+    // produit pas d'insight actionnable pour le coureur — la régularité renfo
+    // se voit déjà dans le calendrier du plan, et la douleur dépend de trop de
+    // facteurs (volume course, sommeil, météo) pour être attribuée au renfo.
 
     // ========================================================================
     // ONBOARDING MODAL — first-launch wizard. Walks a brand-new user through
@@ -13604,15 +13382,10 @@
         [activities, profile.vma, isPaceModePred]
       );
 
-      // Détection de baisse de forme (informatif, jamais auto-appliqué).
-      const cpDrop = useMemo(
-        () => (!isPaceModePred && profile.cp) ? detectCPDrop(activities, profile.cp, new Date(), races) : null,
-        [activities, profile.cp, isPaceModePred]
-      );
-      const vmaDrop = useMemo(
-        () => (isPaceModePred && profile.vma) ? detectVMADrop(activities, profile.vma, new Date(), races) : null,
-        [activities, profile.vma, isPaceModePred]
-      );
+      // Détection de baisse de forme : fonctions detectCPDrop / detectVMADrop
+      // conservées dans le code mais leur sortie n'est plus consommée par l'UI
+      // (FitnessDropBanner retiré — la lecture "tes watts ont baissé" était
+      // démotivante sans être actionnable).
 
       function handleAcceptVMASuggestion(newVMA) {
         if (!onSaveProfile) return;
@@ -13815,10 +13588,10 @@
               )}
               {/* YearHeatmapCard retirée : déjà présente sur Aujourd'hui (ligne 3769),
                   doublon strict avec ce tab. */}
-              {/* Pain vs renfo chart — only relevant when the user has at least one tracked zone */}
-              {Array.isArray(profile.injuryZones) && profile.injuryZones.length > 0 && (
-                <div className="mb-4"><PainVsRenfoChart activities={activities} strengthSessions={strengthSessions} profile={profile} /></div>
-              )}
+              {/* PainVsRenfoChart retirée : la corrélation douleur/renfo n'apporte
+                  pas d'insight actionnable, et le graphe n'aide pas le coureur à
+                  décider quoi changer. La régularité renfo se voit déjà dans le
+                  calendrier du plan. */}
             </>
           )}
 
@@ -13828,7 +13601,11 @@
               {isPaceModePred
                 ? <VMAProgressionBanner progression={vmaProgression} profile={profile} onAcceptVMA={handleAcceptVMASuggestion} />
                 : <CPProgressionBanner progression={cpProgression} profile={profile} onAcceptCP={handleAcceptCPSuggestion} />}
-              <FitnessDropBanner cpDrop={cpDrop} vmaDrop={vmaDrop} />
+              {/* FitnessDropBanner retiré : "tes watts soutenus ont baissé" est un
+                  message démotivant qui n'apporte rien d'actionnable. Le coureur
+                  sait s'il a fait moins de qualité que d'habitude — Compass n'a
+                  pas à le souligner. CPProgressionBanner (en haut) gère le cas
+                  inverse (suggérer une CP plus haute), qui lui est utile. */}
               <div className="mb-4"><RacePredictorCard predictions={predictions} cp={profile.cp} tsb={fitness.tsb} wprime={cpWpFit ? cpWpFit.wprime : 15000} weightKg={profile.weightKg} prs={profile.prs} prsDates={profile.prsDates} bestEfforts={mergedBestEfforts} paceMode={isPaceModePred} vma={profile.vma} /></div>
               <div className="mb-4"><PaceTimelineCard activities={activities} profile={profile} planOverrides={planOverrides} races={races} /></div>
               <div className="mb-4"><VirtualCompetitionCard activities={activities} profile={profile} /></div>
@@ -15524,82 +15301,10 @@
     // Pendant pace-mode du CPProgressionBanner. Affiche la même mécanique
     // (suggestion + accept + détail) pour la VMA. Utilisé sur l'onglet
     // Performance ; le profil affiche une version inline simplifiée.
-    // Banner informationnel : signale un recul de la forme observée vs la CP/VMA
-    // déclarée. NE BAISSE JAMAIS la valeur automatiquement — l'utilisateur garde
-    // la main, mais il sait que ses prédictions sont peut-être optimistes. À placer
-    // sur le Profil et sur l'onglet Analytics Performance.
-    function FitnessDropBanner({ cpDrop, vmaDrop }) {
-      const [dismissed, setDismissed] = useState(false);
-      if (dismissed) return null;
-      const drop = cpDrop || vmaDrop;
-      if (!drop) return null;
-      const isPace = !!vmaDrop;
-      // Variante "manque d'exposition" : pas de vraie baisse de forme détectée,
-      // juste pas d'effort soutenu intense ces 5 dernières semaines. On change
-      // le ton (informationnel, pas alarmant) et on ne suggère pas un drop de CP.
-      const noIntensity = drop.reason === 'no_intensity';
-      if (noIntensity) {
-        const hardestPct = Math.round((drop.hardestPct || 0) * 100);
-        return (
-          <Card className="p-5 mb-4" accent="var(--text-dim)">
-            <div className="flex items-start gap-3 flex-wrap">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'var(--bg-elev-2)' }}>
-                <IconInfo size={18} style={{ color: 'var(--text-dim)' }} />
-              </div>
-              <div className="flex-1 min-w-[240px]">
-                <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--text-dim)' }}>
-                  PAS D'EFFORT SOUTENU RÉCENT · INFORMATIONNEL
-                </div>
-                <div className="font-display text-base md:text-lg font-bold mb-1">
-                  Tes 5 dernières semaines ne contiennent pas d'effort {isPace ? 'à allure élevée' : 'à puissance soutenue'} (max ≈ {hardestPct} % de {isPace ? 'ta VMA' : 'ta CP'})
-                </div>
-                <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-                  Ce <strong>n'est pas</strong> forcément une perte de forme : Compass ne peut juste pas vérifier que ta {isPace ? 'VMA' : 'CP'} est toujours valide tant que tu n'as pas refait un effort soutenu de 5 à 30 min.
-                  {' '}Tes prédictions de course restent basées sur la valeur déclarée. Si tu veux les calibrer, fais une séance qualité (tempo, intervals long, test {isPace ? '6 min' : '3\'/20\''}) dans les 1-2 prochaines semaines.
-                </div>
-              </div>
-            </div>
-            <div className="flex gap-2 mt-3">
-              <button onClick={() => setDismissed(true)} className="btn px-3 py-1.5 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'transparent', color: 'var(--text-faint)' }}>
-                IGNORER
-              </button>
-            </div>
-          </Card>
-        );
-      }
-      const headline = isPace
-        ? `Tes meilleures allures tenues 5 à 30 min ont baissé (équivalent VMA ≈ ${drop.projectedVMA} km/h vs ${drop.currentVMA} déclarée)`
-        : `Tes meilleurs watts tenus 5 à 30 min ont baissé (équivalent CP ≈ ${drop.projectedCP}W vs ${drop.currentCP}W déclarée)`;
-      const lossLabel = isPace ? `−${drop.loss} km/h (−${(drop.lossPct * 100).toFixed(1)} %)` : `−${drop.lossW}W (−${(drop.lossPct * 100).toFixed(1)} %)`;
-      return (
-        <Card className="p-5 mb-4" accent="var(--caution)">
-          <div className="flex items-start gap-3 flex-wrap">
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(255, 176, 32, 0.15)' }}>
-              <IconAlert size={18} style={{ color: 'var(--caution)' }} />
-            </div>
-            <div className="flex-1 min-w-[240px]">
-              <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--caution)' }}>
-                FORME EN BAISSE · INFORMATIONNEL
-              </div>
-              <div className="font-display text-base md:text-lg font-bold mb-1">{headline}</div>
-              <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-                <strong>De quoi je parle :</strong> sur tes activités récentes, je regarde le meilleur {isPace ? 'temps tenu' : 'wattage tenu'} sur 4 durées (5 min, 10 min, 20 min, 30 min). Ça reflète ta capacité à maintenir un effort soutenu — c'est exactement ce que {isPace ? 'la VMA' : 'la CP'} mesure.
-                {' '}<br /><br />
-                <strong>Ce que je constate :</strong> écart de <span style={{ color: 'var(--caution)' }}>{lossLabel}</span> entre tes 5 dernières semaines et les 8 précédentes. Tu fais bien des efforts intenses, mais à un niveau plus bas qu'avant.
-                {' '}<br /><br />
-                <strong>Causes fréquentes :</strong> blessure, surcharge, maladie, manque de sommeil, retour de pause.
-                {' '}Compass <strong>ne baisse jamais</strong> {isPace ? 'ta VMA' : 'ta CP'} automatiquement — décide toi-même si tu mets à jour ou si tu attends de remonter. En attendant, garde en tête que tes prédictions de course peuvent être optimistes.
-              </div>
-            </div>
-          </div>
-          <div className="flex gap-2 mt-3">
-            <button onClick={() => setDismissed(true)} className="btn px-3 py-1.5 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'transparent', color: 'var(--text-faint)' }}>
-              IGNORER
-            </button>
-          </div>
-        </Card>
-      );
-    }
+    // FitnessDropBanner supprimé : "tes watts ont baissé" n'apporte rien
+    // d'actionnable et démotive le coureur. detectCPDrop / detectVMADrop restent
+    // disponibles dans le moteur au cas où on voudrait surfacer ça plus tard
+    // d'une manière plus utile (ex : suggestion automatique d'une semaine décharge).
 
     function VMAProgressionBanner({ progression, profile, onAcceptVMA }) {
       const [dismissed, setDismissed] = useState(false);
