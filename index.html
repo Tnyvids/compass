@@ -13640,23 +13640,23 @@
               const lastP = last && pts[pts.length - 1].paces[k];
               // Bande d'incertitude — polygon fermé entre borne haute (allure
               // plus lente = y plus grand) et borne basse (allure plus rapide).
+              // La marge croît avec la distance temporelle : ±1 % au départ
+              // (sortie immédiate du futur) → ±4 % à la fin de la fenêtre.
               let uncertaintyBand = null;
               if (segs.future.length >= 2) {
                 const futurePts = segs.future;
-                // Recherche la pace originelle pour chaque point future
-                const futurePtsWithPace = futurePts.map((p, idx) => {
-                  // Distance temporelle relative dans la fenêtre future (0 → 1)
-                  const tFromNow = idx / Math.max(1, futurePts.length - 1);
-                  // Marge croît avec le temps : 1 % au départ → 4 % à la fin
+                const n = futurePts.length;
+                const upper = futurePts.map((p, idx) => {
+                  const tFromNow = idx / Math.max(1, n - 1);
                   const margin = 0.01 + 0.03 * tFromNow;
-                  // Trouve la pace pour calculer y borne haute / basse
-                  const pace = pts.find(pt => Math.abs(pt.ms - (todayMs + 0)) < dayMs * 365 && pt.paces[k] && Math.abs(pt.ms - segs.future[idx].dataMs) < dayMs * 4);
-                  // Approche plus simple : reconstruit y depuis le point existant
-                  return { x: p.x, y: p.y, margin };
+                  return { x: p.x, y: p.y * (1 + margin) };
                 });
-                // Construction du polygone : forward upper, backward lower
-                const upper = futurePtsWithPace.map(p => ({ x: p.x, y: p.y * (1 + p.margin) }));
-                const lower = futurePtsWithPace.slice().reverse().map(p => ({ x: p.x, y: p.y * (1 - p.margin) }));
+                const lower = futurePts.slice().reverse().map((p, ridx) => {
+                  const idx = n - 1 - ridx;
+                  const tFromNow = idx / Math.max(1, n - 1);
+                  const margin = 0.01 + 0.03 * tFromNow;
+                  return { x: p.x, y: p.y * (1 - margin) };
+                });
                 const allPts = [...upper, ...lower];
                 if (allPts.length >= 3) {
                   uncertaintyBand = allPts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ') + ' Z';
