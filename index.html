@@ -14021,8 +14021,13 @@
     // ========================================================================
     function UnifiedFitnessChartCard({ activities, profile, planOverrides }) {
       const [hoverIdx, setHoverIdx] = useState(null);
-      const [hidden, setHidden] = useState(() => new Set());
-      const [zoom, setZoom] = useState('90j'); // '30j' | '90j' | 'all'
+      // Charge (TSS) masquée par défaut : les barres TSS quotidiennes parasitent
+      // la lecture des courbes CTL/ATL/TSB sur les fenêtres longues. L'utilisateur
+      // peut la réafficher via la légende.
+      const [hidden, setHidden] = useState(() => new Set(['tss']));
+      // Fenêtre par défaut : "tout" (vue d'ensemble). L'utilisateur peut zoomer
+      // sur 30j ou 90j s'il veut le détail récent.
+      const [zoom, setZoom] = useState('all');
 
       const data = useMemo(() => {
         if ((!profile.cp && !profile.vma) || !activities) return null;
@@ -14525,10 +14530,25 @@
     // ========================================================================
     function IntensityDistributionCard({ activities, profile, races }) {
       const [hoverZone, setHoverZone] = useState(null);
+      // Fenêtre temporelle de l'analyse. '4w' = 4 semaines (défaut historique,
+      // cohérent avec la fenêtre ACWR). Toutes les options sont en JOURS pour
+      // un calcul uniforme — pas de mois calendaires variables (28/30/31).
+      const [windowKey, setWindowKey] = useState('4w');
+      const WINDOW_OPTIONS = [
+        { key: '1w',  label: 'Semaine',   days: 7 },
+        { key: '4w',  label: 'Mois',      days: 28 },   // ~1 mois, garde alignement ACWR
+        { key: '3m',  label: '3 mois',    days: 91 },
+        { key: '6m',  label: '6 mois',    days: 183 },
+        { key: '1y',  label: 'Année',     days: 365 },
+        { key: 'all', label: 'Tout',      days: null }, // pas de borne basse
+      ];
+      const currentWindow = WINDOW_OPTIONS.find(w => w.key === windowKey) || WINDOW_OPTIONS[1];
       const data = useMemo(() => {
         if (!activities || activities.length === 0) return null;
-        const fourWeeksAgo = Date.now() - 28 * 86400000;
-        const recent = activities.filter(a => a.startMs >= fourWeeksAgo && a.durationSec > 0);
+        const sinceMs = currentWindow.days != null
+          ? Date.now() - currentWindow.days * 86400000
+          : -Infinity;
+        const recent = activities.filter(a => a.startMs >= sinceMs && a.durationSec > 0);
         if (recent.length === 0) return null;
         const usePower = !!profile.cp && recent.some(a => a.normalizedPower);
         const useVMA = !usePower && !!profile.vma;
@@ -14723,7 +14743,7 @@
           verdictDetail = `Plus de Z3 que de Z5+${raceSuffix ? ` (${raceSuffix.trim().slice(4)})` : ''}. Acceptable, mais le polarisé est généralement plus efficace sur les distances courtes.`;
         }
         return { easyPct, thresholdPct, hardPct, easyCount, thresholdCount, hardCount, easyMin: easyTime/60, thresholdMin: thresholdTime/60, hardMin: hardTime/60, verdict, verdictColor, verdictDetail, sessionCount: recent.length, raceCategory: cat, raceName, nextRaceDistance: nextRace ? nextRace.distance : null, sourceCounts };
-      }, [activities, profile.cp, profile.vma, races]);
+      }, [activities, profile.cp, profile.vma, races, windowKey]);
       if (!data) {
         return (
           <Card className="p-6 h-full flex flex-col justify-center items-center text-center">
@@ -14786,16 +14806,32 @@
       const focused = hoverZone ? arcs.find(a => a.key === hoverZone) : null;
       return (
         <Card className="p-6 h-full" accent={focused ? focused.color : data.verdictColor}>
-          <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
             <div className="flex items-center gap-2">
               <IconBarChart size={14} style={{ color: 'var(--compass)' }} />
-              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>DISTRIBUTION D'INTENSITÉ · 4 SEMAINES</div>
+              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>DISTRIBUTION D'INTENSITÉ · {currentWindow.label.toUpperCase()}</div>
             </div>
             {data.raceName && (
               <div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--compass)' }}>
                 COURSE VISÉE · {String(data.nextRaceDistance || '').toUpperCase()}
               </div>
             )}
+          </div>
+          {/* Sélecteur de fenêtre temporelle. Tous les choix utilisent le même
+              moteur de classification fine — seule la borne basse change. */}
+          <div className="flex flex-wrap gap-1 mb-4">
+            {WINDOW_OPTIONS.map(opt => (
+              <button
+                key={opt.key}
+                onClick={() => setWindowKey(opt.key)}
+                className="btn font-mono text-[10px] tracking-widest px-2 py-1 rounded"
+                style={{
+                  background: windowKey === opt.key ? 'var(--compass)' : 'transparent',
+                  color: windowKey === opt.key ? '#000' : 'var(--text-dim)',
+                  border: `1px solid ${windowKey === opt.key ? 'var(--compass)' : 'var(--border)'}`,
+                }}
+              >{opt.label.toUpperCase()}</button>
+            ))}
           </div>
           <div className="flex items-center gap-5 mb-4">
             <svg viewBox="0 0 160 160" width="120" height="120" style={{ flexShrink: 0 }} onMouseLeave={() => setHoverZone(null)}>
