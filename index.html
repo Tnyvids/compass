@@ -1899,12 +1899,14 @@
     // alone so we don't rewrite history.
     function recalibratePlanForPace(planOverrides, oldCtx, newCtx, fromDate = null) {
       if (!oldCtx || !newCtx || !oldCtx.vma || !newCtx.vma) return planOverrides;
-      const score = (newCtx.score != null) ? newCtx.score : (oldCtx.score != null ? oldCtx.score : 0.5);
+      // scores : two-axis (objet {endurance, intensity}) ou legacy (nombre).
+      // Compat ascendante : si .scores absent, on retombe sur .score (nombre).
+      const scores = newCtx.scores || oldCtx.scores || newCtx.score || oldCtx.score || 0.5;
       const recalcPaceSec = (paceSec) => {
         if (!paceSec) return paceSec;
-        const cpFrac = cpFracFromPace(paceSec, oldCtx.vma, score, oldCtx.easyPace);
+        const cpFrac = cpFracFromPace(paceSec, oldCtx.vma, scores, oldCtx.easyPace);
         if (cpFrac == null || !isFinite(cpFrac)) return paceSec;
-        const newSec = paceForIntensity(cpFrac, newCtx.vma, score, newCtx.easyPace);
+        const newSec = paceForIntensity(cpFrac, newCtx.vma, scores, newCtx.easyPace);
         return newSec ? Math.round(newSec) : paceSec;
       };
       // Detail strings expose paces as "M:SS/km" or "M:SS-M:SS/km".
@@ -1981,12 +1983,12 @@
 
     function rescaleTemplateForPace(tpl, oldCtx, newCtx) {
       if (!tpl || !oldCtx || !newCtx || !oldCtx.vma || !newCtx.vma) return tpl;
-      const score = (newCtx.score != null) ? newCtx.score : (oldCtx.score != null ? oldCtx.score : 0.5);
+      const scores = newCtx.scores || oldCtx.scores || newCtx.score || oldCtx.score || 0.5;
       const recalcPaceSec = (paceSec) => {
         if (!paceSec) return paceSec;
-        const cpFrac = cpFracFromPace(paceSec, oldCtx.vma, score, oldCtx.easyPace);
+        const cpFrac = cpFracFromPace(paceSec, oldCtx.vma, scores, oldCtx.easyPace);
         if (cpFrac == null || !isFinite(cpFrac)) return paceSec;
-        const newSec = paceForIntensity(cpFrac, newCtx.vma, score, newCtx.easyPace);
+        const newSec = paceForIntensity(cpFrac, newCtx.vma, scores, newCtx.easyPace);
         return newSec ? Math.round(newSec) : paceSec;
       };
       const rescale = (b) => {
@@ -5538,6 +5540,7 @@
                 wsKey={editingInlineDay.wsKey}
                 weekContext={(() => {
                   const isPaceMode = (profile.unitMode === 'pace' && !!profile.vma) || (!profile.cp && !!profile.vma);
+                  const aerobic = deriveAerobicBaseScore(profile, activities || []);
                   return {
                     // In pace mode we expose cp = null so all "weekContext.cp && …"
                     // branches (ZoneReference, TSS-by-power widgets) naturally hide.
@@ -5548,7 +5551,10 @@
                     paceMode: isPaceMode,
                     vma: profile.vma,
                     easyPaceMinPerKm: profile.easyPaceMinPerKm,
-                    aerobicScore: deriveAerobicBaseScore(profile, activities || []).score,
+                    // Two-axis : endurance drive marathon/long, intensity drive seuil/VMA.
+                    // L'objet est accepté par paceForIntensity / cpFracFromPace ; les
+                    // callers legacy qui lisent un nombre n'existent plus dans ce chemin.
+                    aerobicScore: { endurance: aerobic.enduranceScore, intensity: aerobic.intensityScore },
                   };
                 })()}
                 sessionTemplates={sessionTemplates}
@@ -9658,6 +9664,103 @@
               </div>
             )}
           </Card>
+
+          {/* Tableau récap des allures — mode pace uniquement */}
+          {isPaceMode(profile) && profile.vma && profile.easyPaceMinPerKm && (() => {
+            const aerobic = deriveAerobicBaseScore(profile, activities || []);
+            const scores = { endurance: aerobic.enduranceScore, intensity: aerobic.intensityScore };
+            const easyPace = aerobic.observedPace || profile.easyPaceMinPerKm;
+            const zones = [
+              { key: 'recup',    cp: 0.65, label: 'Récupération',     hint: 'plus lent que le footing' },
+              { key: 'easy',     cp: 0.72, label: 'Footing facile (EF)', hint: 'respiration aisée, base de volume' },
+              { key: 'ea',       cp: 0.78, label: 'Endurance active (EA)', hint: 'fin de sortie longue progressive' },
+              { key: 'mp',       cp: 0.85, label: 'Allure marathon (MP)', hint: 'drive par endurance (volume + longue)' },
+              { key: 'hm',       cp: 0.92, label: 'Allure semi (HM)',  hint: 'blend endurance/intensité' },
+              { key: 'seuil',    cp: 0.95, label: 'Seuil 3×10\'',      hint: 'LT, vouloir cracher au 8e' },
+              { key: '10k',      cp: 0.99, label: 'Allure 10K',        hint: 'blend endurance/intensité' },
+              { key: '5k',       cp: 1.04, label: 'Allure 5K',         hint: '~92-95 % VMA' },
+              { key: 'vma800',   cp: 1.10, label: 'VMA 800m / 400m',   hint: 'drive par intensité (VO2max)' },
+              { key: 'billat',   cp: 1.15, label: 'Billat 30/30',      hint: '100 % VMA, fractions courtes' },
+              { key: 'vmapure',  cp: 1.20, label: 'VMA pure',          hint: '~6 min max, ligne droite' },
+            ];
+            const rows = zones.map(z => {
+              const paceSec = paceForIntensity(z.cp, profile.vma, scores, easyPace);
+              const vmaPct = paceSec ? Math.round(((3600 / paceSec) / profile.vma) * 100) : null;
+              const dominant = z.cp <= 0.85 ? 'E' : z.cp >= 1.10 ? 'I' : 'mix';
+              return {
+                ...z,
+                paceLow: paceSec ? fmtPaceSec(Math.max(60, paceSec - PACE_TOLERANCE_SEC)) : '—',
+                paceHigh: paceSec ? fmtPaceSec(paceSec + PACE_TOLERANCE_SEC) : '—',
+                vmaPct,
+                dominant,
+              };
+            });
+            const sig = aerobic.signals;
+            const fmtMin = (m) => m == null ? '—' : `${Math.floor(m / 60)}h${String(Math.round(m % 60)).padStart(2, '0')}`;
+            const signalsDesc = [];
+            if (sig.weeklyKm != null) signalsDesc.push(`vol ${Math.round(sig.weeklyKm)} km/sem`);
+            if (sig.longestRunMin != null) signalsDesc.push(`longue ${fmtMin(sig.longestRunMin)}`);
+            if (sig.observedPace != null) signalsDesc.push(`footing obs ${fmtPace(sig.observedPace)}`);
+            if (sig.observedHrPct != null) signalsDesc.push(`FC obs ${(sig.observedHrPct * 100).toFixed(0)} % FCmax`);
+            const prKeys = Object.keys(sig.prCazorla || {});
+            if (prKeys.length > 0) signalsDesc.push(`PR ${prKeys.join('+')}`);
+            const scoreColor = (s) => s < 0.33 ? 'var(--caution)' : s < 0.66 ? 'var(--compass)' : 'var(--positive)';
+            return (
+              <Card className="p-6 mb-4">
+                <div className="flex items-baseline justify-between mb-4 flex-wrap gap-2">
+                  <div className="font-display text-lg font-bold">Allures de référence</div>
+                  <div className="flex items-center gap-3">
+                    <div className="text-right">
+                      <div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>ENDURANCE</div>
+                      <div className="font-display text-base font-bold tabular" style={{ color: scoreColor(aerobic.enduranceScore) }}>{Math.round(aerobic.enduranceScore * 100)}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>INTENSITÉ</div>
+                      <div className="font-display text-base font-bold tabular" style={{ color: scoreColor(aerobic.intensityScore) }}>{Math.round(aerobic.intensityScore * 100)}</div>
+                    </div>
+                  </div>
+                </div>
+                <div className="text-xs leading-relaxed mb-3" style={{ color: 'var(--text-dim)' }}>
+                  Calculées depuis ta VMA <strong>{profile.vma} km/h</strong> et ton footing <strong>{fmtPace(profile.easyPaceMinPerKm)}</strong>.
+                  Le score <em>endurance</em> drive marathon/long (volume + sortie longue + PR longue), le score <em>intensité</em> drive seuil/VMA (footing, FC, PR court).
+                  Plus tu importes d'activités, plus c'est précis.
+                </div>
+                {signalsDesc.length > 0 && (
+                  <div className="font-mono text-[10px] tracking-wide mb-4 px-3 py-2 rounded" style={{ background: 'var(--bg-elev)', color: 'var(--text-dim)' }}>
+                    SIGNAUX UTILISÉS : {signalsDesc.join(' · ')}
+                  </div>
+                )}
+                <div className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+                  <table className="w-full text-sm tabular">
+                    <thead>
+                      <tr style={{ background: 'var(--bg-elev)' }}>
+                        <th className="text-left font-mono text-[10px] tracking-widest px-3 py-2" style={{ color: 'var(--text-faint)' }}>SÉANCE</th>
+                        <th className="text-center font-mono text-[10px] tracking-widest px-2 py-2" style={{ color: 'var(--text-faint)', width: 50 }}>AXE</th>
+                        <th className="text-right font-mono text-[10px] tracking-widest px-3 py-2" style={{ color: 'var(--text-faint)' }}>% VMA</th>
+                        <th className="text-right font-mono text-[10px] tracking-widest px-3 py-2" style={{ color: 'var(--text-faint)' }}>ALLURE</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((r, i) => (
+                        <tr key={r.key} style={{ borderTop: i === 0 ? 'none' : '1px solid var(--border)' }}>
+                          <td className="px-3 py-2">
+                            <div style={{ color: 'var(--text)' }}>{r.label}</div>
+                            <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-faint)' }}>{r.hint}</div>
+                          </td>
+                          <td className="text-center px-2 py-2 font-mono text-[10px] tracking-widest" style={{ color: r.dominant === 'E' ? 'var(--compass)' : r.dominant === 'I' ? 'var(--accent)' : 'var(--text-faint)' }}>{r.dominant}</td>
+                          <td className="text-right px-3 py-2" style={{ color: 'var(--text-dim)' }}>{r.vmaPct != null ? `${r.vmaPct}%` : '—'}</td>
+                          <td className="text-right px-3 py-2 font-display font-bold" style={{ color: 'var(--text)' }}>{r.paceLow}–{r.paceHigh}<span className="font-mono text-[10px] ml-1" style={{ color: 'var(--text-faint)' }}>/km</span></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="text-[10px] mt-3 font-mono tracking-wide" style={{ color: 'var(--text-faint)' }}>
+                  AXE : E = endurance · I = intensité · mix = blend des deux selon zone.
+                </div>
+              </Card>
+            );
+          })()}
 
           {/* PRs */}
           <Card className="p-6 mb-4">
@@ -15374,6 +15477,7 @@
               // Triés du plus court/dosé au plus long, progression de la spé marathon
               const variants = [
                 { label: 'MP medley', detail: `${wUp(cp)} + 4×8' à ${rpW}W (R 2' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Allure marathon en fractions courtes (32\'), introduction du race-pace.' },
+                { label: 'Yasso 800', detail: `${wUp(cp)} + 8×800m à ${rpW}W (R 400m à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Format Yasso : 800m à allure marathon, prédicteur classique (Bart Yasso : N reps tenues = temps marathon estimé en h:min).' },
                 { label: 'Marathon-pace blocs', detail: `${wUp(cp)} + 2×15' à ${rpW}W (R 3' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Calage allure marathon sur fractions de 15\', 30\' cumulés.' },
                 { label: 'MP + lactate', detail: `${wUp(cp)} + 20' à ${rpW}W + 5' à ${tempoW}W + 10' à ${rpW}W + ${wDown(cp)}`, purpose: 'Bloc MP encadrant un pic de seuil — habitue à pousser dans la zone marathon, 30\' MP.' },
                 { label: 'MP continu long', detail: `${wUp(cp)} + 30' continus à ${rpW}W + ${wDown(cp)}`, purpose: 'Bloc continu de 30\' à allure marathon, dernière vérification pacing.' },
@@ -15508,7 +15612,7 @@
           const variants = [
             { label: 'Over-under VO2', detail: `${wUp(cp)} + 3×(3' à ${Math.round(cp*0.95)}W + 2' à ${Math.round(cp*1.10)}W) R 3' à ${Math.round(cp*0.70)}W + ${wDown(cp)}`, purpose: 'Alternance seuil/VO2max (15\' cumulés), redoutable mais format raisonnable.' },
             { label: 'Daniels I-pace', detail: `${wUp(cp)} + 5×3' à ${Math.round(cp*1.10)}W (R 2' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: '15\' cumulés à I-pace Daniels, VO2max pure.' },
-            { label: 'Yasso 800', detail: `${wUp(cp)} + 6×800m à ${Math.round(cp*1.10)}W (R 400m à ${Math.round(cp*0.65)}W) + ${wDown(cp)}`, purpose: 'Format culte 6×800m, prédicteur de marathon selon Yasso.' },
+            { label: 'VMA 800m', detail: `${wUp(cp)} + 6×800m à ${Math.round(cp*1.10)}W (R 400m à ${Math.round(cp*0.65)}W) + ${wDown(cp)}`, purpose: 'Format classique 6×800m à VMA, travail VO2max sur fractions médianes. (Note : ce n\'est PAS un Yasso 800 — le vrai Yasso se court à allure marathon, voir tempo en prépa marathon.)' },
             { label: 'Fraction 2\' dense', detail: `${wUp(cp)} + 8×2' à ${Math.round(cp*1.08)}W (R 90" à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Densité 8×2\' = 16\' cumulés au-dessus du seuil.' },
             { label: 'Fraction 3\'', detail: `${wUp(cp)} + 6×3' à ${Math.round(cp*1.05)}-${Math.round(cp*1.10)}W (R 2' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: '18\' cumulés en fractions de 3\', intermédiaire VO2-seuil.' },
             { label: 'Supra-seuil classique', detail: `${wUp(cp)} + 4×5' à ${Math.round(cp*1.02)}-${Math.round(cp*1.08)}W (R 3' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Pilier du build : 20\' au-dessus du seuil, pousse la CP.' },
@@ -15835,20 +15939,33 @@
     const PACE_SCAFFOLD_CP = 250;
 
     // ════════════════════════════════════════════════════════════════════════
-    // AEROBIC BASE — calibrates how zones spread for VMA-only users.
+    // AEROBIC BASE — two-axis model.
     //
-    // The classical "X % VMA" zone tables assume an average aerobic profile.
-    // But the same VMA hides very different bases : a runner with weak base
-    // can't hold 80 % VMA on a marathon, an elite holds 86 %.
+    // La VMA est la cylindrée du moteur, pas l'autonomie. Deux coureurs avec
+    // la même VMA peuvent avoir des allures marathon très différentes selon
+    // leur volume hebdo, leur expérience longue distance, leurs records.
     //
-    // Signals used, in order of reliability:
-    //   1. Observed median HR % on easy runs (most physiological)
-    //   2. Observed median pace on easy runs (terrain truth)
-    //   3. Typed easyPaceMinPerKm at signup (declaration)
+    // On calcule donc DEUX scores ∈ [0, 1] :
     //
-    // The score lives in [0, 1] : 0 = weak base, 0.5 = average, 1 = strong.
-    // It drives `vmaFracFromCpFrac` which interpolates between weak/strong
-    // anchor tables, so marathon target slides from 65 % VMA to 86 % VMA.
+    //   enduranceScore — capacité longue distance (drive marathon/long/EA)
+    //     - Signal A : volume hebdo médian sur 6-8 semaines (poids 50 %)
+    //     - Signal B : sortie longue la plus longue récente   (poids 30 %)
+    //     - Signal C : coef Cazorla du PR le plus long ≤12 mois (poids 20 %)
+    //     Fallback : si aucune activité, on retombe sur paceScore plafonné.
+    //
+    //   intensityScore — capacité haute intensité (drive seuil/VMA/30-30)
+    //     - Signal A : ratio footing/VMA + %FC sur footing (poids 60 %)
+    //     - Signal B : coef Cazorla du PR court ≤12 mois     (poids 40 %)
+    //     Sans observations : paceScore plafonné à 0.6 (le footing déclaré
+    //     seul ne prouve pas la VO2max).
+    //
+    // Le mapping cpFrac → vmaFrac utilise enduranceScore à cpFrac ≤ 0.85
+    // (marathon), intensityScore à cpFrac ≥ 1.10 (VMA pure), blend linéaire
+    // entre les deux. Résultat : un coureur à faible volume voit son marathon
+    // assigné à 70-75 % VMA (réaliste) mais ses 30/30 restent à 100 % VMA.
+    //
+    // Le champ legacy `score = (endurance + intensity) / 2` est conservé
+    // pour la compat des callers qui n'ont pas encore migré.
     // ════════════════════════════════════════════════════════════════════════
 
     // Filters activities to "easy" runs done in the last 8 weeks.
@@ -15886,55 +16003,296 @@
       return pcts[Math.floor(pcts.length / 2)];
     }
 
-    // Aerobic base score in [0, 1]. Blends pace (40 %) + HR (60 %) when HR
-    // data is available, otherwise pace alone. Returns extra metadata so the
-    // UI can show a "base détectée" badge + source.
+    // Median weekly km over last 8 weeks. Null if <3 weeks of data.
+    // Volume hebdo est LE prédicteur principal de l'allure marathon — bien
+    // plus fiable que le ratio footing/VMA.
+    function deriveWeeklyVolumeKm(activities) {
+      if (!Array.isArray(activities) || activities.length === 0) return null;
+      const cutoffMs = Date.now() - 8 * 7 * 86400000;
+      const byWeek = {};
+      for (const a of activities) {
+        if (!a || !a.startMs || a.startMs < cutoffMs || !a.distanceMeters) continue;
+        const d = new Date(a.startMs);
+        const dayOfWeek = (d.getDay() + 6) % 7; // Lundi = 0
+        const weekStart = new Date(d);
+        weekStart.setDate(d.getDate() - dayOfWeek);
+        weekStart.setHours(0, 0, 0, 0);
+        const key = weekStart.getTime();
+        byWeek[key] = (byWeek[key] || 0) + (a.distanceMeters / 1000);
+      }
+      const weeks = Object.values(byWeek).sort((a, b) => a - b);
+      if (weeks.length < 3) return null;
+      return weeks[Math.floor(weeks.length / 2)];
+    }
+
+    // Maps weekly km to a [0, 1] score. Calé sur la littérature Pfitzinger/Daniels :
+    //   <25 km : pas une base marathon → 0.05
+    //   25-40 : loisir → 0.05-0.15
+    //   40-60 : amateur sérieux → 0.15-0.35
+    //   60-80 : amateur compétitif → 0.35-0.55
+    //   80-100 : confirmé → 0.55-0.75
+    //   100-130 : élite amateur → 0.75-0.95
+    function volumeScoreFromKm(km) {
+      if (km == null || !isFinite(km)) return null;
+      if (km <= 25) return 0.05;
+      if (km <= 40) return 0.05 + (km - 25) / 15 * 0.10;
+      if (km <= 60) return 0.15 + (km - 40) / 20 * 0.20;
+      if (km <= 80) return 0.35 + (km - 60) / 20 * 0.20;
+      if (km <= 100) return 0.55 + (km - 80) / 20 * 0.20;
+      return Math.min(0.95, 0.75 + (km - 100) / 30 * 0.20);
+    }
+
+    // Longest single-run duration (min) in the last 8 weeks. Null if no data.
+    function deriveLongestRunMin(activities) {
+      if (!Array.isArray(activities) || activities.length === 0) return null;
+      const cutoffMs = Date.now() - 8 * 7 * 86400000;
+      let max = 0;
+      for (const a of activities) {
+        if (!a || !a.startMs || a.startMs < cutoffMs || !a.durationSec) continue;
+        if (a.durationSec > max) max = a.durationSec;
+      }
+      return max > 0 ? max / 60 : null;
+    }
+
+    // Maps longest-run minutes to a [0, 1] score. Repères marathon :
+    //   <60' : pas de fond → 0.05
+    //   60-90 : initiation → 0.05-0.20
+    //   90-120 : 10K-friendly → 0.20-0.40
+    //   120-150 : semi-friendly → 0.40-0.60
+    //   150-180 : marathon-ready entry → 0.60-0.80
+    //   180-240 : marathon-ready solid → 0.80-0.95
+    function longRunScoreFromMin(min) {
+      if (min == null || !isFinite(min)) return null;
+      if (min < 60) return 0.05;
+      if (min <= 90) return 0.05 + (min - 60) / 30 * 0.15;
+      if (min <= 120) return 0.20 + (min - 90) / 30 * 0.20;
+      if (min <= 150) return 0.40 + (min - 120) / 30 * 0.20;
+      if (min <= 180) return 0.60 + (min - 150) / 30 * 0.20;
+      if (min <= 240) return 0.80 + (min - 180) / 60 * 0.15;
+      return 0.95;
+    }
+
+    // PR Cazorla : pour chaque distance, plage typique du coefficient
+    // (speed / VMA) entre un coureur faible et un coureur élite à VMA donnée.
+    // Plus on s'approche du haut, plus le coureur est efficient à cette
+    // distance — pour le marathon ça reflète l'aérobie de fond, pour le 5K
+    // la VO2max.
+    const PR_CAZORLA_RANGES = {
+      '5k':       [0.80, 0.97],
+      '10k':      [0.75, 0.93],
+      'semi':     [0.70, 0.88],
+      'marathon': [0.65, 0.83],
+    };
+    const PR_DISTANCE_KM = { '5k': 5, '10k': 10, 'semi': 21.0975, 'marathon': 42.195 };
+
+    function parsePrTimeSec(t) {
+      if (!t) return null;
+      const s = String(t).trim();
+      const parts = s.split(':').map(p => parseInt(p, 10));
+      if (parts.some(p => !Number.isFinite(p))) return null;
+      if (parts.length === 2) return parts[0] * 60 + parts[1];
+      if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+      return null;
+    }
+
+    // Calcule un score Cazorla par PR (≤12 mois), puis sélectionne :
+    //   endurance : PR de la plus longue distance disponible (marathon > semi > 10K > 5K)
+    //   intensity : PR de la plus courte distance (5K > 10K > semi)
+    // Renvoie aussi le détail signal par signal pour l'UI.
+    function derivePrScores(profile, vma) {
+      const out = { endurance: null, enduranceSource: null, intensity: null, intensitySource: null, signals: {} };
+      if (!profile || !vma || !profile.prs) return out;
+      const now = Date.now();
+      const cutoffMs = 365 * 86400000; // 12 mois
+      const dates = profile.prsDates || {};
+      for (const key of ['5k', '10k', 'semi', 'marathon']) {
+        const timeSec = parsePrTimeSec(profile.prs[key]);
+        if (!timeSec || timeSec <= 0) continue;
+        const dateStr = dates[key];
+        if (dateStr) {
+          const ageMs = now - new Date(dateStr + 'T00:00:00').getTime();
+          if (ageMs > cutoffMs) continue;
+        }
+        const speedKmh = (PR_DISTANCE_KM[key] / timeSec) * 3600;
+        const coef = speedKmh / vma;
+        const [weak, strong] = PR_CAZORLA_RANGES[key];
+        const score = Math.max(0, Math.min(1, (coef - weak) / (strong - weak)));
+        out.signals[key] = {
+          coef: Math.round(coef * 1000) / 1000,
+          score: Math.round(score * 100) / 100,
+          fresh: true,
+        };
+      }
+      for (const key of ['marathon', 'semi', '10k', '5k']) {
+        if (out.signals[key]) { out.endurance = out.signals[key].score; out.enduranceSource = key; break; }
+      }
+      for (const key of ['5k', '10k', 'semi']) {
+        if (out.signals[key]) { out.intensity = out.signals[key].score; out.intensitySource = key; break; }
+      }
+      return out;
+    }
+
+    // Two-axis aerobic base. Retourne enduranceScore + intensityScore + signaux
+    // détaillés. Le champ legacy `score` (= moyenne des deux) reste pour la
+    // compat des callers qui n'ont pas encore migré.
     function deriveAerobicBaseScore(profile, activities = []) {
-      const out = { score: 0.5, source: 'neutral', paceScore: null, hrScore: null, observedPace: null, observedHrPct: null, easyCount: 0, hrCount: 0 };
+      const out = {
+        score: 0.5,
+        enduranceScore: 0.5,
+        intensityScore: 0.5,
+        source: 'neutral',
+        enduranceSources: [],
+        intensitySources: [],
+        signals: {
+          weeklyKm: null, weeklyKmScore: null,
+          longestRunMin: null, longestRunScore: null,
+          observedPace: null, paceScore: null, easyCount: 0,
+          observedHrPct: null, hrScore: null, hrCount: 0,
+          prCazorla: {},
+        },
+        // Legacy fields (kept for backward compat with old UI/log code)
+        paceScore: null, hrScore: null,
+        observedPace: null, observedHrPct: null,
+        easyCount: 0, hrCount: 0,
+        conflict: false,
+      };
       if (!profile || !profile.vma) return out;
       const vma = profile.vma;
 
+      // — Endurance signals —
+      const weeklyKm = deriveWeeklyVolumeKm(activities);
+      const longestRunMin = deriveLongestRunMin(activities);
+      const weeklyKmScore = volumeScoreFromKm(weeklyKm);
+      const longestRunScore = longRunScoreFromMin(longestRunMin);
+      out.signals.weeklyKm = weeklyKm;
+      out.signals.weeklyKmScore = weeklyKmScore;
+      out.signals.longestRunMin = longestRunMin;
+      out.signals.longestRunScore = longestRunScore;
+
+      // — Intensity signals (pace + HR observed) —
       const observedPace = deriveObservedEasyPace(activities, vma);
       const easyCount = filterRecentEasyActivities(activities, vma).length;
       const easyPace = observedPace || profile.easyPaceMinPerKm;
+      out.signals.observedPace = observedPace;
+      out.signals.easyCount = easyCount;
       out.observedPace = observedPace;
       out.easyCount = easyCount;
 
+      let paceScore = null;
       if (easyPace) {
         const easySpeed = 60 / easyPace;
         const ratio = easySpeed / vma;
-        // ratio 0.60 → 1.0 (wide range / strong) ; 0.80 → 0.0 (narrow / weak)
-        out.paceScore = Math.max(0, Math.min(1, 1 - (ratio - 0.60) / 0.20));
+        paceScore = Math.max(0, Math.min(1, 1 - (ratio - 0.60) / 0.20));
       }
+      out.signals.paceScore = paceScore;
+      out.paceScore = paceScore;
 
+      let hrScore = null;
+      let hrCount = 0;
+      let observedHrPct = null;
       if (profile.fcMax) {
-        const hrPct = deriveObservedEasyHrPct(activities, profile.fcMax, vma);
-        const hrEasy = filterRecentEasyActivities(activities, vma).filter(a => a.avgHr && a.avgHr > 80 && a.avgHr < profile.fcMax * 1.05);
-        out.observedHrPct = hrPct;
-        out.hrCount = hrEasy.length;
-        if (hrPct != null) {
-          // 65 % → 1.0, 72 % → 0.75, 78 % → 0.50, 85 % → 0.20, ≥88 % → 0.05
+        observedHrPct = deriveObservedEasyHrPct(activities, profile.fcMax, vma);
+        const hrEasy = filterRecentEasyActivities(activities, vma)
+          .filter(a => a.avgHr && a.avgHr > 80 && a.avgHr < profile.fcMax * 1.05);
+        hrCount = hrEasy.length;
+        if (observedHrPct != null) {
           let s;
-          if (hrPct <= 0.65) s = 1.0;
-          else if (hrPct <= 0.72) s = 1.0 - (hrPct - 0.65) / 0.07 * 0.25;
-          else if (hrPct <= 0.78) s = 0.75 - (hrPct - 0.72) / 0.06 * 0.25;
-          else if (hrPct <= 0.85) s = 0.50 - (hrPct - 0.78) / 0.07 * 0.30;
-          else if (hrPct <= 0.88) s = 0.20 - (hrPct - 0.85) / 0.03 * 0.15;
+          if (observedHrPct <= 0.65) s = 1.0;
+          else if (observedHrPct <= 0.72) s = 1.0 - (observedHrPct - 0.65) / 0.07 * 0.25;
+          else if (observedHrPct <= 0.78) s = 0.75 - (observedHrPct - 0.72) / 0.06 * 0.25;
+          else if (observedHrPct <= 0.85) s = 0.50 - (observedHrPct - 0.78) / 0.07 * 0.30;
+          else if (observedHrPct <= 0.88) s = 0.20 - (observedHrPct - 0.85) / 0.03 * 0.15;
           else s = 0.05;
-          out.hrScore = Math.max(0, Math.min(1, s));
+          hrScore = Math.max(0, Math.min(1, s));
         }
       }
+      out.signals.hrScore = hrScore;
+      out.signals.hrCount = hrCount;
+      out.signals.observedHrPct = observedHrPct;
+      out.hrScore = hrScore;
+      out.hrCount = hrCount;
+      out.observedHrPct = observedHrPct;
 
-      if (out.paceScore != null && out.hrScore != null) {
-        out.score = 0.4 * out.paceScore + 0.6 * out.hrScore;
-        out.source = observedPace ? 'observed_pace_hr' : 'typed_pace_hr';
-      } else if (out.paceScore != null) {
-        out.score = out.paceScore;
-        out.source = observedPace ? 'observed_pace' : 'typed_pace';
+      // — PR signals (Cazorla) —
+      const prScores = derivePrScores(profile, vma);
+      out.signals.prCazorla = prScores.signals;
+
+      // — Blend endurance —
+      // Priorités : volume hebdo (50 %) > longue (30 %) > PR Cazorla long (20 %).
+      // Fallback si aucune activité : on retombe sur le pace+HR mais plafonné
+      // à 0.5 — l'aérobie de fond ne peut pas être déduite uniquement d'un
+      // ratio footing/VMA sans observations de volume.
+      const endWeights = [];
+      if (weeklyKmScore != null) endWeights.push({ score: weeklyKmScore, weight: 0.50, source: 'weekly_km' });
+      if (longestRunScore != null) endWeights.push({ score: longestRunScore, weight: 0.30, source: 'longest_run' });
+      if (prScores.endurance != null) endWeights.push({ score: prScores.endurance, weight: 0.20, source: 'pr_' + prScores.enduranceSource });
+
+      if (endWeights.length > 0) {
+        const totalW = endWeights.reduce((s, x) => s + x.weight, 0);
+        out.enduranceScore = endWeights.reduce((s, x) => s + x.score * x.weight, 0) / totalW;
+        out.enduranceSources = endWeights.map(x => x.source);
+      } else if (paceScore != null || hrScore != null) {
+        // Pas d'activités importées : on ne peut PAS déduire l'aérobie de
+        // fond du seul footing déclaré. Fallback très conservateur :
+        // pace × 0.4 (lourdement décoté), plafonné à 0.4. Pour un coureur
+        // qui déclare un footing à 5:40/km avec VMA 17 (raw paceScore 0.89),
+        // ça donne 0.36 → marathon à ~75 % VMA = 4:46/km, beaucoup plus
+        // réaliste qu'un débutant à 4:30/km. Dès qu'il importe 3+ semaines
+        // de courses, le volume prend le relais.
+        const fallbackBase = (paceScore != null && hrScore != null)
+          ? 0.4 * paceScore + 0.6 * hrScore
+          : (paceScore != null ? paceScore : hrScore);
+        out.enduranceScore = Math.min(0.4, fallbackBase * 0.4);
+        out.enduranceSources = ['fallback_declared'];
       }
 
-      // Conflict flag : pace says strong, HR says weak (or vice versa)
-      out.conflict = (out.paceScore != null && out.hrScore != null && Math.abs(out.paceScore - out.hrScore) > 0.4);
+      // — Blend intensity —
+      // Priorités : FC easy (60 %) > PR court (40 %) > pace ratio (30 % en
+      // dernier recours).
+      //
+      // Pourquoi pace en dernier ? Le ratio footing/VMA est un signal bruité :
+      //   - footing lent peut être un choix conservateur (ratio bas ≠ base forte)
+      //   - footing rapide peut être la signature d'un élite qui pousse à 75 %
+      //     VMA en récup (ratio haut ≠ base faible)
+      // Sans signal complémentaire (HR, PR), on contraint le pace dans [0.4, 0.6]
+      // pour éviter les valeurs extrêmes infondées.
+      const intWeights = [];
+      if (paceScore != null && hrScore != null) {
+        // FC + pace ensemble : la FC vérifie le pace (cohérents → fiable).
+        intWeights.push({ score: 0.3 * paceScore + 0.7 * hrScore, weight: 0.60, source: observedPace ? 'observed_pace_hr' : 'typed_pace_hr' });
+      } else if (hrScore != null) {
+        intWeights.push({ score: hrScore, weight: 0.60, source: 'hr_only' });
+      } else if (paceScore != null) {
+        // Pace seul : signal faible, contraint dans [0.4, 0.6] (neutre étendu).
+        const constrained = Math.max(0.4, Math.min(0.6, paceScore));
+        intWeights.push({ score: constrained, weight: 0.30, source: observedPace ? 'observed_pace' : 'typed_pace' });
+      }
+      if (prScores.intensity != null) {
+        intWeights.push({ score: prScores.intensity, weight: 0.40, source: 'pr_' + prScores.intensitySource });
+      }
+
+      if (intWeights.length > 0) {
+        const totalW = intWeights.reduce((s, x) => s + x.weight, 0);
+        out.intensityScore = intWeights.reduce((s, x) => s + x.score * x.weight, 0) / totalW;
+        out.intensitySources = intWeights.map(x => x.source);
+      }
+
+      // Legacy combined score (moyenne pondérée).
+      out.score = (out.enduranceScore + out.intensityScore) / 2;
+
+      // Source label pour l'UI (l'ancien `source` reste pour compat).
+      if (out.enduranceSources.length > 0 && out.intensitySources.length > 0) out.source = 'two-axis';
+      else if (out.enduranceSources.length > 0) out.source = 'endurance-only';
+      else if (out.intensitySources.length > 0) {
+        const s0 = out.intensitySources[0];
+        if (s0 === 'observed_pace_hr' || s0 === 'typed_pace_hr') out.source = s0;
+        else if (s0 === 'observed_pace') out.source = 'observed_pace';
+        else if (s0 === 'typed_pace') out.source = 'typed_pace';
+        else out.source = s0;
+      }
+
+      // Conflict flag (legacy)
+      out.conflict = (paceScore != null && hrScore != null && Math.abs(paceScore - hrScore) > 0.4);
 
       return out;
     }
@@ -15991,53 +16349,108 @@
       return 0.75;
     }
 
-    // 3-anchor physiological model :
-    //   - cpFrac 0.72 → easyVmaFrac (the user's declared/observed easy ratio)
-    //   - cpFrac 1.00 → cpVmaFrac (CP, from weak/strong table at aerobicScore)
-    //   - cpFrac 1.20 → 1.00 (VMA-pure, by definition)
-    // Linear interpolation between anchors. Below 0.72 we extrapolate with the
-    // 0.72→1.00 slope so récup/cooldown end up SLOWER than the declared easy
-    // pace, which is the whole point of the model.
+    // 4-anchor hybrid physiological model :
+    //   - cpFrac 0.72 → easyVmaFrac    (USER : footing déclaré, respecte sa réalité)
+    //   - cpFrac 0.85 → marathonVmaFrac (Cottereau/Cazorla weak↔strong à son score)
+    //   - cpFrac 1.00 → cpVmaFrac       (Cottereau/Cazorla à son score)
+    //   - cpFrac 1.20 → vmaPureFrac     (table Cottereau à son score, ≥1.00 pour
+    //                                    permettre de vraies séances VMA/30-30)
     //
-    // Why this over the old weak/strong table : the table predicted easy pace
-    // from aerobic score, ignoring the pace the user actually typed. A user
-    // declaring 5:40/km could end up with a "récup" target at 5:17/km — faster
-    // than their own footing. Anchoring on the declared pace eliminates that.
-    const EASY_ANCHOR_CP = 0.72;
-    const CP_ANCHOR_CP   = 1.00;
-    const VMA_ANCHOR_CP  = 1.20;
+    // Linear interpolation entre ancrages. Le bas du spectre (récup, footing,
+    // long lent) respecte le footing déclaré ; le haut (marathon, seuil, VMA,
+    // Yasso) est calé sur les références scientifiques Cottereau / Cazorla.
+    // C'est le compromis « réalité personnelle + standard pro » :
+    //   - évite le bug « récup plus rapide que footing » (pure Cottereau)
+    //   - évite « Yasso trop lent à cause d'un footing conservateur » (3-anchor)
+    //   - évite la compression du haut où cpFrac 1.15 plafonnait à ~98 % VMA
+    //     (Billat 30/30 → vraiment à VMA, pas en dessous)
+    //
+    // Références :
+    //   Cazorla G., Léger L., Marini J.F. — VAM et pourcentages d'utilisation
+    //   Cottereau D. — Tables % VMA par distance (FFA)
+    //   Daniels J. — VDOT tables (US, mêmes ratios E/M/T/I/R)
+    const EASY_ANCHOR_CP     = 0.72;
+    const MARATHON_ANCHOR_CP = 0.85;
+    const CP_ANCHOR_CP       = 1.00;
+    const VMA_ANCHOR_CP      = 1.20;
 
-    function vmaFracFromCpFrac(cpFrac, aerobicScore = 0.5, easyVmaFrac = null) {
-      // No personal anchor → use original weak/strong table.
+    // Normalise un paramètre score : accepte un nombre (legacy, même score pour
+    // endurance et intensité) OU un objet {endurance, intensity} (two-axis model).
+    // Retourne { endurance, intensity } toujours en [0, 1].
+    function normalizeScores(s) {
+      if (s == null) return { endurance: 0.5, intensity: 0.5 };
+      if (typeof s === 'number') return { endurance: s, intensity: s };
+      if (typeof s === 'object') {
+        return {
+          endurance: (s.endurance != null && isFinite(s.endurance)) ? s.endurance
+                     : (s.enduranceScore != null && isFinite(s.enduranceScore)) ? s.enduranceScore
+                     : (s.score != null && isFinite(s.score)) ? s.score : 0.5,
+          intensity: (s.intensity != null && isFinite(s.intensity)) ? s.intensity
+                     : (s.intensityScore != null && isFinite(s.intensityScore)) ? s.intensityScore
+                     : (s.score != null && isFinite(s.score)) ? s.score : 0.5,
+        };
+      }
+      return { endurance: 0.5, intensity: 0.5 };
+    }
+
+    // Two-axis aware : utilise enduranceScore à cpFrac ≤ 0.85 (marathon),
+    // intensityScore à cpFrac ≥ 1.10 (VMA pure), blend linéaire entre les deux.
+    // Les ancrages eux-mêmes (marathonVmaFrac, vmaPureFrac…) sont aussi calculés
+    // avec le bon score pour respecter la physiologie de chaque zone.
+    function vmaFracFromCpFrac(cpFrac, scoresParam = 0.5, easyVmaFrac = null) {
+      const { endurance, intensity } = normalizeScores(scoresParam);
+
+      // Score effectif pour la table pure (fallback sans easy anchor).
+      // Marathon-zone = endurance ; VMA-zone = intensity ; entre 0.85 et 1.10
+      // on blend linéairement pour une transition lisse.
+      function effectiveScore(cf) {
+        if (cf <= MARATHON_ANCHOR_CP) return endurance;
+        if (cf >= 1.10) return intensity;
+        const t = (cf - MARATHON_ANCHOR_CP) / (1.10 - MARATHON_ANCHOR_CP);
+        return endurance + t * (intensity - endurance);
+      }
+
+      // No personal anchor → table pure avec score blend selon cpFrac.
       if (easyVmaFrac == null || !isFinite(easyVmaFrac)) {
-        return vmaFracFromCpFracTable(cpFrac, aerobicScore);
+        return vmaFracFromCpFracTable(cpFrac, effectiveScore(cpFrac));
       }
 
-      const cpVmaFrac = vmaFracFromCpFracTable(CP_ANCHOR_CP, aerobicScore);
-      const vmaPureFrac = 1.00;
+      // Ancrages calculés chacun avec son score « naturel » :
+      //   - marathonVmaFrac à cpFrac=0.85 → endurance
+      //   - vmaPureFrac à cpFrac=1.20    → intensity
+      //   - cpVmaFrac à cpFrac=1.00      → blend (zone transitionnelle)
+      const marathonVmaFrac = vmaFracFromCpFracTable(MARATHON_ANCHOR_CP, endurance);
+      const cpVmaFrac       = vmaFracFromCpFracTable(CP_ANCHOR_CP, effectiveScore(CP_ANCHOR_CP));
+      const vmaPureFrac     = Math.max(1.00, vmaFracFromCpFracTable(VMA_ANCHOR_CP, intensity));
 
-      // Safety : if declared easy is faster than CP minus a small margin,
-      // the curve would be non-monotonic. Fall back to the table.
-      if (easyVmaFrac >= cpVmaFrac - 0.03) {
-        return vmaFracFromCpFracTable(cpFrac, aerobicScore);
+      // Safety : si easy déclaré ≥ marathon Cottereau, la courbe deviendrait
+      // non monotone (footing prescrit plus rapide que marathon). On retombe
+      // sur la table pure — cas d'un athlète qui déclare un footing au-dessus
+      // de la zone EF, signe d'une VMA sous-estimée.
+      if (easyVmaFrac >= marathonVmaFrac - 0.03) {
+        return vmaFracFromCpFracTable(cpFrac, effectiveScore(cpFrac));
       }
 
-      const slopeLow = (cpVmaFrac - easyVmaFrac) / (CP_ANCHOR_CP - EASY_ANCHOR_CP);
-      const slopeHigh = (vmaPureFrac - cpVmaFrac) / (VMA_ANCHOR_CP - CP_ANCHOR_CP);
+      const slopeEasyMara = (marathonVmaFrac - easyVmaFrac) / (MARATHON_ANCHOR_CP - EASY_ANCHOR_CP);
+      const slopeMaraCP   = (cpVmaFrac - marathonVmaFrac) / (CP_ANCHOR_CP - MARATHON_ANCHOR_CP);
+      const slopeCpVma    = (vmaPureFrac - cpVmaFrac) / (VMA_ANCHOR_CP - CP_ANCHOR_CP);
 
       if (cpFrac <= EASY_ANCHOR_CP) {
-        // Extrapolation below easy : keep the 0.72→1.00 slope.
-        const v = easyVmaFrac + (cpFrac - EASY_ANCHOR_CP) * slopeLow;
-        return Math.max(0.30, v); // floor at 30 % VMA to avoid absurd paces
+        // Extrapolation sous easy : pente easy→marathon (assure récup < easy).
+        const v = easyVmaFrac + (cpFrac - EASY_ANCHOR_CP) * slopeEasyMara;
+        return Math.max(0.30, v);
+      }
+      if (cpFrac <= MARATHON_ANCHOR_CP) {
+        return easyVmaFrac + (cpFrac - EASY_ANCHOR_CP) * slopeEasyMara;
       }
       if (cpFrac <= CP_ANCHOR_CP) {
-        return easyVmaFrac + (cpFrac - EASY_ANCHOR_CP) * slopeLow;
+        return marathonVmaFrac + (cpFrac - MARATHON_ANCHOR_CP) * slopeMaraCP;
       }
       if (cpFrac <= VMA_ANCHOR_CP) {
-        return cpVmaFrac + (cpFrac - CP_ANCHOR_CP) * slopeHigh;
+        return cpVmaFrac + (cpFrac - CP_ANCHOR_CP) * slopeCpVma;
       }
-      // Above VMA : extrapolate with the 1.00→1.20 slope.
-      return vmaPureFrac + (cpFrac - VMA_ANCHOR_CP) * slopeHigh;
+      // Au-dessus de VMA : extrapolation pente CP→VMA.
+      return vmaPureFrac + (cpFrac - VMA_ANCHOR_CP) * slopeCpVma;
     }
 
     // Helper : computes easyVmaFrac from a declared/observed easy pace.
@@ -16054,10 +16467,13 @@
     // VMA + aerobic base. When easyPaceMinPerKm is provided, the curve is
     // anchored on that declared/observed easy pace so all other zones are
     // coherent with what the user actually runs.
-    function paceForIntensity(cpFrac, vma, aerobicScore = 0.5, easyPaceMinPerKm = null) {
+    //
+    // scores : nombre (legacy, même score partout) OU objet {endurance, intensity}
+    // (two-axis : endurance drive marathon/long, intensity drive VMA/seuil).
+    function paceForIntensity(cpFrac, vma, scores = 0.5, easyPaceMinPerKm = null) {
       if (!vma) return null;
       const easyVmaFrac = easyVmaFracFromPace(easyPaceMinPerKm, vma);
-      const vmaFrac = vmaFracFromCpFrac(cpFrac, aerobicScore, easyVmaFrac);
+      const vmaFrac = vmaFracFromCpFrac(cpFrac, scores, easyVmaFrac);
       const speedKmH = vma * vmaFrac;
       return 3600 / speedKmH;
     }
@@ -16081,46 +16497,53 @@
       return 0.75;
     }
 
-    // Inverse of paceForIntensity : given a pace, profile (vma + easy + score),
-    // returns the cpFrac (intensity fraction) it corresponds to. Used by
-    // recalibratePlanForPace to preserve a block's relative intensity when the
-    // user's VMA or easy pace changes.
-    function cpFracFromPace(paceSec, vma, aerobicScore = 0.5, easyPaceMinPerKm = null) {
+    // Inverse 4-ancrages de paceForIntensity : pace → cpFrac.
+    // scores : nombre (legacy) ou objet {endurance, intensity} (two-axis).
+    function cpFracFromPace(paceSec, vma, scores = 0.5, easyPaceMinPerKm = null) {
       if (!paceSec || !vma) return null;
       const vmaFrac = (3600 / paceSec) / vma;
       if (!isFinite(vmaFrac) || vmaFrac <= 0) return null;
+      const { endurance, intensity } = normalizeScores(scores);
       const easyVmaFrac = easyVmaFracFromPace(easyPaceMinPerKm, vma);
       if (easyVmaFrac != null) {
-        const cpVmaFrac = vmaFracFromCpFracTable(CP_ANCHOR_CP, aerobicScore);
-        // Only use 3-anchor inverse if the model was actually active
-        // (consistent declared easy — same guard as the forward function).
-        if (easyVmaFrac < cpVmaFrac - 0.03) {
-          const slopeLow = (cpVmaFrac - easyVmaFrac) / (CP_ANCHOR_CP - EASY_ANCHOR_CP);
-          const slopeHigh = (1.00 - cpVmaFrac) / (VMA_ANCHOR_CP - CP_ANCHOR_CP);
+        const marathonVmaFrac = vmaFracFromCpFracTable(MARATHON_ANCHOR_CP, endurance);
+        // cpVmaFrac à cpFrac=1.00 utilise le score « blend » (zone transitionnelle).
+        const blend100 = endurance + (1.00 - MARATHON_ANCHOR_CP) / (1.10 - MARATHON_ANCHOR_CP) * (intensity - endurance);
+        const cpVmaFrac       = vmaFracFromCpFracTable(CP_ANCHOR_CP, blend100);
+        // Active uniquement si modèle 4-ancrages cohérent (cf. guard du forward)
+        if (easyVmaFrac < marathonVmaFrac - 0.03) {
+          const vmaPureFrac   = Math.max(1.00, vmaFracFromCpFracTable(VMA_ANCHOR_CP, intensity));
+          const slopeEasyMara = (marathonVmaFrac - easyVmaFrac) / (MARATHON_ANCHOR_CP - EASY_ANCHOR_CP);
+          const slopeMaraCP   = (cpVmaFrac - marathonVmaFrac) / (CP_ANCHOR_CP - MARATHON_ANCHOR_CP);
+          const slopeCpVma    = (vmaPureFrac - cpVmaFrac) / (VMA_ANCHOR_CP - CP_ANCHOR_CP);
+          if (vmaFrac <= marathonVmaFrac) {
+            return EASY_ANCHOR_CP + (vmaFrac - easyVmaFrac) / slopeEasyMara;
+          }
           if (vmaFrac <= cpVmaFrac) {
-            // Below CP (covers récup/footing/marathon/tempo) — extrapolation
-            // is linear with slopeLow from (EASY_ANCHOR_CP, easyVmaFrac).
-            return EASY_ANCHOR_CP + (vmaFrac - easyVmaFrac) / slopeLow;
+            return MARATHON_ANCHOR_CP + (vmaFrac - marathonVmaFrac) / slopeMaraCP;
           }
-          if (vmaFrac <= 1.00) {
-            return CP_ANCHOR_CP + (vmaFrac - cpVmaFrac) / slopeHigh;
+          if (vmaFrac <= vmaPureFrac) {
+            return CP_ANCHOR_CP + (vmaFrac - cpVmaFrac) / slopeCpVma;
           }
-          return VMA_ANCHOR_CP + (vmaFrac - 1.00) / slopeHigh;
+          return VMA_ANCHOR_CP + (vmaFrac - vmaPureFrac) / slopeCpVma;
         }
       }
-      return cpFracFromVmaFracTable(vmaFrac, aerobicScore);
+      // Fallback table-pure : on utilise le score « moyen » comme approximation
+      // (l'inversion exacte par zone serait coûteuse pour un fallback rare).
+      return cpFracFromVmaFracTable(vmaFrac, (endurance + intensity) / 2);
     }
 
     // Builds a power→pace table where each entry's pace comes from VMA scaled
     // by the aerobic base score AND anchored on the user's declared easy pace
     // when available (otherwise falls back to weak/strong interpolation only).
-    function buildVirtualPpt(profile, scaffoldCP, aerobicScore = 0.5, easyPaceOverride = null) {
+    // scores : nombre (legacy) ou objet {endurance, intensity} (two-axis).
+    function buildVirtualPpt(profile, scaffoldCP, scores = 0.5, easyPaceOverride = null) {
       if (!scaffoldCP || !profile || !profile.vma) return [];
       const vma = profile.vma;
       const easyPace = easyPaceOverride || profile.easyPaceMinPerKm || null;
       const ppt = VMA_FRAC_ANCHORS.map(([cpFrac]) => {
         const power = Math.round(scaffoldCP * cpFrac);
-        const paceSecPerKm = Math.round(paceForIntensity(cpFrac, vma, aerobicScore, easyPace));
+        const paceSecPerKm = Math.round(paceForIntensity(cpFrac, vma, scores, easyPace));
         return { power, paceSecPerKm, date: null };
       });
       return ppt.sort((a, b) => a.power - b.power);
@@ -16958,7 +17381,7 @@
       // pour faire tourner le moteur watt-based ; le pace réel sort de VMA + score.
       const paceMode = (profile.unitMode === 'pace' && !!profile.vma) || (!profile.cp && !!profile.vma);
       const aerobicBase = useMemo(() => deriveAerobicBaseScore(profile, activities || []), [profile, activities]);
-      const virtualPpt = useMemo(() => buildVirtualPpt(profile, PACE_SCAFFOLD_CP, aerobicBase.score, aerobicBase.observedPace || profile.easyPaceMinPerKm), [profile, aerobicBase.score, aerobicBase.observedPace]);
+      const virtualPpt = useMemo(() => buildVirtualPpt(profile, PACE_SCAFFOLD_CP, { endurance: aerobicBase.enduranceScore, intensity: aerobicBase.intensityScore }, aerobicBase.observedPace || profile.easyPaceMinPerKm), [profile, aerobicBase.enduranceScore, aerobicBase.intensityScore, aerobicBase.observedPace]);
       const effectiveCp = paceMode ? PACE_SCAFFOLD_CP : profile.cp;
       const effectivePpt = paceMode ? virtualPpt : (hasHistory ? powerPaceTable : virtualPpt);
 
@@ -18145,12 +18568,14 @@
           confirmLabel: 'Recalibrer',
         });
         if (ok) {
-          // Use a single aerobic score for both old/new : the score is mostly
-          // driven by observed activity HR/pace, which doesn't change just
-          // because the user updated their declared values.
-          const score = deriveAerobicBaseScore({ ...profile, vma: newVma, easyPaceMinPerKm: newEasy }, activities || []).score;
-          const oldCtx = { vma: oldVma, easyPace: oldEasy, score };
-          const newCtx = { vma: newVma, easyPace: newEasy, score };
+          // Two-axis aerobic : on partage le même objet de scores entre old/new
+          // — les scores sont surtout drivés par l'activité observée (volume,
+          // longue, FC, PR) qui ne change pas juste parce que l'utilisateur a
+          // mis à jour ses valeurs déclarées.
+          const aerobic = deriveAerobicBaseScore({ ...profile, vma: newVma, easyPaceMinPerKm: newEasy }, activities || []);
+          const scores = { endurance: aerobic.enduranceScore, intensity: aerobic.intensityScore };
+          const oldCtx = { vma: oldVma, easyPace: oldEasy, scores };
+          const newCtx = { vma: newVma, easyPace: newEasy, scores };
           if (futureOverridesCount > 0) setPlanOverrides(recalibratePlanForPace(planOverrides, oldCtx, newCtx, today));
           if (tplCount > 0) setSessionTemplates(sessionTemplates.map(t => rescaleTemplateForPace(t, oldCtx, newCtx)));
           setProfile(p => ({ ...p, planSourceVma: newVma, planSourceEasyPace: newEasy }));
