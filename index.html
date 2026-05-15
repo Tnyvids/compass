@@ -1913,6 +1913,111 @@
       };
     }
 
+    // ========================================================================
+    // DÉTECTION PLATEAU CP — repère un athlète qui ne progresse plus malgré
+    // un plan d'entraînement bien suivi.
+    //
+    // Test ultime niveau 3, archétype D : David (4.14 W/kg, confirmé) suit le
+    // plan mais sa CP reste à 290W toute la durée — son 10K prédit ne bouge
+    // pas (42'16" du début à la fin). Aucun signal n'est donné par Compass.
+    //
+    // Critères :
+    //   - profile.cpHistory contient ≥ 2 entrées espacées d'au moins 42 jours
+    //   - Delta entre la plus ancienne (≥ 42j) et la plus récente : < 1.5 %
+    //   - Suggestion : variation, decharge longue, sommeil, alimentation
+    //
+    // On ne suggère JAMAIS d'abandonner le plan — on suggère des leviers.
+    function detectCPPlateau(profile, refDate = new Date()) {
+      if (!profile || !Array.isArray(profile.cpHistory)) return null;
+      const history = profile.cpHistory
+        .filter(h => h.date && Number.isFinite(h.value) && h.value > 0)
+        .map(h => ({ ...h, ts: new Date(h.date).getTime() }))
+        .filter(h => Number.isFinite(h.ts))
+        .sort((a, b) => a.ts - b.ts);
+      if (history.length < 2) return null;
+      const refMs = refDate.getTime();
+      const dayMs = 86400000;
+      // Entrée la plus récente
+      const recent = history[history.length - 1];
+      const recentAgo = (refMs - recent.ts) / dayMs;
+      if (recentAgo > 21) return null; // donnée trop vieille, on ne juge pas
+      // Entrée la plus ancienne >= 42 jours en arrière (et <= 120 jours)
+      const oldOnes = history.filter(h => {
+        const ago = (refMs - h.ts) / dayMs;
+        return ago >= 42 && ago <= 120;
+      });
+      if (oldOnes.length === 0) return null;
+      const old = oldOnes[0]; // la plus ancienne dans cette fenêtre
+      const delta = recent.value - old.value;
+      const deltaPct = delta / old.value;
+      // Seuil : plateau si < 1.5 % de gain sur 6-17 sem
+      if (Math.abs(deltaPct) >= 0.015) return null;
+      const weeksSince = Math.round((recent.ts - old.ts) / dayMs / 7);
+      return {
+        oldCP: old.value,
+        oldDate: old.date,
+        currentCP: recent.value,
+        deltaW: Math.round(delta * 10) / 10,
+        deltaPct: Math.round(deltaPct * 1000) / 10, // en %
+        weeksSince,
+      };
+    }
+
+    // ========================================================================
+    // DÉTECTION VOLUME EXCESSIF — repère un athlète qui dépasse durablement
+    // le volume attendu pour sa tier (intentionnellement ou par dérive).
+    //
+    // Test ultime niveau 3, archétypes A et C : Antoine (amateur) et Camille
+    // (débutant) ajoutent +80 à +100 TSS/sem en bonus. ACWR reste sain (chronic
+    // monte avec acute), monotonie OK → aucune alerte. Mais surcharge chronique
+    // = risque blessure tendineuse (surtout pour débutants) et stagnation.
+    //
+    // Critères :
+    //   - Au moins 4 semaines d'historique avec TSS hebdo > 130 % du TSS attendu
+    //     pour la tier (350 × kmMul = base typique)
+    //   - Seuil plus strict pour les débutants (risque tendineux plus élevé) :
+    //     dès 120 % de la base typique, on flag.
+    //
+    // Retourne null si pas de souci, sinon { weeklyAvg, expected, ratio, tierKey, weeksOver }.
+    function detectVolumeOverreach(activities, profile, refDate = new Date()) {
+      if (!profile || !profile.cp || !profile.weightKg) return null;
+      if (!Array.isArray(activities) || activities.length < 8) return null;
+      const refMs = refDate.getTime();
+      const dayMs = 86400000;
+      // Tier multipliers (utilise getTierMultipliers, déjà défini plus haut)
+      const tier = (typeof getTierMultipliers === 'function')
+        ? getTierMultipliers({ cp: profile.cp, weightKg: profile.weightKg, sex: profile.sex })
+        : null;
+      if (!tier) return null;
+      // Base TSS hebdo attendue selon la tier (350 = confirmé route stable).
+      const baseExpected = 350 * tier.kmMul;
+      // TSS hebdo sur les 4 dernières semaines (semaines glissantes)
+      const weeklyTss = [0, 0, 0, 0];
+      (activities || []).forEach(a => {
+        if (!a.tss || !a.startMs) return;
+        const ago = (refMs - a.startMs) / dayMs;
+        if (ago < 0 || ago >= 28) return;
+        const wkIdx = Math.floor(ago / 7); // 0=last 7d, 1=8-14d, ...
+        weeklyTss[wkIdx] += a.tss;
+      });
+      // Seuil selon tier : débutant plus strict (120 %), autres 130 %
+      const isBeginner = tier.key === 'débutant';
+      const threshold = isBeginner ? 1.20 : 1.30;
+      const weeksOver = weeklyTss.filter(t => t > baseExpected * threshold).length;
+      if (weeksOver < 3) return null; // au moins 3 sem sur 4 dépassent
+      const avg = weeklyTss.reduce((s, v) => s + v, 0) / 4;
+      return {
+        weeklyAvg: Math.round(avg),
+        expected: Math.round(baseExpected),
+        ratio: Math.round((avg / baseExpected) * 100) / 100,
+        tierKey: tier.key,
+        tierLabel: tier.label,
+        weeksOver,
+        isBeginner,
+        threshold,
+      };
+    }
+
     function detectCPProgression(activities, currentCP, refDate = new Date()) {
       if (!Array.isArray(activities) || activities.length < 5) return null;
       if (!currentCP || currentCP <= 0) return null;
@@ -3960,6 +4065,55 @@
                       <strong>Pourquoi c'est important :</strong> le taper sert à arriver frais. Les méta-analyses (Bosquet 2007) montrent qu'un taper bien fait apporte 0.5 à 3 % de perf en plus — l'inverse est aussi vrai si tu arrives fatigué.
                       {' '}<br /><br />
                       <strong>Ce que je suggère :</strong> sur les jours qui restent, baisse fort en volume (40-60 % du normal), garde 2-3 courtes activations à allure course (3-5 minutes max), et privilégie le sommeil sur l'entraînement.
+                    </div>
+                  </div>
+                </div>
+              </Card>
+            );
+          })()}
+
+          {/* VOLUME OVERREACH — alerte quand l'utilisateur fait durablement
+              plus de volume que ce qui est attendu pour sa tier. Détecte les
+              cas où l'athlète ajoute des séances bonus (cas type : débutant
+              motivé qui prend le plan d'un confirmé). ACWR ne flag pas car
+              acute et chronic montent en parallèle. */}
+          {(() => {
+            const over = detectVolumeOverreach(
+              (activities || []).map(a => ({ ...a, tss: computeTSS(a, profile) })),
+              profile,
+              new Date()
+            );
+            if (!over) return null;
+            const beginnerWarning = over.isBeginner;
+            return (
+              <Card variant="highlighted" accent={beginnerWarning ? 'caution' : 'compass'} className="p-4 md:p-5 mb-3">
+                <div className="flex items-start gap-3 flex-wrap">
+                  <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: beginnerWarning ? 'rgba(255, 176, 32, 0.15)' : 'rgba(74, 158, 255, 0.15)' }}>
+                    <IconAlert size={18} style={{ color: beginnerWarning ? 'var(--caution)' : 'var(--compass)' }} />
+                  </div>
+                  <div className="flex-1 min-w-[240px]">
+                    <div className="t-meta mb-1" style={{ color: beginnerWarning ? 'var(--caution)' : 'var(--compass)' }}>
+                      VOLUME ÉLEVÉ POUR TON NIVEAU {over.tierLabel.toUpperCase()}
+                    </div>
+                    <div className="font-display text-base md:text-lg font-bold mb-1">
+                      Tu fais {over.weeklyAvg} TSS/sem en moyenne ({over.ratio}× ta base attendue)
+                    </div>
+                    <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+                      <strong>Ce que je vois :</strong> {over.weeksOver} de tes 4 dernières semaines dépassent <span style={{ color: 'var(--text)' }}>{Math.round(over.expected * over.threshold)} TSS</span>, ta base normale pour un coureur {over.tierLabel.toLowerCase()} étant autour de <span style={{ color: 'var(--text)' }}>{over.expected} TSS/sem</span>.
+                      {' '}<br /><br />
+                      {beginnerWarning ? (
+                        <>
+                          <strong>⚠ Risque tendineux :</strong> en tant que {over.tierLabel.toLowerCase()}, tes tendons et articulations n'ont pas encore les adaptations d'un coureur entraîné. La littérature (Stulberg 2019, blessures du débutant) montre un pic de risque autour de 25-35 km/sem si on monte trop vite.
+                          {' '}<br /><br />
+                          <strong>Suggestion :</strong> reviens vers {over.expected} TSS/sem pendant 2-3 sem, puis monte de +10 % par semaine maximum. La progression est plus rapide qu'on ne croit avec ce rythme.
+                        </>
+                      ) : (
+                        <>
+                          <strong>Pas dangereux en soi, mais à surveiller :</strong> le volume soutenu au-dessus de ta base peut donner de bonnes adaptations OU mener à de la fatigue chronique qui n'apparaît pas dans les chiffres tout de suite (l'ACWR ne capture pas la surcharge constante).
+                          {' '}<br /><br />
+                          <strong>Suggestion :</strong> assure-toi d'avoir 1 semaine de décharge toutes les 3-4 sem, sinon prévois-en une bientôt pour consolider les gains.
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -13845,11 +13999,41 @@
               {isPaceModePred
                 ? <VMAProgressionBanner progression={vmaProgression} profile={profile} onAcceptVMA={handleAcceptVMASuggestion} />
                 : <CPProgressionBanner progression={cpProgression} profile={profile} onAcceptCP={handleAcceptCPSuggestion} />}
-              {/* FitnessDropBanner retiré : "tes watts soutenus ont baissé" est un
-                  message démotivant qui n'apporte rien d'actionnable. Le coureur
-                  sait s'il a fait moins de qualité que d'habitude — Compass n'a
-                  pas à le souligner. CPProgressionBanner (en haut) gère le cas
-                  inverse (suggérer une CP plus haute), qui lui est utile. */}
+              {/* PLATEAU CP — alerte constructive quand la CP n'a pas progressé
+                  depuis 6+ semaines. Ne propose pas d'abandonner le plan,
+                  juste des leviers à essayer. */}
+              {!isPaceModePred && (() => {
+                const plateau = detectCPPlateau(profile, new Date());
+                if (!plateau) return null;
+                return (
+                  <Card className="p-5 mb-4" accent="var(--compass)">
+                    <div className="flex items-start gap-3 flex-wrap">
+                      <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(74, 158, 255, 0.15)' }}>
+                        <IconInfo size={18} style={{ color: 'var(--compass)' }} />
+                      </div>
+                      <div className="flex-1 min-w-[240px]">
+                        <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--compass)' }}>PLATEAU DÉTECTÉ · INFORMATIONNEL</div>
+                        <div className="font-display text-base md:text-lg font-bold mb-1">
+                          Ta puissance seuil n'a pas progressé depuis {plateau.weeksSince} semaine{plateau.weeksSince > 1 ? 's' : ''}
+                        </div>
+                        <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+                          <strong>Ce que je vois :</strong> ta CP était à {plateau.oldCP}W il y a {plateau.weeksSince} sem (le {fmtDate(new Date(plateau.oldDate).getTime(), true)}) et reste à {plateau.currentCP}W aujourd'hui ({plateau.deltaW >= 0 ? '+' : ''}{plateau.deltaW}W, {plateau.deltaPct >= 0 ? '+' : ''}{plateau.deltaPct} %).
+                          {' '}<br /><br />
+                          <strong>C'est normal de plateauer :</strong> tu approches peut-être de ton plafond physiologique actuel, ou ton corps a besoin d'un stimulus différent. Ce n'est pas un signal d'abandon.
+                          {' '}<br /><br />
+                          <strong>Leviers à essayer :</strong>
+                          <ul className="list-disc list-inside mt-1 space-y-0.5">
+                            <li>1 semaine décharge plus marquée (−40 % de volume, pas seulement les habituels −25 %)</li>
+                            <li>Varier le type d'intensité : si tu fais beaucoup de seuil, ajoute du VO2max court ; si tu fais beaucoup de VMA, ajoute du tempo long</li>
+                            <li>Réviser sommeil / alimentation / hydratation — souvent c'est là que se joue le déblocage</li>
+                            <li>Si tu fais 0 renfo, en ajouter 1-2 par semaine (gains documentés sur l'économie de course)</li>
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+                  </Card>
+                );
+              })()}
               <div className="mb-4"><RacePredictorCard predictions={predictions} cp={profile.cp} tsb={fitness.tsb} wprime={cpWpFit ? cpWpFit.wprime : 15000} weightKg={profile.weightKg} prs={profile.prs} prsDates={profile.prsDates} bestEfforts={mergedBestEfforts} paceMode={isPaceModePred} vma={profile.vma} /></div>
               <div className="mb-4"><PaceTimelineCard activities={activities} profile={profile} planOverrides={planOverrides} races={races} /></div>
               <div className="mb-4"><VirtualCompetitionCard activities={activities} profile={profile} /></div>
