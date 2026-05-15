@@ -1871,6 +1871,26 @@
           totalLossW += Math.abs(delta);
         }
       }
+      // Détection "pas d'effort soutenu récent" : si aucun bestEffort n'a été
+      // poussé fort sur 5-30 min ces 5 dernières semaines (max < 0.85 CP sur
+      // toute la fenêtre), c'est probablement une fenêtre de footings purs —
+      // pas une vraie baisse de forme. On signale "manque d'exposition" plutôt
+      // qu'une fausse "forme en baisse".
+      const hardestRecent = Math.max(0, ...buckets.map(b => recentBests[b] || 0));
+      const noRecentHardEffort = currentCP > 0 && hardestRecent > 0 && (hardestRecent / currentCP) < 0.85;
+      if (noRecentHardEffort) {
+        return {
+          currentCP,
+          projectedCP: null,
+          lossW: 0,
+          lossPct: 0,
+          evidence,
+          confidence: 'low',
+          sampleCount: evidence.length,
+          reason: 'no_intensity',
+          hardestPct: hardestRecent / currentCP,
+        };
+      }
       if (evidence.length < 3) return null;
       // Seuils stricts pour éviter les faux positifs : au moins 3 durées en
       // baisse ET perte moyenne ≥ 3 %.
@@ -7657,6 +7677,17 @@
     //   - red:  post-run knee pain (smoothed across activities with postRunKneePain)
     // Watching the red descend as the blue rises = the strongest motivator.
     function PainVsRenfoChart({ activities, strengthSessions, profile, weeksBack = 12 }) {
+      const [hoverIdx, setHoverIdx] = useState(null);
+      const svgRef = useRef(null);
+      // Label dynamique selon les zones surveillées (était hardcodé "GENOU").
+      // Si plusieurs zones, on affiche la liste compacte ; si une seule, on
+      // prend son label "base" pour rester court ("Genou", "Tendon d'Achille").
+      const zonesTracked = Array.isArray(profile?.injuryZones) ? profile.injuryZones : [];
+      const zoneTitle = zonesTracked.length === 0
+        ? 'DOULEUR'
+        : zonesTracked.length === 1
+          ? `DOULEUR ${(INJURY_ZONE_MAP[zonesTracked[0]]?.base || INJURY_ZONE_MAP[zonesTracked[0]]?.short || INJURY_ZONE_MAP[zonesTracked[0]]?.label || zonesTracked[0]).toUpperCase()}`
+          : `DOULEUR ${zonesTracked.map(k => INJURY_ZONE_MAP[k]?.short || k).join('+').toUpperCase()}`;
       const data = useMemo(() => {
         const dayMs = 86400000;
         const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -7772,16 +7803,44 @@
         }
       }
 
+      function handleMouseMove(e) {
+        if (!svgRef.current) return;
+        const rect = svgRef.current.getBoundingClientRect();
+        const svgX = ((e.clientX - rect.left) / rect.width) * W;
+        const idx = Math.round((svgX - padL) / cw * totalDays);
+        if (idx >= 0 && idx <= totalDays) setHoverIdx(idx);
+        else setHoverIdx(null);
+      }
+      const hoverPainScore = hoverIdx != null && painSmooth[hoverIdx] != null ? painSmooth[hoverIdx] : null;
+      const hoverRenfoCtl = hoverIdx != null ? renfoCtl[hoverIdx] : null;
+      const hoverDate = hoverIdx != null ? new Date(startMs + hoverIdx * 86400000) : null;
+      // Point de douleur exact à cet index (si dispo) — pour distinguer un score
+      // observé d'une simple interpolation lissée.
+      const hoverPainPoint = hoverIdx != null ? painPoints.find(p => p.dayIdx === hoverIdx) : null;
       return (
         <Card className="p-6 mb-4">
           <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-            <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>DOULEUR GENOU vs RENFO CTL · {weeksBack} SEMAINES</div>
+            <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>{zoneTitle} vs RENFO CTL · {weeksBack} SEMAINES</div>
             <div className="flex items-center gap-3 font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
               <span className="flex items-center gap-1.5"><span className="w-3 h-0.5" style={{ background: 'var(--compass)' }} />RENFO CTL</span>
               <span className="flex items-center gap-1.5"><span className="w-3 h-0.5" style={{ background: 'var(--critical)' }} />DOULEUR</span>
             </div>
           </div>
-          <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: 'block' }}>
+          {hoverIdx != null ? (
+            <div className="mb-2 font-mono text-xs" style={{ color: 'var(--text-dim)' }}>
+              <span style={{ color: 'var(--compass)' }}>{fmtDate(hoverDate.getTime(), true)}</span>
+              {hoverRenfoCtl != null && <span className="ml-3">Renfo CTL : <span className="tabular" style={{ color: 'var(--text)' }}>{hoverRenfoCtl.toFixed(2)}</span></span>}
+              {hoverPainScore != null && (
+                <span className="ml-3">
+                  Douleur lissée : <span className="tabular" style={{ color: 'var(--critical)' }}>{hoverPainScore.toFixed(1)}/10</span>
+                  {hoverPainPoint && <span className="ml-1" style={{ color: 'var(--text-faint)' }}>(check-in jour : {hoverPainPoint.score}/10)</span>}
+                </span>
+              )}
+            </div>
+          ) : (
+            <div className="mb-2 font-mono text-xs italic" style={{ color: 'var(--text-faint)' }}>Survole le graphique pour voir les valeurs au jour le jour</div>
+          )}
+          <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: 'block', cursor: 'crosshair' }} onMouseMove={handleMouseMove} onMouseLeave={() => setHoverIdx(null)}>
             {/* Y-axis ticks left (renfo) */}
             {[0, 1, 2, 3].map(v => v <= maxCtl && (
               <g key={`l${v}`}>
@@ -7810,6 +7869,14 @@
             {painPoints.map((p, i) => (
               <circle key={i} cx={x(p.dayIdx)} cy={yR(p.score)} r="3" fill="var(--critical)" stroke="var(--bg)" strokeWidth="1" />
             ))}
+            {/* Hover crosshair + indicators */}
+            {hoverIdx != null && (
+              <g>
+                <line x1={x(hoverIdx)} y1={padT} x2={x(hoverIdx)} y2={padT + ch} stroke="#8A8A8A" strokeWidth="0.8" strokeDasharray="3,3" opacity="0.6" />
+                {hoverRenfoCtl != null && <circle cx={x(hoverIdx)} cy={yL(hoverRenfoCtl)} r="4" fill="var(--compass)" stroke="var(--bg)" strokeWidth="1.5" />}
+                {hoverPainScore != null && <circle cx={x(hoverIdx)} cy={yR(hoverPainScore)} r="4" fill="var(--critical)" stroke="var(--bg)" strokeWidth="1.5" />}
+              </g>
+            )}
             {/* X-axis labels */}
             <text x={padL} y={H - 8} textAnchor="start" fontFamily="JetBrains Mono" fontSize="9" fill="#555">{fmtMonthDay(startMs)}</text>
             <text x={W - padR} y={H - 8} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="#555">aujourd'hui</text>
@@ -13740,10 +13807,11 @@
               {activities.length >= 4 && (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-4">
                   <IntensityDistributionCard activities={activities} profile={profile} />
-                  <MonotonyEFCard activities={activities} profile={profile} />
+                  <MonotonyCard activities={activities} profile={profile} />
                 </div>
               )}
-              <div className="mb-4"><YearHeatmapCard activities={activities} profile={profile} onViewActivity={onViewActivity} /></div>
+              {/* YearHeatmapCard retirée : déjà présente sur Aujourd'hui (ligne 3769),
+                  doublon strict avec ce tab. */}
               {/* Pain vs renfo chart — only relevant when the user has at least one tracked zone */}
               {Array.isArray(profile.injuryZones) && profile.injuryZones.length > 0 && (
                 <div className="mb-4"><PainVsRenfoChart activities={activities} strengthSessions={strengthSessions} profile={profile} /></div>
@@ -14681,29 +14749,41 @@
         const fourWeeksAgo = Date.now() - 28 * 86400000;
         const recent = activities.filter(a => a.startMs >= fourWeeksAgo && a.durationSec > 0);
         if (recent.length === 0) return null;
-        // Allure seuil (mode allure) ou CP (mode puissance) déjà calculés.
         const usePower = !!profile.cp && recent.some(a => a.normalizedPower);
         const useVMA = !usePower && !!profile.vma;
         if (!usePower && !useVMA) return null;
-        let easyTime = 0, thresholdTime = 0, hardTime = 0;
-        recent.forEach(a => {
+        // CLASSIFICATION PAR TYPE DE SÉANCE en priorité (Seiler 3 zones).
+        // Raison : la NP globale d'une séance d'intervalles 5×3' à 1.10 CP fait
+        // typiquement ~0.85 CP (échauffement + récup baissent la moyenne) — la
+        // classer en "seuil" sous-estime le travail intensif réellement effectué.
+        // Le type de séance (linkedSession.type ou activity.sport hint) capture
+        // l'INTENTION : intervals/hills/test = hard, tempo = threshold, etc.
+        // Quand l'info de type manque (séance manuelle non liée), on retombe sur
+        // la NP/cpFrac comme avant.
+        function classifySession(a) {
+          const linkedType = a.linkedSession && a.linkedSession.type;
+          if (linkedType === 'intervals' || linkedType === 'hills' || linkedType === 'test') return 'hard';
+          if (linkedType === 'tempo') return 'threshold';
+          if (linkedType === 'easy' || linkedType === 'long') return 'easy';
+          // Pas de type → on classifie par intensité moyenne sur l'effort.
           let cpFrac = null;
-          if (usePower && a.normalizedPower) {
-            cpFrac = a.normalizedPower / profile.cp;
-          } else if (useVMA && a.paceMinPerKm) {
-            // Seuil ≈ pace équivalente à 92% CP, soit VMA × 0.86 environ.
-            // Allure brute → vitesse km/h → fraction de VMA.
-            const speedKmH = 60 / a.paceMinPerKm;
-            const vmaFrac = speedKmH / profile.vma;
-            // Mapping rough vmaFrac → cpFrac : 0.65 vmaFrac ≈ 0.72 cpFrac (footing).
-            // Approximation linéaire : cpFrac ≈ vmaFrac × 1.10.
-            cpFrac = vmaFrac * 1.10;
-          }
-          if (cpFrac == null) return;
-          // Seiler 3 zones : easy < 0.85, threshold 0.85-1.00, hard > 1.00
-          if (cpFrac < 0.85) easyTime += a.durationSec;
-          else if (cpFrac <= 1.00) thresholdTime += a.durationSec;
-          else hardTime += a.durationSec;
+          if (usePower && a.normalizedPower) cpFrac = a.normalizedPower / profile.cp;
+          else if (useVMA && a.paceMinPerKm) cpFrac = (60 / a.paceMinPerKm / profile.vma) * 1.10;
+          if (cpFrac == null) return null;
+          // Bornes plus permissives pour le "hard" : sans type connu, une activité
+          // dont la NP globale dépasse 0.95 CP est probablement un effort intense.
+          if (cpFrac < 0.82) return 'easy';
+          if (cpFrac <= 0.95) return 'threshold';
+          return 'hard';
+        }
+        let easyTime = 0, thresholdTime = 0, hardTime = 0;
+        let easyCount = 0, thresholdCount = 0, hardCount = 0;
+        recent.forEach(a => {
+          const zone = classifySession(a);
+          if (!zone) return;
+          if (zone === 'easy') { easyTime += a.durationSec; easyCount++; }
+          else if (zone === 'threshold') { thresholdTime += a.durationSec; thresholdCount++; }
+          else { hardTime += a.durationSec; hardCount++; }
         });
         const total = easyTime + thresholdTime + hardTime;
         if (total === 0) return null;
@@ -14729,7 +14809,7 @@
           verdictColor = 'var(--text)';
           verdictDetail = "Plus de Z3 que de Z5+. Pas mauvais mais moins efficace que polarisé pour les distances 5K-semi.";
         }
-        return { easyPct, thresholdPct, hardPct, easyMin: easyTime / 60, thresholdMin: thresholdTime / 60, hardMin: hardTime / 60, verdict, verdictColor, verdictDetail, sessionCount: recent.length };
+        return { easyPct, thresholdPct, hardPct, easyCount, thresholdCount, hardCount, verdict, verdictColor, verdictDetail, sessionCount: recent.length };
       }, [activities, profile.cp, profile.vma]);
       if (!data) {
         return (
@@ -14743,9 +14823,9 @@
       // Donut SVG
       const R = 60, r = 36, cx = 80, cy = 80;
       const arcs = [
-        { pct: data.easyPct, color: '#8FE86A', label: 'Endurance' },
-        { pct: data.thresholdPct, color: '#FFB020', label: 'Seuil' },
-        { pct: data.hardPct, color: '#FF5B5B', label: 'Intensif' },
+        { pct: data.easyPct, color: '#8FE86A', label: 'Endurance', count: data.easyCount },
+        { pct: data.thresholdPct, color: '#FFB020', label: 'Seuil', count: data.thresholdCount },
+        { pct: data.hardPct, color: '#FF5B5B', label: 'Intensif', count: data.hardCount },
       ];
       let cumPct = 0;
       const arcPaths = arcs.map(a => {
@@ -14776,29 +14856,30 @@
                   <div className="w-3 h-3 rounded" style={{ background: a.color }}></div>
                   <span style={{ color: 'var(--text-dim)' }}>{a.label}</span>
                   <span className="ml-auto tabular" style={{ color: 'var(--text)' }}>{a.pct.toFixed(0)}%</span>
+                  <span className="tabular" style={{ color: 'var(--text-faint)' }}>· {a.count} séance{a.count > 1 ? 's' : ''}</span>
                 </div>
               ))}
             </div>
           </div>
           <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>{data.verdictDetail}</div>
-          <div className="mt-3 font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
-            Modèle Seiler 3 zones · classement par intensité moyenne de chaque séance. {data.sessionCount} séances analysées.
+          <div className="mt-3 font-mono text-[10px] leading-relaxed" style={{ color: 'var(--text-faint)' }}>
+            Modèle Seiler 3 zones · {data.sessionCount} séances analysées. Classement par type (intervals/tempo/easy) si la séance vient du plan, sinon par intensité moyenne.
           </div>
         </Card>
       );
     }
 
     // ========================================================================
-    // MONOTONY & EFFICIENCY FACTOR CARD — Indicateurs Foster + Friel.
+    // MONOTONY CARD — Indicateur Foster (1998).
     // Monotonie = moyenne TSS journalier / écart-type (sur 7 jours). > 2 = élevée.
-    // EF = NP / FC moyenne — progresse avec l'endurance aérobie (Friel).
+    // L'ancien EF (NP/FC) faisait doublon avec VirtualCompetitionCard qui compare
+    // déjà puissance vs FC entre deux séances similaires — gardé là, supprimé ici.
     // ========================================================================
-    function MonotonyEFCard({ activities, profile }) {
+    function MonotonyCard({ activities, profile }) {
       const data = useMemo(() => {
         if (!activities || activities.length === 0) return null;
         const dayMs = 86400000;
         const todayMs = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
-        // === Monotonie Foster sur 7 derniers jours ===
         const dailyTss = new Array(7).fill(0);
         activities.forEach(a => {
           const tss = computeTSS(a, profile);
@@ -14832,77 +14913,27 @@
           monoLabel = 'Critique'; monoColor = 'var(--danger)';
           monoAdvice = "Tu cours fort tous les jours. Foster (1998) : monotonie > 2.5 = risque significatif. Au moins 2 jours off complets cette semaine.";
         }
-        // === EF (Efficiency Factor) sur 4 dernières semaines ===
-        const fourWeeksAgo = todayMs - 28 * dayMs;
-        const efActs = activities.filter(a => a.startMs >= fourWeeksAgo && a.normalizedPower && a.avgHr && a.avgHr > 80);
-        let efRecent = null, efPrev = null;
-        if (efActs.length >= 3) {
-          const efs = efActs.map(a => a.normalizedPower / a.avgHr);
-          efRecent = efs.reduce((s, v) => s + v, 0) / efs.length;
-          // Comparer avec les 4 semaines précédentes
-          const eightWeeksAgo = todayMs - 56 * dayMs;
-          const prevActs = activities.filter(a => a.startMs >= eightWeeksAgo && a.startMs < fourWeeksAgo && a.normalizedPower && a.avgHr && a.avgHr > 80);
-          if (prevActs.length >= 3) {
-            const prevEfs = prevActs.map(a => a.normalizedPower / a.avgHr);
-            efPrev = prevEfs.reduce((s, v) => s + v, 0) / prevEfs.length;
-          }
-        }
-        let efDelta = null, efTrend = null, efColor = 'var(--text-dim)';
-        if (efRecent != null && efPrev != null) {
-          efDelta = ((efRecent - efPrev) / efPrev) * 100;
-          if (efDelta > 1.5) { efTrend = 'en progression'; efColor = 'var(--go)'; }
-          else if (efDelta < -1.5) { efTrend = 'en recul'; efColor = 'var(--warn)'; }
-          else { efTrend = 'stable'; efColor = 'var(--text)'; }
-        }
-        return { monotony, strain, monoLabel, monoColor, monoAdvice, weekTss, efRecent, efPrev, efDelta, efTrend, efColor, efSampleCount: efActs.length };
+        return { monotony, strain, monoLabel, monoColor, monoAdvice, weekTss };
       }, [activities, profile.cp, profile.vma]);
       if (!data) return null;
       return (
         <Card className="p-6 h-full">
           <div className="flex items-center gap-2 mb-4">
             <IconTrending size={14} style={{ color: 'var(--compass)' }} />
-            <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>INDICATEURS AVANCÉS · MONOTONIE + EF</div>
+            <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>MONOTONIE D'ENTRAÎNEMENT · 7J · FOSTER</div>
           </div>
-          {/* Monotonie */}
-          <div className="mb-5">
-            <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>MONOTONIE 7J <span style={{ opacity: 0.5 }}>FOSTER</span></div>
-            <div className="flex items-baseline gap-3 mb-1">
-              <div className="font-display text-3xl font-bold tabular leading-none" style={{ color: data.monoColor }}>{data.monotony != null ? data.monotony.toFixed(2) : '—'}</div>
-              <div className="font-mono text-xs tracking-widest" style={{ color: data.monoColor }}>{data.monoLabel.toUpperCase()}</div>
+          <div className="flex items-baseline gap-3 mb-2">
+            <div className="font-display text-4xl font-bold tabular leading-none" style={{ color: data.monoColor }}>{data.monotony != null ? data.monotony.toFixed(2) : '—'}</div>
+            <div className="font-mono text-xs tracking-widest" style={{ color: data.monoColor }}>{data.monoLabel.toUpperCase()}</div>
+          </div>
+          <div className="text-sm leading-relaxed mb-3" style={{ color: 'var(--text-dim)' }}>{data.monoAdvice}</div>
+          {data.strain != null && (
+            <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
+              Strain (charge hebdo × monotonie) : {Math.round(data.strain)}
             </div>
-            <div className="text-xs leading-relaxed" style={{ color: 'var(--text-dim)' }}>{data.monoAdvice}</div>
-            {data.strain != null && (
-              <div className="mt-1 font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>Strain = {Math.round(data.strain)} (charge hebdo × monotonie)</div>
-            )}
-          </div>
-          {/* EF */}
-          <div className="pt-4 border-t" style={{ borderColor: 'var(--border)' }}>
-            <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>EFFICACITÉ AÉROBIE <span style={{ opacity: 0.5 }}>EF · PUISSANCE/FC</span></div>
-            {data.efRecent == null ? (
-              <div className="text-xs" style={{ color: 'var(--text-dim)' }}>
-                Besoin d'au moins 3 activités récentes avec puissance + FC pour calculer ton EF.
-              </div>
-            ) : (
-              <>
-                <div className="flex items-baseline gap-3 mb-1">
-                  <div className="font-display text-3xl font-bold tabular leading-none" style={{ color: data.efColor }}>{data.efRecent.toFixed(2)}</div>
-                  {data.efDelta != null && (
-                    <div className="font-mono text-xs" style={{ color: data.efColor }}>
-                      {data.efDelta > 0 ? '+' : ''}{data.efDelta.toFixed(1)}% · {data.efTrend}
-                    </div>
-                  )}
-                </div>
-                <div className="text-xs leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-                  {data.efDelta == null
-                    ? `Moyenne 4 semaines (${data.efSampleCount} séances). Pas encore d'historique pour comparer.`
-                    : data.efDelta > 1.5
-                      ? "Ton endurance aérobie progresse : à FC équivalente, tu sors plus de puissance. Bon signe."
-                      : data.efDelta < -1.5
-                        ? "EF en recul — fatigue accumulée, mauvaise récup, ou chaleur. Surveille la suite."
-                        : "EF stable. Indicateur de fond mature."}
-                </div>
-              </>
-            )}
+          )}
+          <div className="mt-3 pt-3 border-t font-mono text-[10px] leading-relaxed" style={{ borderColor: 'var(--border)', color: 'var(--text-faint)' }}>
+            Plus le score est élevé, plus tes 7 derniers jours se ressemblent (même charge tous les jours). Foster (1998) a montré qu'au-dessus de 2.0 le risque maladie/blessure monte — il faut des journées vraiment off pour casser le rythme.
           </div>
         </Card>
       );
@@ -15398,6 +15429,39 @@
       const drop = cpDrop || vmaDrop;
       if (!drop) return null;
       const isPace = !!vmaDrop;
+      // Variante "manque d'exposition" : pas de vraie baisse de forme détectée,
+      // juste pas d'effort soutenu intense ces 5 dernières semaines. On change
+      // le ton (informationnel, pas alarmant) et on ne suggère pas un drop de CP.
+      const noIntensity = drop.reason === 'no_intensity';
+      if (noIntensity) {
+        const hardestPct = Math.round((drop.hardestPct || 0) * 100);
+        return (
+          <Card className="p-5 mb-4" accent="var(--text-dim)">
+            <div className="flex items-start gap-3 flex-wrap">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'var(--bg-elev-2)' }}>
+                <IconInfo size={18} style={{ color: 'var(--text-dim)' }} />
+              </div>
+              <div className="flex-1 min-w-[240px]">
+                <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--text-dim)' }}>
+                  PAS D'EFFORT SOUTENU RÉCENT · INFORMATIONNEL
+                </div>
+                <div className="font-display text-base md:text-lg font-bold mb-1">
+                  Tes 5 dernières semaines ne contiennent pas d'effort {isPace ? 'à allure élevée' : 'à puissance soutenue'} (max ≈ {hardestPct} % de {isPace ? 'ta VMA' : 'ta CP'})
+                </div>
+                <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+                  Ce <strong>n'est pas</strong> forcément une perte de forme : Compass ne peut juste pas vérifier que ta {isPace ? 'VMA' : 'CP'} est toujours valide tant que tu n'as pas refait un effort soutenu de 5 à 30 min.
+                  {' '}Tes prédictions de course restent basées sur la valeur déclarée. Si tu veux les calibrer, fais une séance qualité (tempo, intervals long, test {isPace ? '6 min' : '3\'/20\''}) dans les 1-2 prochaines semaines.
+                </div>
+              </div>
+            </div>
+            <div className="flex gap-2 mt-3">
+              <button onClick={() => setDismissed(true)} className="btn px-3 py-1.5 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'transparent', color: 'var(--text-faint)' }}>
+                IGNORER
+              </button>
+            </div>
+          </Card>
+        );
+      }
       const headline = isPace
         ? `Tes efforts récents suggèrent une VMA plus basse (≈ ${drop.projectedVMA} km/h vs ${drop.currentVMA} déclarée)`
         : `Tes meilleures puissances soutenues ont reculé (≈ ${drop.projectedCP}W vs ${drop.currentCP}W déclarée)`;
@@ -15414,7 +15478,7 @@
               </div>
               <div className="font-display text-base md:text-lg font-bold mb-1">{headline}</div>
               <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-                Écart constaté : <span style={{ color: 'var(--caution)' }}>{lossLabel}</span> sur les 5 dernières semaines vs les 8 précédentes.
+                Écart constaté : <span style={{ color: 'var(--caution)' }}>{lossLabel}</span> sur les 5 dernières semaines vs les 8 précédentes (tu as bien fait des efforts soutenus, mais à puissance plus basse qu'avant).
                 {' '}Causes fréquentes : blessure, surcharge récente, maladie, manque de sommeil, retour de pause/grossesse.
                 {' '}Compass <strong>ne baisse jamais</strong> {isPace ? 'ta VMA' : 'ta CP'} automatiquement — décide toi-même si tu mets à jour ou si tu attends de remonter.
                 {' '}En attendant, garde en tête que tes prédictions de course peuvent être optimistes.
@@ -17636,6 +17700,59 @@
           return { label: 'Longue courte', detail: `${T}' à ${Math.round(cp*0.75)}-${Math.round(cp*0.82)}W, fraîche`, purpose: 'Maintien du volume long réduit, dernière longue avant course.', explicitDurationMin: T };
         },
       },
+
+      // ====================================================================
+      // TEST CP — Protocole Stryd 3'/20' (référence standard pour estimer
+      // la CP en course à pied via puissance). Deux efforts max séparés par
+      // 30 min de récup → la régression linéaire 2-points sur (t, P×t) donne
+      // CP (pente) et W' (intercept). Exactement ce que estimateCPandWprime
+      // fait déjà à partir des bestEfforts importés.
+      //
+      // Référence : Stryd PowerCenter, Skiba 2014 (Critical Power model).
+      // Wattage cible : "max sustainable" sur la durée — on ne dicte pas un
+      // chiffre absolu (le test sert justement à le découvrir). Le détail
+      // mentionne les % CP indicatifs pour aider à doser sans saturer.
+      //
+      // Programmé en Base (semaine 2 : calibrage initial) et Build (avant Peak).
+      // Pas en Peak (trop proche de la course) ni en Taper (jamais de test
+      // intense en taper).
+      // ====================================================================
+      test: {
+        base: (cp, w, ctx) => {
+          const target3min = Math.round(cp * 1.18); // typique 3min ~ CP + W'/180 ≈ 1.15-1.20 CP
+          const target20min = Math.round(cp * 0.97); // 20min ≈ 0.95-1.00 CP en réalité
+          return {
+            label: 'Test CP 3\'/20\' (Stryd)',
+            detail: `15' échauffement progressif jusqu'à ${Math.round(cp*0.78)}W + 3' MAX (cible ~${target3min}W) + 30' récup easy à ${Math.round(cp*0.60)}W + 20' MAX (cible ~${target20min}W) + 10' retour au calme à ${Math.round(cp*0.60)}W`,
+            purpose: 'Test de calibrage CP : deux efforts max (3 min puis 20 min) séparés par 30 min de récup. Compass recalculera ta CP et W\' à l\'import via régression 2-points.',
+            explicitDurationMin: 78,
+          };
+        },
+        build: (cp, w, ctx) => {
+          const target3min = Math.round(cp * 1.18);
+          const target20min = Math.round(cp * 0.97);
+          return {
+            label: 'Recalibrage CP 3\'/20\'',
+            detail: `15' échauffement progressif jusqu'à ${Math.round(cp*0.78)}W + 3' MAX (cible ~${target3min}W) + 30' récup easy à ${Math.round(cp*0.60)}W + 20' MAX (cible ~${target20min}W) + 10' retour au calme à ${Math.round(cp*0.60)}W`,
+            purpose: 'Re-test CP en milieu de plan : vérifie la progression avant la phase Peak. Si ta CP a monté, accepte la suggestion pour que le reste du plan s\'aligne.',
+            explicitDurationMin: 78,
+          };
+        },
+        // Peak / taper : pas de test. Si appelé quand même (sécurité), on
+        // retombe sur un footing easy court pour ne pas casser la séance.
+        peak: (cp, w, ctx) => ({
+          label: 'Footing léger (pas de test en peak)',
+          detail: `30' à ${Math.round(cp*0.70)}W`,
+          purpose: 'Pas de test en phase Peak — trop proche de la course objectif.',
+          explicitDurationMin: 30,
+        }),
+        taper: (cp, w, ctx) => ({
+          label: 'Footing léger (pas de test en taper)',
+          detail: `25' à ${Math.round(cp*0.70)}W`,
+          purpose: 'Pas de test en taper.',
+          explicitDurationMin: 25,
+        }),
+      },
     };
 
     // Approximate duration (min) of a session based on text parsing — used for weekly stats
@@ -19146,6 +19263,22 @@
         const isRaceWeek = w === totalWeeks;
 
         const pat = isRecoveryWeek ? reducedWeeklyPattern(sessionsPerWeek) : weeklyPattern(sessionsPerWeek, raceProfile, phase);
+        // Test CP 3'/20' (Stryd) en mode puissance — slotting automatique :
+        //   - Semaine 2 : calibrage baseline (Base phase, après 1 semaine d'adaptation).
+        //   - Pour les plans ≥ 10 sem : re-test au début du Peak (recalibrage avant
+        //     spécifique race-pace).
+        // Le test remplace le mardi (séance intensité régulière) — pas de séance
+        // ajoutée, juste remplacée. Pas en récup, pas en course, pas en pace mode
+        // (un user pace-mode passe par PACE_SCAFFOLD_CP, le test serait incohérent).
+        const isPaceModePlan = cp === (typeof PACE_SCAFFOLD_CP !== 'undefined' ? PACE_SCAFFOLD_CP : null);
+        const peakStartW = phasePlan.base + phasePlan.build + 1;
+        const isTestWeek = !isRecoveryWeek && !isPaceModePlan && (
+          w === 2 ||
+          (totalWeeks >= 10 && w === peakStartW)
+        );
+        if (isTestWeek && pat.mar) {
+          pat.mar = 'test';
+        }
         const days = { lun: null, mar: null, mer: null, jeu: null, ven: null, sam: null, dim: null };
 
         // Durée cible de la longue calculée hors massage : ramp progressif + retrait récup + taper
