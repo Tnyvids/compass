@@ -12532,11 +12532,13 @@
         onSaveProfile({ ...profile, cp: newCP, cpHistory });
       }
 
-      // Race predictions V2 — uses real power curve + per-distance RE + (optional) TSB bonus
-      // We compute TWO predictions per distance:
-      //   - "neutral" (baseline, TSB=0): your fitness right now if perfectly rested
-      //   - "today" (TSB=current): your fitness adjusted for today's freshness/fatigue
-      // Showing both lets you see what the fatigue/freshness gap actually costs/gives.
+      // Race predictions — dual path :
+      //   - Power mode (CP + weight + power curve) : predictRaceTimeV2 (Riegel-anchored sur PR
+      //     ou ancrage CP, calibration RE par distance, courbe puissance réelle).
+      //   - Pace mode (VMA seul) : predictRaceTimePace (Riegel sur PR frais sinon coef Cazorla).
+      // Le bon path est choisi selon le profil ; les deux fournissent neutral (TSB=0) et today
+      // (TSB=tsbNow) pour le même rendu UI.
+      const isPaceModePred = (profile.unitMode === 'pace' && !!profile.vma) || (!profile.cp && !!profile.vma);
       const predictions = useMemo(() => {
         const distances = [
           { name: '5 km', km: 5, currentKey: '5k' },
@@ -12545,14 +12547,16 @@
           { name: 'Marathon', km: 42.2, currentKey: 'marathon' },
         ];
         const wprime = cpWpFit ? cpWpFit.wprime : 15000;
-        // CRITICAL: "today" prediction uses tsbNow (live, post-session) not tsb
-        // (which is yesterday's stable value by convention). Otherwise today's
-        // session would have zero impact on the "aujourd'hui" race time until
-        // tomorrow — confusing for the user.
         const tsbForToday = (typeof fitness.tsbNow === 'number') ? fitness.tsbNow : fitness.tsb;
         return distances.map(d => {
-          const neutral = predictRaceTimeV2(profile.cp, wprime, profile.weightKg, d.km, profile.prs, mergedBestEfforts, 0, null, profile.prsDates);
-          const today = predictRaceTimeV2(profile.cp, wprime, profile.weightKg, d.km, profile.prs, mergedBestEfforts, tsbForToday, null, profile.prsDates);
+          let neutral, today;
+          if (isPaceModePred) {
+            neutral = predictRaceTimePace(profile.vma, d.km, profile.prs, 0, profile.prsDates);
+            today   = predictRaceTimePace(profile.vma, d.km, profile.prs, tsbForToday, profile.prsDates);
+          } else {
+            neutral = predictRaceTimeV2(profile.cp, wprime, profile.weightKg, d.km, profile.prs, mergedBestEfforts, 0, null, profile.prsDates);
+            today   = predictRaceTimeV2(profile.cp, wprime, profile.weightKg, d.km, profile.prs, mergedBestEfforts, tsbForToday, null, profile.prsDates);
+          }
           return {
             ...d,
             current: profile.prs?.[d.currentKey],
@@ -12567,7 +12571,10 @@
             todayPower: today?.racePower,
           };
         });
-      }, [profile.cp, profile.weightKg, profile.prs, profile.prsDates, mergedBestEfforts, cpWpFit, fitness.tsb, fitness.tsbNow]);
+        // Note : profile.vma + profile.easyPaceMinPerKm en deps pour que les
+        // prédictions pace-mode se rafraîchissent quand l'utilisateur met à
+        // jour ces champs.
+      }, [profile.cp, profile.weightKg, profile.vma, profile.easyPaceMinPerKm, profile.unitMode, profile.prs, profile.prsDates, mergedBestEfforts, cpWpFit, fitness.tsb, fitness.tsbNow, isPaceModePred]);
 
       // Header always shows
       const header = (
@@ -12593,7 +12600,7 @@
                 Pour compléter l'analyse (forme, fatigue, ratio de charge, courbe de puissance), importe au moins une séance dans le Journal.
               </div>
             </Card>
-            <RacePredictorCard predictions={predictions} cp={profile.cp} tsb={fitness.tsb} wprime={cpWpFit ? cpWpFit.wprime : 15000} weightKg={profile.weightKg} prs={profile.prs} prsDates={profile.prsDates} bestEfforts={mergedBestEfforts} />
+            <RacePredictorCard predictions={predictions} cp={profile.cp} tsb={fitness.tsb} wprime={cpWpFit ? cpWpFit.wprime : 15000} weightKg={profile.weightKg} prs={profile.prs} prsDates={profile.prsDates} bestEfforts={mergedBestEfforts} paceMode={isPaceModePred} vma={profile.vma} />
           </div>
         );
       }
@@ -12684,7 +12691,7 @@
           {tab === 'performance' && (
             <>
               <CPProgressionBanner progression={cpProgression} profile={profile} onAcceptCP={handleAcceptCPSuggestion} />
-              <div className="mb-4"><RacePredictorCard predictions={predictions} cp={profile.cp} tsb={fitness.tsb} wprime={cpWpFit ? cpWpFit.wprime : 15000} weightKg={profile.weightKg} prs={profile.prs} prsDates={profile.prsDates} bestEfforts={mergedBestEfforts} /></div>
+              <div className="mb-4"><RacePredictorCard predictions={predictions} cp={profile.cp} tsb={fitness.tsb} wprime={cpWpFit ? cpWpFit.wprime : 15000} weightKg={profile.weightKg} prs={profile.prs} prsDates={profile.prsDates} bestEfforts={mergedBestEfforts} paceMode={isPaceModePred} vma={profile.vma} /></div>
               <div className="mb-4"><PaceTimelineCard activities={activities} profile={profile} planOverrides={planOverrides} races={races} /></div>
               <div className="mb-4"><VirtualCompetitionCard activities={activities} profile={profile} /></div>
             </>
@@ -14119,7 +14126,7 @@
       );
     }
 
-    function RacePredictorCard({ predictions, cp, tsb, wprime, weightKg, prs, prsDates, bestEfforts }) {
+    function RacePredictorCard({ predictions, cp, tsb, wprime, weightKg, prs, prsDates, bestEfforts, paceMode = false, vma = null }) {
       const [expandedDist, setExpandedDist] = useState(null);
       function fmtTime(sec) {
         if (!sec) return '—';
@@ -14158,7 +14165,7 @@
           <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
             <div className="flex items-center gap-2">
               <IconTarget size={14} style={{ color: 'var(--accent)' }} />
-              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>PRÉDICTIONS DE COURSE · PUISSANCE SEUIL <span style={{ opacity: 0.5 }}>CP</span> {cp}W</div>
+              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>PRÉDICTIONS DE COURSE · {paceMode ? <>VMA {vma || '—'} km/h</> : <>PUISSANCE SEUIL <span style={{ opacity: 0.5 }}>CP</span> {cp}W</>}</div>
             </div>
             <div className="font-mono text-[10px] tracking-widest px-2 py-1 rounded flex items-center gap-1.5" style={{ background: 'var(--bg-elev)', border: `1px solid ${freshnessColor}40` }} title="Fraîcheur — différence entre ta forme accumulée et ta fatigue récente">
               <span style={{ color: 'var(--text-faint)' }}>FRAÎCHEUR</span>
@@ -14192,12 +14199,17 @@
                   const todayDelta = p.todaySec && p.predictedSec ? p.todaySec - p.predictedSec : null;
                   const todayPace = p.todaySec ? (p.todaySec / 60) / p.km : null;
                   const isExpanded = expandedDist === p.currentKey;
+                  // Le panneau détaillé (PredictionDetailPanel) est watt-centric :
+                  // anchor pickAnchor, simu CP, racePower… inadapté en pace mode.
+                  // On désactive l'expansion en pace mode pour éviter d'afficher
+                  // des données vides ou trompeuses.
+                  const canExpand = !paceMode;
                   return (
                     <React.Fragment key={i}>
-                    <tr className="border-t cursor-pointer transition" style={{ borderColor: 'var(--border)', background: isExpanded ? 'var(--bg-elev)' : 'transparent' }} onClick={() => setExpandedDist(isExpanded ? null : p.currentKey)}>
+                    <tr className={`border-t transition ${canExpand ? 'cursor-pointer' : ''}`} style={{ borderColor: 'var(--border)', background: isExpanded ? 'var(--bg-elev)' : 'transparent' }} onClick={canExpand ? () => setExpandedDist(isExpanded ? null : p.currentKey) : undefined}>
                       <td className="py-4 px-6 md:px-7">
                         <div className="flex items-center gap-2">
-                          <IconChevronDown size={12} style={{ color: 'var(--text-faint)', transform: isExpanded ? 'rotate(180deg)' : 'rotate(0)', transition: 'transform 0.2s' }} />
+                          {canExpand && <IconChevronDown size={12} style={{ color: 'var(--text-faint)', transform: isExpanded ? 'rotate(180deg)' : 'rotate(0)', transition: 'transform 0.2s' }} />}
                           <div>
                             <div className="font-display font-bold text-base">{p.name}</div>
                             <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
