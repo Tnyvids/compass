@@ -1811,19 +1811,105 @@
       const tss7Ratio = tss7 / Math.max(1, tss7Expected);
       // Décision : déclenche si gap ≥ 5 jours OU si tss7 < 40 % attendu.
       if (gapDays < 5 && tss7Ratio >= 0.4) return null;
-      // Sévérité : plus la coupure est longue, plus la réduction est forte.
-      let reduction, severity;
-      if (gapDays >= 14) { reduction = 0.50; severity = 'forte'; }
-      else if (gapDays >= 10) { reduction = 0.40; severity = 'modérée'; }
-      else if (gapDays >= 7) { reduction = 0.35; severity = 'modérée'; }
-      else { reduction = 0.30; severity = 'légère'; }
+      // Sévérité : plus la coupure est longue, plus la reprise s'étale sur
+      // plusieurs semaines (ramp progressive). Permet d'éviter le rebond ACWR
+      // après reprise modérée à -35 % en une seule semaine (cas de l'archétype B
+      // dans le test ultime niveau 3 : ACWR sem 8 = 4.00 puis 3.00 sem 9).
+      //
+      // rampSchedule = ce qui est conseillé pour les semaines à venir,
+      // exprimé en réduction du volume normal.
+      //   - gap 5-6j  : 1 sem -30 %
+      //   - gap 7-9j  : 2 sem -35 % puis -20 %
+      //   - gap 10-13j : 2 sem -45 % puis -25 %
+      //   - gap 14j+ : 3 sem -55 %, -35 %, -15 % (vrai retour de blessure)
+      let rampSchedule, severity;
+      if (gapDays >= 14) {
+        rampSchedule = [0.55, 0.35, 0.15];
+        severity = 'forte (retour de coupure longue)';
+      } else if (gapDays >= 10) {
+        rampSchedule = [0.45, 0.25];
+        severity = 'modérée';
+      } else if (gapDays >= 7) {
+        rampSchedule = [0.35, 0.20];
+        severity = 'modérée';
+      } else {
+        rampSchedule = [0.30];
+        severity = 'légère';
+      }
       return {
         gapDays,
         tss7,
         tss7Expected: Math.round(tss7Expected),
         tss7Ratio: Math.round(tss7Ratio * 100) / 100,
-        recommendedReduction: reduction,
+        recommendedReduction: rampSchedule[0], // backward compat
+        rampSchedule, // nouvelle : reprise étalée sur N semaines
         severity,
+      };
+    }
+
+    // ========================================================================
+    // DÉTECTION TAPER RATÉ — repère un athlète qui pousse encore pendant la
+    // phase taper (2 dernières semaines avant course objectif).
+    //
+    // Test ultime niveau 3, archétype E : Élise ajoute +80 TSS pendant le taper,
+    // arrive à la course avec TSB -1.4 (au lieu de l'idéal +5 à +15). Compass
+    // ne flag pas → on ajoute cette détection.
+    //
+    // Critères :
+    //  1. Une course objectif (priorité A) est planifiée dans ≤ 14 jours
+    //  2. TSS hebdo réalisé > 110 % du TSS planifié pour la semaine
+    //     OU TSB courant < 0 (négatif = encore fatigué, pas encore frais)
+    //
+    // Retourne null si pas de course imminente ou pas de souci, sinon :
+    //  { daysToRace, tssRealized, tssPlanned, tssRatio, tsb, reason }
+    function detectTaperRisk(activities, planOverrides, races, fitness, refDate = new Date()) {
+      if (!Array.isArray(races) || races.length === 0) return null;
+      const refMs = refDate.getTime();
+      const dayMs = 86400000;
+      // Course A imminente ?
+      const upcoming = races.filter(r => {
+        if (!r.date) return false;
+        const raceMs = new Date(r.date).getTime();
+        if (!Number.isFinite(raceMs)) return false;
+        const days = (raceMs - refMs) / dayMs;
+        return days > 0 && days <= 14 && (r.priority || 'A') === 'A';
+      });
+      if (upcoming.length === 0) return null;
+      const race = upcoming.sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime())[0];
+      const daysToRace = Math.round((new Date(race.date).getTime() - refMs) / dayMs);
+      // TSS réalisé sur les 7 derniers jours
+      const tssRealized = (activities || []).reduce((s, a) => {
+        const ago = (refMs - (a.startMs || 0)) / dayMs;
+        if (ago < 0 || ago >= 7) return s;
+        return s + (a.tss || 0);
+      }, 0);
+      // TSS planifié sur les 7 derniers jours (somme des plannedTss des séances)
+      // Approximation : on cherche la semaine du plan correspondant à aujourd'hui.
+      // Si pas trouvé, on tombe sur un TSS attendu en taper ≈ 50 % du CTL × 7.
+      let tssPlanned = 0;
+      if (planOverrides && fitness && fitness.ctl) {
+        // Taper standard : on s'attend à ~50 % du TSS normal hebdo.
+        tssPlanned = fitness.ctl * 7 * 0.50;
+      }
+      if (tssPlanned < 50) tssPlanned = 50; // garde-fou
+      const tssRatio = tssPlanned > 0 ? tssRealized / tssPlanned : null;
+      const tsb = fitness ? fitness.tsb : null;
+      // Conditions de déclenchement
+      const tooMuchVolume = tssRatio != null && tssRatio > 1.10;
+      const notFreshEnough = tsb != null && tsb < 0 && daysToRace <= 7;
+      if (!tooMuchVolume && !notFreshEnough) return null;
+      let reason;
+      if (tooMuchVolume && notFreshEnough) reason = 'both';
+      else if (tooMuchVolume) reason = 'volume';
+      else reason = 'fatigue';
+      return {
+        daysToRace,
+        tssRealized: Math.round(tssRealized),
+        tssPlanned: Math.round(tssPlanned),
+        tssRatio: tssRatio != null ? Math.round(tssRatio * 100) / 100 : null,
+        tsb: tsb != null ? Math.round(tsb * 10) / 10 : null,
+        reason,
+        raceName: race.name || String(race.distance || ''),
       };
     }
 
@@ -3813,7 +3899,8 @@
               inTaper
             );
             if (!gap) return null;
-            const redPct = Math.round(gap.recommendedReduction * 100);
+            const schedule = gap.rampSchedule || [gap.recommendedReduction];
+            const formatRamp = (s) => s.map((r, i) => `Sem ${i+1} : −${Math.round(r*100)} %`).join(' · ');
             return (
               <Card variant="highlighted" accent="caution" className="p-4 md:p-5 mb-3">
                 <div className="flex items-start gap-3 flex-wrap">
@@ -3828,9 +3915,51 @@
                     <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>
                       <strong>De quoi je parle :</strong> tes 7 derniers jours totalisent <span style={{ color: 'var(--text)' }}>{Math.round(gap.tss7)} TSS</span> alors que ton niveau normal serait autour de <span style={{ color: 'var(--text)' }}>{gap.tss7Expected}</span>. C'est une chute de charge {gap.severity}.
                       {' '}<br /><br />
-                      <strong>Le risque :</strong> reprendre le plan comme si rien n'avait changé fait monter ton ACWR au-dessus de 1.4 (Gabbett 2016 : pic de risque blessure post-coupure).
+                      <strong>Le risque :</strong> reprendre le plan d'un coup fait monter ton ACWR au-dessus de 1.4 (Gabbett 2016 : pic de risque blessure post-coupure). Plus la coupure est longue, plus le rebond peut piquer.
                       {' '}<br /><br />
-                      <strong>Ma suggestion :</strong> <span style={{ color: 'var(--caution)' }}>−{redPct} % de volume cette semaine</span> et remplace la séance intensive par un tempo court ou un footing avec quelques accélérations. Tu reviendras au plan normal la semaine suivante.
+                      <strong>Programme de reprise suggéré sur {schedule.length} semaine{schedule.length>1?'s':''} :</strong> <span style={{ color: 'var(--caution)' }}>{formatRamp(schedule)}</span>. Remplace les séances intensives par du tempo court ou des footings avec accélérations. Retour au plan normal {schedule.length>1?`sem ${schedule.length+1}`:'la semaine suivante'}.
+                    </div>
+                  </div>
+                </div>
+              </Card>
+            );
+          })()}
+
+          {/* TAPER RISK — alerte quand l'athlète pousse encore dans la fenêtre
+              des 2 dernières semaines avant une course objectif (priorité A).
+              Détecte volume excessif (> 110 % du planifié) OU TSB encore
+              négatif dans les 7 derniers jours. */}
+          {(() => {
+            const taperRisk = detectTaperRisk(
+              (activities || []).map(a => ({ ...a, tss: computeTSS(a, profile) })),
+              planOverrides,
+              races,
+              fitnessSummary,
+              new Date()
+            );
+            if (!taperRisk) return null;
+            const reasonText = {
+              volume: `Volume trop élevé : ${taperRisk.tssRealized} TSS faits cette semaine vs ~${taperRisk.tssPlanned} attendus en taper (ratio ${taperRisk.tssRatio}×).`,
+              fatigue: `Fraîcheur insuffisante : TSB ${taperRisk.tsb >= 0 ? '+' : ''}${taperRisk.tsb} à J-${taperRisk.daysToRace}, alors que l'idéal est +5 à +15 le jour de la course.`,
+              both: `Volume trop élevé (${taperRisk.tssRealized} TSS vs ${taperRisk.tssPlanned} attendus) ET TSB insuffisant (${taperRisk.tsb >= 0 ? '+' : ''}${taperRisk.tsb} à J-${taperRisk.daysToRace}).`,
+            }[taperRisk.reason];
+            return (
+              <Card variant="highlighted" accent="caution" className="p-4 md:p-5 mb-3">
+                <div className="flex items-start gap-3 flex-wrap">
+                  <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(255, 176, 32, 0.15)' }}>
+                    <IconAlert size={18} style={{ color: 'var(--caution)' }} />
+                  </div>
+                  <div className="flex-1 min-w-[240px]">
+                    <div className="t-meta mb-1" style={{ color: 'var(--caution)' }}>TAPER À RISQUE · J-{taperRisk.daysToRace}</div>
+                    <div className="font-display text-base md:text-lg font-bold mb-1">
+                      Tu pousses encore alors que ton {taperRisk.raceName} est dans {taperRisk.daysToRace} jour{taperRisk.daysToRace > 1 ? 's' : ''}
+                    </div>
+                    <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+                      <strong>Ce que je constate :</strong> {reasonText}
+                      {' '}<br /><br />
+                      <strong>Pourquoi c'est important :</strong> le taper sert à arriver frais. Les méta-analyses (Bosquet 2007) montrent qu'un taper bien fait apporte 0.5 à 3 % de perf en plus — l'inverse est aussi vrai si tu arrives fatigué.
+                      {' '}<br /><br />
+                      <strong>Ce que je suggère :</strong> sur les jours qui restent, baisse fort en volume (40-60 % du normal), garde 2-3 courtes activations à allure course (3-5 minutes max), et privilégie le sommeil sur l'entraînement.
                     </div>
                   </div>
                 </div>
