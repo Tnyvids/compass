@@ -1191,73 +1191,6 @@
       return { ratio: Math.round(ratio * 100) / 100, acute, chronic: Math.round(chronicWeekly), zone, insufficient: false };
     }
 
-    // Race time prediction from CP using Running Economy model
-    // Calibrates RE from user's PRs if available, otherwise uses default
-    // Returns { timeSec, runningEconomy, calibrated }
-    function predictRaceTime(cp, weightKg, distanceKm, prs = null) {
-      if (!cp || !weightKg || !distanceKm) return null;
-      const intensityFactors = { 5: 1.06, 10: 0.97, 21.1: 0.92, 42.2: 0.85 };
-
-      // Default Running Economy (typical recreational-trained runner): 1.04 W/kg/(m/s)
-      const defaultRE = 1.04;
-      let runningEconomy = defaultRE;
-      let calibrated = false;
-
-      // Calibrate RE from user's PRs
-      // CRITICAL: this calibration is sensitive to (cp, prs) pair. If user changes CP,
-      // the calibrated RE absorbs that change, neutralizing CP's impact on prediction.
-      // To keep CP changes visible, we blend the calibrated RE with the default RE
-      // weighted by how recently the PRs were set vs how much CP has changed.
-      if (prs) {
-        const parsePR = (str) => {
-          if (!str) return null;
-          const parts = str.split(':').map(Number);
-          if (parts.length === 2 && !parts.some(isNaN)) return parts[0] * 60 + parts[1];
-          if (parts.length === 3 && !parts.some(isNaN)) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-          return null;
-        };
-        const distMap = { '5k': 5, '10k': 10, 'semi': 21.1, 'marathon': 42.2 };
-        const reSamples = [];
-        for (const [key, dist] of Object.entries(distMap)) {
-          const sec = parsePR(prs[key]);
-          if (sec && sec > 60 && intensityFactors[dist]) {
-            const speed = (dist * 1000) / sec;
-            const power = cp * intensityFactors[dist];
-            const re = power / (weightKg * speed);
-            if (re > 0.85 && re < 1.25) reSamples.push(re);
-          }
-        }
-        if (reSamples.length) {
-          // Blend: 60% calibrated + 40% default. This way, when CP changes,
-          // the calibrated RE still moves but doesn't fully cancel out CP's impact.
-          // Result: ~40% of the CP delta is reflected in the predicted time.
-          const calibratedRE = reSamples.reduce((a, b) => a + b, 0) / reSamples.length;
-          runningEconomy = calibratedRE * 0.60 + defaultRE * 0.40;
-          calibrated = true;
-        }
-      }
-
-      // Find factor for this distance (interpolated)
-      const distances = Object.keys(intensityFactors).map(Number).sort((a, b) => a - b);
-      let factor;
-      if (distanceKm <= distances[0]) factor = intensityFactors[distances[0]];
-      else if (distanceKm >= distances[distances.length - 1]) factor = intensityFactors[distances[distances.length - 1]];
-      else {
-        for (let i = 0; i < distances.length - 1; i++) {
-          if (distanceKm >= distances[i] && distanceKm <= distances[i+1]) {
-            const frac = (distanceKm - distances[i]) / (distances[i+1] - distances[i]);
-            factor = intensityFactors[distances[i]] + frac * (intensityFactors[distances[i+1]] - intensityFactors[distances[i]]);
-            break;
-          }
-        }
-      }
-
-      const racePower = cp * factor;
-      const speedMs = racePower / (weightKg * runningEconomy);
-      const timeSec = Math.round((distanceKm * 1000) / speedMs);
-      return { timeSec, runningEconomy, calibrated };
-    }
-
     // ========================================================================
     // V2 PREDICTION SYSTEM
     // Goal: more precise race time predictions by using actual power-curve data
@@ -1284,6 +1217,13 @@
         .map(([d, p]) => ({ t: parseInt(d), p: Number(p) }))
         .filter(({ t, p }) => t >= 180 && t <= 1800 && Number.isFinite(p) && p > 0);
       if (points.length < 2) return null;
+      // Garde-fou physiologique : la régression P×t = CP·t + W' n'est fiable
+      // que si on a au moins un effort long (≥ 8 min) dans la fenêtre. Avec
+      // uniquement des efforts courts (3-5 min), le modèle surestime W' et
+      // sous-estime CP (l'anaérobie domine). On exige ≥ 1 point ≥ 480s OU
+      // ≥ 2 points couvrant 480-1800s pour valider la sortie.
+      const hasLong = points.some(p => p.t >= 480);
+      if (!hasLong) return null;
 
       const n = points.length;
       let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
@@ -1355,7 +1295,7 @@
     function calibrateREPerDistance(prs, weightKg, cp, wprime, bestEfforts, prsDates = null) {
       const out = { perDist: {}, default: 1.04 };
       if (!prs || !weightKg || !cp) return out;
-      const distMap = { '5k': 5, '10k': 10, semi: 21.1, marathon: 42.2 };
+      const distMap = { '5k': 5, '10k': 10, '15k': 15, semi: 21.1, '30k': 30, marathon: 42.2, '50k': 50 };
       for (const [key, distKm] of Object.entries(distMap)) {
         const prSec = parsePRSec(prs[key]);
         if (!prSec) continue;
@@ -1434,7 +1374,7 @@
     //   - Semi (~90% CP, more aerobic durability): 0.80
     //   - Marathon (~85% CP, fueling/durability matter more): 0.75
     function timeElasticity(distKey) {
-      return { '5k': 0.90, '10k': 0.85, semi: 0.80, marathon: 0.75 }[distKey] || 0.80;
+      return { '5k': 0.90, '10k': 0.85, '15k': 0.83, semi: 0.80, '30k': 0.77, marathon: 0.75, '50k': 0.72 }[distKey] || 0.80;
     }
 
     // Pick the most reliable anchor distance for a runner.
@@ -1459,8 +1399,11 @@
     function pickAnchor(cp, wprime, weightKg, prs, bestEfforts, prsDates = null) {
       if (!cp || !weightKg) return null;
 
-      const distMap = { '5k': 5, '10k': 10, semi: 21.1, marathon: 42.2 };
-      const priorities = ['10k', 'semi', '5k', 'marathon'];
+      // Distances supportées : aligné sur PR_DISTANCES_KM. Priorité = ordre de
+      // fiabilité comme ancrage Riegel (10K reste le meilleur compromis,
+      // marathon/50k en dernier car relation Riegel plus bruyante au long).
+      const distMap = { '5k': 5, '10k': 10, '15k': 15, semi: 21.1, '30k': 30, marathon: 42.2, '50k': 50 };
+      const priorities = ['10k', 'semi', '15k', '5k', '30k', 'marathon', '50k'];
 
       // 1. Look for a PR by priority — on ignore les PR trop anciens
       for (const key of priorities) {
@@ -1625,9 +1568,16 @@
         if (coef > 0 && coef < 1) timeSec = timeSec / coef;
       }
 
-      // 4. TSB bonus : ±2.5 %, linéaire (cohérent avec predictRaceTimeV2)
+      // 4. TSB bonus : ±2.5 %, linéaire entre −25 et +25 ; au-delà de +25 le
+      // bonus décroît (overreaching / fenêtre d'affûtage dépassée — Bosquet 2007
+      // méta-analyse tapering). Le coureur "trop frais" perd un peu d'edge.
       if (Number.isFinite(tsb)) {
-        const tsbBonus = Math.max(-0.025, Math.min(0.025, tsb * 0.001));
+        let tsbBonus = Math.max(-0.025, Math.min(0.025, tsb * 0.001));
+        if (tsb > 25) {
+          // Decay linéaire : à TSB +25 → bonus plein ; à TSB +55 → bonus 0.
+          const decay = Math.max(0, 1 - (tsb - 25) / 30);
+          tsbBonus *= decay;
+        }
         const elast = timeElasticity(distKey);
         timeSec = timeSec * (1 - elast * tsbBonus);
       }
@@ -1648,12 +1598,15 @@
     function predictRaceTimeV2(cp, wprime, weightKg, distanceKm, prs, bestEfforts, tsb, baselineCp = null, prsDates = null) {
       if (!cp || !weightKg || !distanceKm) return null;
 
-      // Determine target distance key
+      // Determine target distance key — aligné sur PR_DISTANCES_KM (path pace).
       let distKey;
       if (distanceKm <= 7) distKey = '5k';
-      else if (distanceKm <= 15) distKey = '10k';
-      else if (distanceKm <= 30) distKey = 'semi';
-      else distKey = 'marathon';
+      else if (distanceKm <= 12) distKey = '10k';
+      else if (distanceKm <= 18) distKey = '15k';
+      else if (distanceKm <= 25) distKey = 'semi';
+      else if (distanceKm <= 35) distKey = '30k';
+      else if (distanceKm <= 45) distKey = 'marathon';
+      else distKey = '50k';
 
       // The anchor is taken from BASELINE CP (i.e. the runner's actual current ability)
       // For projections, we'll then scale the anchor time forward as CP grows.
@@ -1705,14 +1658,17 @@
         calibrated = true;
       }
 
-      // TSB bonus: linear model — 0.10% per TSB unit, capped at ±2.5%.
-      // A step function with a dead zone (−15 to +5) caused "aujourd'hui" and
-      // "frais" (TSB=0) to show identical times whenever current TSB fell in that range.
+      // TSB bonus: linéaire 0.10% par unité TSB, cappé à ±2.5 % entre [−25, +25].
+      // Au-delà de TSB +25, on décote (overreaching / affûtage dépassé —
+      // Bosquet 2007 méta-analyse tapering). Symétrique avec predictRaceTimePace.
       let tsbBonus = 0;
       if (Number.isFinite(tsb)) {
         tsbBonus = Math.max(-0.025, Math.min(0.025, tsb * 0.001));
+        if (tsb > 25) {
+          const decay = Math.max(0, 1 - (tsb - 25) / 30);
+          tsbBonus *= decay;
+        }
       }
-      // tsbBonus is a fractional power gain → time decreases by elasticity × bonus
       if (tsbBonus !== 0) {
         const elast = timeElasticity(distKey);
         timeSec = timeSec * (1 - elast * tsbBonus);
@@ -1735,7 +1691,12 @@
 
       // Range d'incertitude (±sec). Mêmes seuils que predictRaceTimePace.
       const confPct = confidence >= 3 ? 0.010 : confidence === 2 ? 0.025 : 0.050;
-      const distPenalty = distKey === 'marathon' ? 1.4 : distKey === 'semi' ? 1.1 : 1.0;
+      const distPenalty = distKey === '50k' ? 1.8
+        : distKey === 'marathon' ? 1.4
+        : distKey === '30k' ? 1.2
+        : distKey === 'semi' ? 1.1
+        : distKey === '15k' ? 1.05
+        : 1.0;
       const uncertaintySec = Math.round(timeSec * confPct * distPenalty);
 
       return {
@@ -4914,7 +4875,7 @@
         const avg4wKm = fourWeekKms.reduce((s, v) => s + v, 0) / 4;
 
         return { rKm, rMin, rTSS, rSessions, pKm, pMin, pTSS, pSessions, pRemainingSessions, monthKm, avg4wKm };
-      }, [activities, profile.cp, profile.weightKg, planOverrides]);
+      }, [activities, profile.cp, profile.weightKg, profile.vma, profile.easyPaceMinPerKm, profile.unitMode, planOverrides]);
 
       const fmtDur = (min) => {
         const t = Math.round(min);
@@ -10094,6 +10055,22 @@
           const p = typeof draft.easyPaceMinPerKm === 'string' ? parsePace(draft.easyPaceMinPerKm) : draft.easyPaceMinPerKm;
           if (p != null && (p < 3 || p > 12)) errors.push('Allure footing doit être entre 3:00 et 12:00 /km.');
         }
+        // Champs requis en mode allure : sans VMA + allure footing, charge/forme/
+        // prédictions/zones ne peuvent rien calculer (computeTSS path 2, predictRaceTimePace,
+        // paceForIntensity dépendent tous des deux). On bloque la sauvegarde plutôt
+        // que de laisser l'utilisateur dans un état silencieusement cassé.
+        if (draft.unitMode === 'pace') {
+          const vmaOk = draft.vma != null && draft.vma !== '' && isFinite(parseFloat(draft.vma)) && parseFloat(draft.vma) >= 8;
+          const easyP = typeof draft.easyPaceMinPerKm === 'string' ? parsePace(draft.easyPaceMinPerKm) : draft.easyPaceMinPerKm;
+          const easyOk = easyP != null && isFinite(easyP) && easyP >= 3 && easyP <= 12;
+          if (!vmaOk && !easyOk) {
+            errors.push('Mode allure : renseigne ta VMA (km/h) et ton allure footing (mm:ss/km) — les deux sont nécessaires pour le calcul des charges, des zones et des prédictions.');
+          } else if (!vmaOk) {
+            errors.push('Mode allure : la VMA est nécessaire (saisie en km/h, ex. 16.5).');
+          } else if (!easyOk) {
+            errors.push('Mode allure : l\'allure footing est nécessaire (mm:ss /km, ex. 5:30).');
+          }
+        }
         if (errors.length) {
           toast.push(errors[0], { kind: 'danger' });
           return;
@@ -12177,7 +12154,7 @@
         }
 
         return { series, ctlDelta, peakCtl, minTsb, maxTsb, verdict, verdictColor, verdictDesc, warning, futurePlannedDays, futureDays };
-      }, [activities, profile.cp, profile.weightKg, planOverrides]);
+      }, [activities, profile.cp, profile.weightKg, profile.vma, profile.easyPaceMinPerKm, profile.unitMode, planOverrides]);
 
       if (!projection) return null;
 
@@ -12501,7 +12478,7 @@
           verdict, verdictColor, verdictDesc,
           insufficient: false,
         };
-      }, [activities, profile.cp, profile.weightKg, planOverrides]);
+      }, [activities, profile.cp, profile.weightKg, profile.vma, profile.easyPaceMinPerKm, profile.unitMode, planOverrides]);
 
       // ===== Empty / insufficient states =====
       if (!projection || projection.insufficient) {
@@ -12515,7 +12492,7 @@
           <Card className="p-6 md:p-7">
             <div className="flex items-center gap-2 mb-3">
               <IconAlert size={14} style={{ color: 'var(--text-dim)' }} />
-              <div className="font-mono text-xs tracking-widest" style={{ color: 'var(--text-dim)' }}>RISQUE BLESSURE PROJETÉ · ACWR</div>
+              <div className="font-mono text-xs tracking-widest" style={{ color: 'var(--text-dim)' }}>ÉQUILIBRE DE CHARGE PROJETÉ · ACWR</div>
             </div>
             <div className="text-sm" style={{ color: 'var(--text-dim)' }}>{messages[reason] || messages.no_cp}</div>
           </Card>
@@ -12584,7 +12561,7 @@
           <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
             <div className="flex items-center gap-2">
               <IconAlert size={14} style={{ color: verdictColor }} />
-              <div className="font-mono text-xs tracking-widest" style={{ color: 'var(--text-dim)' }}>RISQUE BLESSURE PROJETÉ · ACWR {futureDays} JOURS</div>
+              <div className="font-mono text-xs tracking-widest" style={{ color: 'var(--text-dim)' }}>ÉQUILIBRE DE CHARGE PROJETÉ · ACWR {futureDays} JOURS</div>
             </div>
             <div className="font-mono text-xs tabular" style={{ color: 'var(--text-faint)' }}>
               {redWindows.length > 0 && <span style={{ color: 'var(--critical)' }}>{redWindows.length} risque · </span>}
@@ -13459,165 +13436,6 @@
       );
     }
 
-    // ========================================================================
-    // ANALYTICS OVERVIEW — narrative summary, retiré de l'onglet État (mai 2026)
-    // car chaque Insight doublonnait la carte au-dessus (FitnessTrioCard a déjà
-    // son verdict TSB, ACWRCard a déjà son conseil par zone, prédiction 10K
-    // est dans RacePredictorCard sur l'onglet Performance, volume hebdo est
-    // dans WeeklyTSSCard sur Tendances). Fonction conservée pour ne pas casser
-    // d'éventuels appels externes ; à supprimer quand on est sûr qu'elle n'est
-    // référencée nulle part.
-    // ========================================================================
-    function AnalyticsOverview({ activities, activitiesWithTss, fitness, acwr, weeklyTss, profile, hasPowerData, predictions, onTabChange }) {
-      // Build narrative phrases from data.
-      const fitnessNarrative = useMemo(() => {
-        if (!hasPowerData || !fitness) {
-          return {
-            tone: 'neutral',
-            label: 'CHARGE',
-            title: 'Importe tes premières activités',
-            body: 'Les indicateurs de charge ont besoin soit de fichiers avec puissance (Stryd, Garmin Running Power), soit d\'une VMA renseignée dans Profil pour dériver le TSS depuis l\'allure. Va dans Plan, ouvre une semaine et utilise le bouton Importer.',
-          };
-        }
-        const ctl = fitness.ctl;
-        const tsb = fitness.tsb;
-        const ctl28 = fitness.series.ctl[fitness.series.ctl.length - 28] || ctl;
-        const ctlDelta = ctl - ctl28;
-        const ctlTrend = ctlDelta >= 3 ? 'monte' : ctlDelta <= -3 ? 'baisse' : 'reste stable';
-
-        let tone, title, body, label;
-        if (tsb >= 10) {
-          tone = 'positive';
-          label = 'TU ES FRAIS';
-          title = `Forme de fond ${ctl.toFixed(0)}, fraîcheur +${tsb.toFixed(0)} — moment idéal`;
-          body = `Ta charge sur 6 semaines ${ctlTrend} (${ctlDelta >= 0 ? '+' : ''}${ctlDelta.toFixed(0)} en 28 jours). Avec une fraîcheur à +${tsb.toFixed(0)}, tu es bien reposé : c'est un bon moment pour viser un record ou tester ton seuil.`;
-        } else if (tsb <= -15) {
-          tone = 'negative';
-          label = 'TU ES FATIGUÉ';
-          title = `Fraîcheur ${tsb.toFixed(0)} — il faut respirer`;
-          body = `Ta charge récente dépasse largement ta charge de fond. Continue dans cette zone et tu prends des risques (blessure, contre-perf). Recule l'intensité quelques jours, ou prévois une semaine plus légère.`;
-        } else if (tsb < 0) {
-          tone = 'caution';
-          label = 'CHARGE EN COURS';
-          title = `Forme ${ctl.toFixed(0)}, fraîcheur ${tsb.toFixed(0)} — tu pousses`;
-          body = `Tu accumules de la charge récente, ce qui est normal en phase de construction. Reste vigilant sur tes signaux corporels et n'enchaîne pas trop de séances dures.`;
-        } else {
-          tone = 'neutral';
-          label = 'ÉQUILIBRE';
-          title = `Forme ${ctl.toFixed(0)}, fraîcheur neutre`;
-          body = `Tu es dans une zone d'équilibre — ni en surcharge ni en affûtage. Ta charge ${ctlTrend} sur 28 jours. Idéal pour consolider.`;
-        }
-        return { tone, label, title, body };
-      }, [fitness, hasPowerData]);
-
-      const acwrNarrative = useMemo(() => {
-        if (!acwr || !hasPowerData) return null;
-        const r = parseFloat(acwr.ratio);
-        if (!Number.isFinite(r)) return null;
-        let tone, label, title, body;
-        if (r >= 1.5) {
-          tone = 'critical';
-          label = 'RATIO ÉLEVÉ';
-          title = `Ratio de charge ${r.toFixed(2)} — risque blessure`;
-          body = 'Ta charge récente (7 jours) dépasse 1.5× ta charge chronique (28 jours). Au-delà de 1.5, le risque de blessure et de contre-performance grimpe. Privilégie une semaine plus légère pour redescendre dans la zone safe (0.8 à 1.3).';
-        } else if (r >= 1.3) {
-          tone = 'caution';
-          label = 'RATIO TENDU';
-          title = `Ratio de charge ${r.toFixed(2)} — surveille`;
-          body = 'Tu approches de la zone à risque (>1.5). Pas alarmant si tu te sens bien, mais reste vigilant sur les signaux de fatigue.';
-        } else if (r < 0.8 && r > 0) {
-          tone = 'caution';
-          label = 'CHARGE FAIBLE';
-          title = `Ratio de charge ${r.toFixed(2)} — sous-entraîné`;
-          body = 'Ta charge récente est très inférieure à ta charge chronique. Si c\'est volontaire (récup, maladie) c\'est OK ; sinon tu risques de perdre tes acquis.';
-        } else {
-          tone = 'positive';
-          label = 'RATIO SAIN';
-          title = `Ratio de charge ${r.toFixed(2)} — zone optimale`;
-          body = 'Tu es dans la zone safe (0.8 à 1.3). Ta charge progresse de manière maîtrisée.';
-        }
-        return { tone, label, title, body };
-      }, [acwr, hasPowerData]);
-
-      const volumeNarrative = useMemo(() => {
-        if (!weeklyTss || weeklyTss.length === 0) return null;
-        const lastWeek = weeklyTss[weeklyTss.length - 1];
-        const last4 = weeklyTss.slice(-4);
-        const avg4 = last4.reduce((s, w) => s + w.tss, 0) / Math.max(1, last4.length);
-        const km4 = last4.reduce((s, w) => s + w.km, 0) / Math.max(1, last4.length);
-        const sess4 = last4.reduce((s, w) => s + w.sessionCount, 0) / Math.max(1, last4.length);
-        const trend = lastWeek.tss > avg4 * 1.15 ? 'au-dessus' : lastWeek.tss < avg4 * 0.85 ? 'en-dessous' : 'dans la norme';
-        return {
-          tone: 'neutral',
-          label: 'VOLUME',
-          title: `${lastWeek.km.toFixed(0)} km cette semaine, ${trend} de ta moyenne`,
-          body: `Sur les 4 dernières semaines tu as tenu en moyenne ${km4.toFixed(0)} km hebdomadaires sur ${sess4.toFixed(1)} séances, pour ${avg4.toFixed(0)} de charge. Cette semaine tu es à ${lastWeek.tss} de charge.`,
-        };
-      }, [weeklyTss]);
-
-      const racePredNarrative = useMemo(() => {
-        if (!predictions || predictions.length === 0) return null;
-        // Find 10K prediction
-        const tenK = predictions.find(p => p.km >= 9.9 && p.km <= 10.1);
-        if (!tenK) return null;
-        const fmtTime = (sec) => {
-          if (!sec) return '—';
-          const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = Math.round(sec % 60);
-          if (h > 0) return `${h}h${String(m).padStart(2,'0')}'${String(s).padStart(2,'0')}`;
-          return `${m}'${String(s).padStart(2,'0')}`;
-        };
-        const calibrated = tenK.calibrated;
-        return {
-          tone: 'compass',
-          label: 'PRÉDICTION 10K',
-          title: `Si tu courais un 10K aujourd'hui : ${fmtTime(tenK.todaySec || tenK.predictedSec)}`,
-          body: calibrated
-            ? `Estimation calibrée sur ton record. Allure cible : ${(((tenK.todaySec || tenK.predictedSec) / 60) / tenK.km).toFixed(2)} min/km.`
-            : `Estimation extrapolée depuis ta puissance seuil et ta courbe de puissance. Calibration au record possible si tu importes une course.`,
-        };
-      }, [predictions]);
-
-      return (
-        <div className="space-y-3">
-          {/* Main fitness narrative — detail (trio + projections) lives on the same tab above */}
-          <Insight tone={fitnessNarrative.tone} label={fitnessNarrative.label} title={fitnessNarrative.title}>
-            {fitnessNarrative.body}
-          </Insight>
-
-          {/* ACWR narrative */}
-          {acwrNarrative && (
-            <Insight tone={acwrNarrative.tone} label={acwrNarrative.label} title={acwrNarrative.title}>
-              {acwrNarrative.body}
-            </Insight>
-          )}
-
-          {/* Volume narrative */}
-          {volumeNarrative && (
-            <Insight tone={volumeNarrative.tone} label={volumeNarrative.label} title={volumeNarrative.title}>
-              {volumeNarrative.body}
-              <div className="mt-3">
-                <button onClick={() => onTabChange('tendances')} className="t-meta inline-flex items-center gap-1" style={{ color: 'var(--compass)', opacity: 0.85 }}>
-                  Voir l'évolution sur 8 semaines <IconArrowRight size={11} />
-                </button>
-              </div>
-            </Insight>
-          )}
-
-          {/* Race prediction narrative */}
-          {racePredNarrative && (
-            <Insight tone={racePredNarrative.tone} label={racePredNarrative.label} title={racePredNarrative.title}>
-              {racePredNarrative.body}
-              <div className="mt-3">
-                <button onClick={() => onTabChange('performance')} className="t-meta inline-flex items-center gap-1" style={{ color: 'var(--compass)', opacity: 0.85 }}>
-                  Voir toutes les distances <IconArrowRight size={11} />
-                </button>
-              </div>
-            </Insight>
-          )}
-        </div>
-      );
-    }
-
     function AnalyticsView({ activities, profile, checkins, planOverrides, races, strengthSessions = [], onSaveProfile, onViewActivity }) {
       const [tab, setTab] = useState('etat'); // etat | tendances | performance
 
@@ -13672,10 +13490,21 @@
       // via puissance, soit via allure (path pace-mode du nouveau computeTSS).
       // C'est cette variable qui pilote l'affichage de la trio + ACWR.
       const hasFitnessData = useMemo(() => activitiesWithTss.some(a => a.tss != null && a.tss > 0), [activitiesWithTss]);
+      // tssCoverage = % d'activités qui contribuent à la charge (TSS calculé,
+      // que ce soit par puissance ou par allure). Sert à signaler une couverture
+      // faible (par exemple manual entries sans données suffisantes).
       const tssCoverage = useMemo(() => {
         const withTss = activitiesWithTss.filter(a => a.tss).length;
         return activities.length > 0 ? withTss / activities.length : 0;
       }, [activitiesWithTss, activities]);
+      // powerCoverage = % d'activités qui ont vraiment de la puissance mesurée.
+      // Différent de tssCoverage : un user en pace mode peut avoir tssCoverage=100%
+      // mais powerCoverage=0%. Sert à la bannière "tes autres activités comptent
+      // en volume seulement" qui est spécifique au mode puissance.
+      const powerCoverage = useMemo(() => {
+        const withPower = activities.filter(a => a.avgPower && a.normalizedPower).length;
+        return activities.length > 0 ? withPower / activities.length : 0;
+      }, [activities]);
 
       // Merged best efforts (used by V2 prediction for measured power lookup)
       const mergedBestEfforts = useMemo(() => {
@@ -13741,12 +13570,25 @@
       const isPaceModePred = (profile.unitMode === 'pace' && !!profile.vma) || (!profile.cp && !!profile.vma);
       const aerobicForPred = useMemo(() => deriveAerobicBaseScore(profile, activities || []), [profile, activities]);
       const predictions = useMemo(() => {
-        const distances = [
+        // Distances core toujours affichées (4) + distances étendues (15k/30k/50k)
+        // affichées seulement si l'utilisateur a un PR pour l'une d'elles. Évite
+        // de polluer la table pour les utilisateurs route classique, mais débloque
+        // les traileurs (50k) et préparations Pfitzinger (15k/30k pour le semi).
+        const coreDistances = [
           { name: '5 km', km: 5, currentKey: '5k' },
           { name: '10 km', km: 10, currentKey: '10k' },
           { name: 'Semi', km: 21.1, currentKey: 'semi' },
           { name: 'Marathon', km: 42.2, currentKey: 'marathon' },
         ];
+        const extendedDistances = [
+          { name: '15 km', km: 15, currentKey: '15k' },
+          { name: '30 km', km: 30, currentKey: '30k' },
+          { name: '50 km', km: 50, currentKey: '50k' },
+        ];
+        const hasExtendedPR = extendedDistances.some(d => profile.prs && profile.prs[d.currentKey]);
+        const distances = hasExtendedPR
+          ? [coreDistances[0], coreDistances[1], extendedDistances[0], coreDistances[2], extendedDistances[1], coreDistances[3], extendedDistances[2]]
+          : coreDistances;
         const wprime = cpWpFit ? cpWpFit.wprime : 15000;
         const tsbForToday = (typeof fitness.tsbNow === 'number') ? fitness.tsbNow : fitness.tsb;
         const tierForPred = getFitnessTier({ cp: profile.cp, weightKg: profile.weightKg, races, sex: profile.sex, experienceLevel: profile.experienceLevel });
@@ -13839,11 +13681,11 @@
               </div>
             </Card>
           )}
-          {hasPowerData && tssCoverage < 0.8 && (
+          {hasPowerData && powerCoverage < 0.8 && (
             <Card className="p-3 mb-4" accent="var(--text-dim)">
               <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-dim)' }}>
                 <IconInfo size={12} />
-                <span>{Math.round(tssCoverage * 100)}% de tes activités ont des données de puissance. Les autres comptent en volume seulement.</span>
+                <span>{Math.round(powerCoverage * 100)}% de tes activités ont de la puissance mesurée. Les autres contribuent à la charge via l'allure (si VMA renseignée), sinon en volume seulement.</span>
               </div>
             </Card>
           )}
@@ -13888,12 +13730,19 @@
           {tab === 'tendances' && (
             <>
               {hasFitnessData && <div className="mb-4"><UnifiedFitnessChartCard activities={activities} profile={profile} planOverrides={planOverrides} /></div>}
-              <div className={`grid grid-cols-1 ${(hasPowerData || (isPaceModePred && activities.length >= 2)) ? 'lg:grid-cols-2' : ''} gap-3 mb-4`}>
+              <div className={`grid grid-cols-1 ${(isPaceModePred ? activities.length >= 2 : hasPowerData) ? 'lg:grid-cols-2' : ''} gap-3 mb-4`}>
                 <WeeklyTSSCard weeks={weeklyTss} hasPowerData={hasFitnessData} />
-                {hasPowerData
-                  ? <PowerCurveCard data={powerCurve} cp={profile.cp} />
-                  : (isPaceModePred && activities.length >= 2 && <PaceCurveCard activities={activities} vma={profile.vma} isTrail={profile.discipline === 'trail'} />)}
+                {isPaceModePred
+                  ? (activities.length >= 2 && <PaceCurveCard activities={activities} vma={profile.vma} isTrail={profile.discipline === 'trail'} />)
+                  : (hasPowerData && <PowerCurveCard data={powerCurve} cp={profile.cp} />)}
               </div>
+              {/* Indicateurs avancés : distribution Z1-Z5 + monotonie/EF */}
+              {activities.length >= 4 && (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-4">
+                  <IntensityDistributionCard activities={activities} profile={profile} />
+                  <MonotonyEFCard activities={activities} profile={profile} />
+                </div>
+              )}
               <div className="mb-4"><YearHeatmapCard activities={activities} profile={profile} onViewActivity={onViewActivity} /></div>
               {/* Pain vs renfo chart — only relevant when the user has at least one tracked zone */}
               {Array.isArray(profile.injuryZones) && profile.injuryZones.length > 0 && (
@@ -13994,7 +13843,7 @@
         })();
 
         return { days, totalKm, totalTss, totalSessions, longestStreak };
-      }, [activities, profile.cp, range]);
+      }, [activities, profile.cp, profile.vma, profile.easyPaceMinPerKm, profile.unitMode, range]);
 
       function colorForKm(km) {
         if (km === 0) return '#1A1A1A';
@@ -14228,7 +14077,7 @@
           <Card className="p-6 h-full flex flex-col justify-center">
             <div className="flex items-center gap-2 mb-3">
               <IconAlert size={14} style={{ color: 'var(--text-faint)' }} />
-              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }} title={TERMS.acwr.tooltip}>RATIO DE CHARGE <span style={{ opacity: 0.5 }}>ACWR</span>{softMode ? '' : ' · RISQUE BLESSURE'}</div>
+              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }} title={TERMS.acwr.tooltip}>RATIO DE CHARGE <span style={{ opacity: 0.5 }}>ACWR</span>{softMode ? '' : ' · ÉQUILIBRE CHARGE'}</div>
             </div>
             <div className="text-sm" style={{ color: 'var(--text-dim)' }}>Pas assez d'historique. Importe 3-4 semaines d'activités pour calculer ton ratio.</div>
           </Card>
@@ -14260,8 +14109,8 @@
         zones = [
           { id: 'undertraining', label: 'Sous-entraînement', range: '0 → 0.8', color: 'var(--text-dim)', bg: 'rgba(138, 138, 138, 0.3)', width: 40, advice: 'Tu fais moins que ta moyenne 28j. Cool si volontaire (récup), mais si ça dure tu vas perdre en condition. Tu peux progressivement remonter le volume.' },
           { id: 'sweet', label: 'Zone safe', range: '0.8 → 1.3', color: 'var(--go)', bg: 'rgba(143, 232, 106, 0.4)', width: 25, advice: "Tu fais entre 80% et 130% de ta moyenne. C'est la zone idéale pour progresser sans casser. Continue comme ça." },
-          { id: 'high', label: 'Zone élevée', range: '1.3 → 1.5', color: 'var(--warn)', bg: 'rgba(255, 176, 32, 0.4)', width: 10, advice: "Tu pousses fort cette semaine. Risque de blessure modéré. Vigilance sur la suite — pas plus, et surveille les signaux du corps (genou, fatigue)." },
-          { id: 'danger', label: 'Zone risque', range: '1.5+', color: 'var(--danger)', bg: 'rgba(255, 91, 91, 0.4)', width: 25, advice: "Charge bien trop forte par rapport à ton historique. Le risque de blessure devient significatif. Récup obligatoire 48-72h, puis reviens progressivement." },
+          { id: 'high', label: 'Charge élevée', range: '1.3 → 1.5', color: 'var(--warn)', bg: 'rgba(255, 176, 32, 0.4)', width: 10, advice: "Tu pousses fort cette semaine. Vigilance sur la suite : surveille tes signaux corps (genou, fatigue, sommeil). La littérature 2020+ nuance le lien direct ACWR↔blessure, mais une charge nettement au-dessus de la norme reste à observer." },
+          { id: 'danger', label: 'Charge très forte', range: '1.5+', color: 'var(--danger)', bg: 'rgba(255, 91, 91, 0.4)', width: 25, advice: "Charge bien au-dessus de ton historique. Une journée de récup, puis un retour progressif est plus sage que de continuer à empiler. Pas une garantie de blessure — un signal à prendre en compte avec tes sensations." },
         ];
       }
       // Pour trailMode, on a élargi la zone "sweet" donc on remappe la zone détectée
@@ -14281,7 +14130,7 @@
         <Card className="p-6 h-full flex flex-col" accent={currentZone.color}>
           <div className="flex items-center gap-2 mb-4">
             <IconAlert size={14} style={{ color: currentZone.color }} />
-            <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }} title={TERMS.acwr.tooltip}>RATIO DE CHARGE <span style={{ opacity: 0.5 }}>ACWR</span> · RISQUE BLESSURE</div>
+            <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }} title={TERMS.acwr.tooltip}>RATIO DE CHARGE <span style={{ opacity: 0.5 }}>ACWR</span> · ÉQUILIBRE CHARGE</div>
           </div>
           <div className="font-display text-5xl font-bold tabular leading-none mb-1" style={{ color: currentZone.color }}>{ratio.toFixed(2)}</div>
           <div className="font-mono text-[10px] tracking-widest mb-5" style={{ color: currentZone.color }}>{currentZone.label.toUpperCase()}</div>
@@ -14416,7 +14265,7 @@
           totalPastTss: Math.round(pastTss.reduce((s, v) => s + v, 0)),
           totalFutureTss: Math.round(futTss.reduce((s, v) => s + v, 0)),
         };
-      }, [activities, profile.cp, profile.weightKg, planOverrides]);
+      }, [activities, profile.cp, profile.weightKg, profile.vma, profile.easyPaceMinPerKm, profile.unitMode, planOverrides]);
 
       if (!data) return null;
 
@@ -14820,6 +14669,245 @@
       );
     }
 
+    // ========================================================================
+    // INTENSITY DISTRIBUTION CARD — Polarisation 80/20 (Seiler 3-zone model).
+    // Classifie chaque activité par intensité moyenne (puissance ou allure) en
+    // 3 zones : Endurance (Z1-Z2), Seuil (Z3-Z4), Intensif (Z5+).
+    // Affiche un donut + verdict polarisation sur les 4 dernières semaines.
+    // ========================================================================
+    function IntensityDistributionCard({ activities, profile }) {
+      const data = useMemo(() => {
+        if (!activities || activities.length === 0) return null;
+        const fourWeeksAgo = Date.now() - 28 * 86400000;
+        const recent = activities.filter(a => a.startMs >= fourWeeksAgo && a.durationSec > 0);
+        if (recent.length === 0) return null;
+        // Allure seuil (mode allure) ou CP (mode puissance) déjà calculés.
+        const usePower = !!profile.cp && recent.some(a => a.normalizedPower);
+        const useVMA = !usePower && !!profile.vma;
+        if (!usePower && !useVMA) return null;
+        let easyTime = 0, thresholdTime = 0, hardTime = 0;
+        recent.forEach(a => {
+          let cpFrac = null;
+          if (usePower && a.normalizedPower) {
+            cpFrac = a.normalizedPower / profile.cp;
+          } else if (useVMA && a.paceMinPerKm) {
+            // Seuil ≈ pace équivalente à 92% CP, soit VMA × 0.86 environ.
+            // Allure brute → vitesse km/h → fraction de VMA.
+            const speedKmH = 60 / a.paceMinPerKm;
+            const vmaFrac = speedKmH / profile.vma;
+            // Mapping rough vmaFrac → cpFrac : 0.65 vmaFrac ≈ 0.72 cpFrac (footing).
+            // Approximation linéaire : cpFrac ≈ vmaFrac × 1.10.
+            cpFrac = vmaFrac * 1.10;
+          }
+          if (cpFrac == null) return;
+          // Seiler 3 zones : easy < 0.85, threshold 0.85-1.00, hard > 1.00
+          if (cpFrac < 0.85) easyTime += a.durationSec;
+          else if (cpFrac <= 1.00) thresholdTime += a.durationSec;
+          else hardTime += a.durationSec;
+        });
+        const total = easyTime + thresholdTime + hardTime;
+        if (total === 0) return null;
+        const easyPct = (easyTime / total) * 100;
+        const thresholdPct = (thresholdTime / total) * 100;
+        const hardPct = (hardTime / total) * 100;
+        // Verdict : Seiler suggère ~80% facile, ~10-15% seuil, ~10-15% intensif.
+        let verdict, verdictColor, verdictDetail;
+        if (easyPct >= 75 && hardPct >= 5) {
+          verdict = 'Polarisé (≈ 80/20)';
+          verdictColor = 'var(--go)';
+          verdictDetail = "Distribution proche du modèle Seiler. Tu construis ta base sans cramer.";
+        } else if (easyPct < 60) {
+          verdict = 'Trop intense';
+          verdictColor = 'var(--warn)';
+          verdictDetail = "Pas assez de Z1-Z2. Risque de stagnation + fatigue chronique. Ralentis les footings.";
+        } else if (hardPct < 5) {
+          verdict = 'Manque d\'intensité';
+          verdictColor = 'var(--caution)';
+          verdictDetail = "Très endurance, peu de qualité. Ajoute 1 séance intervals/tempo par semaine pour progresser.";
+        } else {
+          verdict = 'Pyramidal';
+          verdictColor = 'var(--text)';
+          verdictDetail = "Plus de Z3 que de Z5+. Pas mauvais mais moins efficace que polarisé pour les distances 5K-semi.";
+        }
+        return { easyPct, thresholdPct, hardPct, easyMin: easyTime / 60, thresholdMin: thresholdTime / 60, hardMin: hardTime / 60, verdict, verdictColor, verdictDetail, sessionCount: recent.length };
+      }, [activities, profile.cp, profile.vma]);
+      if (!data) {
+        return (
+          <Card className="p-6 h-full flex flex-col justify-center items-center text-center">
+            <IconBarChart size={28} style={{ color: 'var(--text-faint)' }} className="mb-3" />
+            <div className="font-display text-base font-bold mb-1">Distribution d'intensité</div>
+            <div className="text-xs max-w-xs" style={{ color: 'var(--text-dim)' }}>Importe des activités des 4 dernières semaines (avec puissance ou allure) pour voir comment tu répartis ton temps.</div>
+          </Card>
+        );
+      }
+      // Donut SVG
+      const R = 60, r = 36, cx = 80, cy = 80;
+      const arcs = [
+        { pct: data.easyPct, color: '#8FE86A', label: 'Endurance' },
+        { pct: data.thresholdPct, color: '#FFB020', label: 'Seuil' },
+        { pct: data.hardPct, color: '#FF5B5B', label: 'Intensif' },
+      ];
+      let cumPct = 0;
+      const arcPaths = arcs.map(a => {
+        const startAngle = (cumPct / 100) * 2 * Math.PI - Math.PI / 2;
+        cumPct += a.pct;
+        const endAngle = (cumPct / 100) * 2 * Math.PI - Math.PI / 2;
+        const largeArc = a.pct > 50 ? 1 : 0;
+        const x1 = cx + R * Math.cos(startAngle), y1 = cy + R * Math.sin(startAngle);
+        const x2 = cx + R * Math.cos(endAngle), y2 = cy + R * Math.sin(endAngle);
+        const x3 = cx + r * Math.cos(endAngle), y3 = cy + r * Math.sin(endAngle);
+        const x4 = cx + r * Math.cos(startAngle), y4 = cy + r * Math.sin(startAngle);
+        return { d: `M ${x1} ${y1} A ${R} ${R} 0 ${largeArc} 1 ${x2} ${y2} L ${x3} ${y3} A ${r} ${r} 0 ${largeArc} 0 ${x4} ${y4} Z`, color: a.color };
+      });
+      return (
+        <Card className="p-6 h-full" accent={data.verdictColor}>
+          <div className="flex items-center gap-2 mb-4">
+            <IconBarChart size={14} style={{ color: 'var(--compass)' }} />
+            <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>DISTRIBUTION D'INTENSITÉ · 4 SEMAINES</div>
+          </div>
+          <div className="flex items-center gap-5 mb-4">
+            <svg viewBox="0 0 160 160" width="120" height="120" style={{ flexShrink: 0 }}>
+              {arcPaths.map((a, i) => <path key={i} d={a.d} fill={a.color} stroke="#0A0A0A" strokeWidth="1" />)}
+            </svg>
+            <div className="flex-1">
+              <div className="font-display text-lg font-bold mb-2" style={{ color: data.verdictColor }}>{data.verdict}</div>
+              {arcs.map((a, i) => (
+                <div key={i} className="flex items-center gap-2 font-mono text-xs mb-1">
+                  <div className="w-3 h-3 rounded" style={{ background: a.color }}></div>
+                  <span style={{ color: 'var(--text-dim)' }}>{a.label}</span>
+                  <span className="ml-auto tabular" style={{ color: 'var(--text)' }}>{a.pct.toFixed(0)}%</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>{data.verdictDetail}</div>
+          <div className="mt-3 font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
+            Modèle Seiler 3 zones · classement par intensité moyenne de chaque séance. {data.sessionCount} séances analysées.
+          </div>
+        </Card>
+      );
+    }
+
+    // ========================================================================
+    // MONOTONY & EFFICIENCY FACTOR CARD — Indicateurs Foster + Friel.
+    // Monotonie = moyenne TSS journalier / écart-type (sur 7 jours). > 2 = élevée.
+    // EF = NP / FC moyenne — progresse avec l'endurance aérobie (Friel).
+    // ========================================================================
+    function MonotonyEFCard({ activities, profile }) {
+      const data = useMemo(() => {
+        if (!activities || activities.length === 0) return null;
+        const dayMs = 86400000;
+        const todayMs = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
+        // === Monotonie Foster sur 7 derniers jours ===
+        const dailyTss = new Array(7).fill(0);
+        activities.forEach(a => {
+          const tss = computeTSS(a, profile);
+          if (!tss) return;
+          const aDay = new Date(a.startMs); aDay.setHours(0,0,0,0);
+          const daysAgo = Math.round((todayMs - aDay.getTime()) / dayMs);
+          if (daysAgo >= 0 && daysAgo < 7) dailyTss[daysAgo] += tss;
+        });
+        const mean = dailyTss.reduce((s, v) => s + v, 0) / 7;
+        const variance = dailyTss.reduce((s, v) => s + (v - mean) ** 2, 0) / 7;
+        const sd = Math.sqrt(variance);
+        // Monotonie n'a de sens que si la semaine a au moins ~150 TSS au total
+        // (sinon écart-type fragile sur petits volumes).
+        const weekTss = mean * 7;
+        const monotony = (sd > 0 && weekTss >= 150) ? mean / sd : null;
+        const strain = monotony ? weekTss * monotony : null;
+        let monoLabel, monoColor, monoAdvice;
+        if (monotony == null) {
+          monoLabel = '—'; monoColor = 'var(--text-faint)';
+          monoAdvice = 'Pas assez de charge cette semaine pour calculer la monotonie.';
+        } else if (monotony < 1.5) {
+          monoLabel = 'Bien variée'; monoColor = 'var(--go)';
+          monoAdvice = "Tes journées sont bien différenciées (séances dures vs récup). Schéma protecteur.";
+        } else if (monotony < 2.0) {
+          monoLabel = 'Modérée'; monoColor = 'var(--text-dim)';
+          monoAdvice = "Variation correcte. Garde des journées vraiment off entre les séances dures.";
+        } else if (monotony < 2.5) {
+          monoLabel = 'Élevée'; monoColor = 'var(--warn)';
+          monoAdvice = "Trop de journées similaires. Selon Foster (1998), au-dessus de 2.0 le risque maladie/blessure monte. Insère un vrai jour off.";
+        } else {
+          monoLabel = 'Critique'; monoColor = 'var(--danger)';
+          monoAdvice = "Tu cours fort tous les jours. Foster (1998) : monotonie > 2.5 = risque significatif. Au moins 2 jours off complets cette semaine.";
+        }
+        // === EF (Efficiency Factor) sur 4 dernières semaines ===
+        const fourWeeksAgo = todayMs - 28 * dayMs;
+        const efActs = activities.filter(a => a.startMs >= fourWeeksAgo && a.normalizedPower && a.avgHr && a.avgHr > 80);
+        let efRecent = null, efPrev = null;
+        if (efActs.length >= 3) {
+          const efs = efActs.map(a => a.normalizedPower / a.avgHr);
+          efRecent = efs.reduce((s, v) => s + v, 0) / efs.length;
+          // Comparer avec les 4 semaines précédentes
+          const eightWeeksAgo = todayMs - 56 * dayMs;
+          const prevActs = activities.filter(a => a.startMs >= eightWeeksAgo && a.startMs < fourWeeksAgo && a.normalizedPower && a.avgHr && a.avgHr > 80);
+          if (prevActs.length >= 3) {
+            const prevEfs = prevActs.map(a => a.normalizedPower / a.avgHr);
+            efPrev = prevEfs.reduce((s, v) => s + v, 0) / prevEfs.length;
+          }
+        }
+        let efDelta = null, efTrend = null, efColor = 'var(--text-dim)';
+        if (efRecent != null && efPrev != null) {
+          efDelta = ((efRecent - efPrev) / efPrev) * 100;
+          if (efDelta > 1.5) { efTrend = 'en progression'; efColor = 'var(--go)'; }
+          else if (efDelta < -1.5) { efTrend = 'en recul'; efColor = 'var(--warn)'; }
+          else { efTrend = 'stable'; efColor = 'var(--text)'; }
+        }
+        return { monotony, strain, monoLabel, monoColor, monoAdvice, weekTss, efRecent, efPrev, efDelta, efTrend, efColor, efSampleCount: efActs.length };
+      }, [activities, profile.cp, profile.vma]);
+      if (!data) return null;
+      return (
+        <Card className="p-6 h-full">
+          <div className="flex items-center gap-2 mb-4">
+            <IconTrending size={14} style={{ color: 'var(--compass)' }} />
+            <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>INDICATEURS AVANCÉS · MONOTONIE + EF</div>
+          </div>
+          {/* Monotonie */}
+          <div className="mb-5">
+            <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>MONOTONIE 7J <span style={{ opacity: 0.5 }}>FOSTER</span></div>
+            <div className="flex items-baseline gap-3 mb-1">
+              <div className="font-display text-3xl font-bold tabular leading-none" style={{ color: data.monoColor }}>{data.monotony != null ? data.monotony.toFixed(2) : '—'}</div>
+              <div className="font-mono text-xs tracking-widest" style={{ color: data.monoColor }}>{data.monoLabel.toUpperCase()}</div>
+            </div>
+            <div className="text-xs leading-relaxed" style={{ color: 'var(--text-dim)' }}>{data.monoAdvice}</div>
+            {data.strain != null && (
+              <div className="mt-1 font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>Strain = {Math.round(data.strain)} (charge hebdo × monotonie)</div>
+            )}
+          </div>
+          {/* EF */}
+          <div className="pt-4 border-t" style={{ borderColor: 'var(--border)' }}>
+            <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>EFFICACITÉ AÉROBIE <span style={{ opacity: 0.5 }}>EF · PUISSANCE/FC</span></div>
+            {data.efRecent == null ? (
+              <div className="text-xs" style={{ color: 'var(--text-dim)' }}>
+                Besoin d'au moins 3 activités récentes avec puissance + FC pour calculer ton EF.
+              </div>
+            ) : (
+              <>
+                <div className="flex items-baseline gap-3 mb-1">
+                  <div className="font-display text-3xl font-bold tabular leading-none" style={{ color: data.efColor }}>{data.efRecent.toFixed(2)}</div>
+                  {data.efDelta != null && (
+                    <div className="font-mono text-xs" style={{ color: data.efColor }}>
+                      {data.efDelta > 0 ? '+' : ''}{data.efDelta.toFixed(1)}% · {data.efTrend}
+                    </div>
+                  )}
+                </div>
+                <div className="text-xs leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+                  {data.efDelta == null
+                    ? `Moyenne 4 semaines (${data.efSampleCount} séances). Pas encore d'historique pour comparer.`
+                    : data.efDelta > 1.5
+                      ? "Ton endurance aérobie progresse : à FC équivalente, tu sors plus de puissance. Bon signe."
+                      : data.efDelta < -1.5
+                        ? "EF en recul — fatigue accumulée, mauvaise récup, ou chaleur. Surveille la suite."
+                        : "EF stable. Indicateur de fond mature."}
+                </div>
+              </>
+            )}
+          </div>
+        </Card>
+      );
+    }
+
     function WeeklyTSSCard({ weeks, hasPowerData = true }) {
       const [hoverIdx, setHoverIdx] = useState(null);
       const useKm = !hasPowerData;
@@ -15021,7 +15109,7 @@
           <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
             <div className="flex items-center gap-2">
               <IconZap size={14} style={{ color: 'var(--accent)' }} />
-              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>COURBE D'ALLURE · MEAN MAX{filter !== 'all' ? (filter === 'flat' ? ' · PLAT' : ' · VALLONNÉ') : ''}</div>
+              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>COURBE D'ALLURE · ENVELOPPE PAR DURÉE{filter !== 'all' ? (filter === 'flat' ? ' · PLAT' : ' · VALLONNÉ') : ''}</div>
             </div>
             <div className="font-mono text-[10px] tabular" style={{ color: 'var(--text-dim)' }}>
               {hoverPoint ? (
