@@ -7797,9 +7797,9 @@
         const ctlNow = renfoCtl[totalDays];
         const ctlStart = renfoCtl[0];
         if (ctlNow > ctlStart + 0.3 && recentAvg < oldAvg - 0.5) {
-          insight = { tone: 'positive', text: `Renfo CTL ${ctlStart.toFixed(1)} → ${ctlNow.toFixed(1)} · Douleur ${oldAvg.toFixed(1)} → ${recentAvg.toFixed(1)}. La corrélation joue dans le bon sens.` };
+          insight = { tone: 'positive', text: `Régularité renfo ${ctlStart.toFixed(1)} → ${ctlNow.toFixed(1)} séances/sem · Douleur ${oldAvg.toFixed(1)} → ${recentAvg.toFixed(1)}. La corrélation joue dans le bon sens.` };
         } else if (ctlNow < ctlStart - 0.3 && recentAvg > oldAvg + 0.5) {
-          insight = { tone: 'negative', text: `Renfo en baisse (${ctlStart.toFixed(1)} → ${ctlNow.toFixed(1)}) et douleur qui remonte (${oldAvg.toFixed(1)} → ${recentAvg.toFixed(1)}). Le lien est net.` };
+          insight = { tone: 'negative', text: `Renfo en baisse (${ctlStart.toFixed(1)} → ${ctlNow.toFixed(1)} séances/sem) et douleur qui remonte (${oldAvg.toFixed(1)} → ${recentAvg.toFixed(1)}). Le lien est net.` };
         }
       }
 
@@ -7820,20 +7820,23 @@
       return (
         <Card className="p-6 mb-4">
           <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-            <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>{zoneTitle} vs RENFO CTL · {weeksBack} SEMAINES</div>
+            <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>{zoneTitle} vs RÉGULARITÉ RENFO · {weeksBack} SEMAINES</div>
             <div className="flex items-center gap-3 font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
-              <span className="flex items-center gap-1.5"><span className="w-3 h-0.5" style={{ background: 'var(--compass)' }} />RENFO CTL</span>
-              <span className="flex items-center gap-1.5"><span className="w-3 h-0.5" style={{ background: 'var(--critical)' }} />DOULEUR</span>
+              <span className="flex items-center gap-1.5" title="Moyenne lissée des séances de renfo par semaine — l'idée est de voir si tu en fais régulièrement, pas juste si tu en as fait une cette semaine"><span className="w-3 h-0.5" style={{ background: 'var(--compass)' }} />SÉANCES RENFO/SEM</span>
+              <span className="flex items-center gap-1.5" title="Tes notes de douleur après chaque course (0-10), lissées sur 3 semaines"><span className="w-3 h-0.5" style={{ background: 'var(--critical)' }} />NIVEAU DE DOULEUR</span>
             </div>
+          </div>
+          <div className="mb-3 font-mono text-[10px] leading-relaxed" style={{ color: 'var(--text-faint)' }}>
+            La ligne bleue = ta moyenne de séances de renfo par semaine (lissée sur 14 jours pour éviter les sauts). Une semaine avec 2 séances renfo te tire vers le haut, 0 séance te tire vers le bas — le but est de voir ta <strong>régularité</strong>, pas juste tes pics.
           </div>
           {hoverIdx != null ? (
             <div className="mb-2 font-mono text-xs" style={{ color: 'var(--text-dim)' }}>
               <span style={{ color: 'var(--compass)' }}>{fmtDate(hoverDate.getTime(), true)}</span>
-              {hoverRenfoCtl != null && <span className="ml-3">Renfo CTL : <span className="tabular" style={{ color: 'var(--text)' }}>{hoverRenfoCtl.toFixed(2)}</span></span>}
+              {hoverRenfoCtl != null && <span className="ml-3">Renfo (lissé) : <span className="tabular" style={{ color: 'var(--text)' }}>{hoverRenfoCtl.toFixed(2)}</span><span style={{ color: 'var(--text-faint)' }}> séances/sem</span></span>}
               {hoverPainScore != null && (
                 <span className="ml-3">
-                  Douleur lissée : <span className="tabular" style={{ color: 'var(--critical)' }}>{hoverPainScore.toFixed(1)}/10</span>
-                  {hoverPainPoint && <span className="ml-1" style={{ color: 'var(--text-faint)' }}>(check-in jour : {hoverPainPoint.score}/10)</span>}
+                  Douleur (lissée) : <span className="tabular" style={{ color: 'var(--critical)' }}>{hoverPainScore.toFixed(1)}/10</span>
+                  {hoverPainPoint && <span className="ml-1" style={{ color: 'var(--text-faint)' }}>(check-in du jour : {hoverPainPoint.score}/10)</span>}
                 </span>
               )}
             </div>
@@ -13806,7 +13809,7 @@
               {/* Indicateurs avancés : distribution Z1-Z5 + monotonie/EF */}
               {activities.length >= 4 && (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-4">
-                  <IntensityDistributionCard activities={activities} profile={profile} />
+                  <IntensityDistributionCard activities={activities} profile={profile} races={races} />
                   <MonotonyCard activities={activities} profile={profile} />
                 </div>
               )}
@@ -14743,7 +14746,8 @@
     // 3 zones : Endurance (Z1-Z2), Seuil (Z3-Z4), Intensif (Z5+).
     // Affiche un donut + verdict polarisation sur les 4 dernières semaines.
     // ========================================================================
-    function IntensityDistributionCard({ activities, profile }) {
+    function IntensityDistributionCard({ activities, profile, races }) {
+      const [hoverZone, setHoverZone] = useState(null);
       const data = useMemo(() => {
         if (!activities || activities.length === 0) return null;
         const fourWeeksAgo = Date.now() - 28 * 86400000;
@@ -14753,25 +14757,15 @@
         const useVMA = !usePower && !!profile.vma;
         if (!usePower && !useVMA) return null;
         // CLASSIFICATION PAR TYPE DE SÉANCE en priorité (Seiler 3 zones).
-        // Raison : la NP globale d'une séance d'intervalles 5×3' à 1.10 CP fait
-        // typiquement ~0.85 CP (échauffement + récup baissent la moyenne) — la
-        // classer en "seuil" sous-estime le travail intensif réellement effectué.
-        // Le type de séance (linkedSession.type ou activity.sport hint) capture
-        // l'INTENTION : intervals/hills/test = hard, tempo = threshold, etc.
-        // Quand l'info de type manque (séance manuelle non liée), on retombe sur
-        // la NP/cpFrac comme avant.
         function classifySession(a) {
           const linkedType = a.linkedSession && a.linkedSession.type;
           if (linkedType === 'intervals' || linkedType === 'hills' || linkedType === 'test') return 'hard';
           if (linkedType === 'tempo') return 'threshold';
           if (linkedType === 'easy' || linkedType === 'long') return 'easy';
-          // Pas de type → on classifie par intensité moyenne sur l'effort.
           let cpFrac = null;
           if (usePower && a.normalizedPower) cpFrac = a.normalizedPower / profile.cp;
           else if (useVMA && a.paceMinPerKm) cpFrac = (60 / a.paceMinPerKm / profile.vma) * 1.10;
           if (cpFrac == null) return null;
-          // Bornes plus permissives pour le "hard" : sans type connu, une activité
-          // dont la NP globale dépasse 0.95 CP est probablement un effort intense.
           if (cpFrac < 0.82) return 'easy';
           if (cpFrac <= 0.95) return 'threshold';
           return 'hard';
@@ -14790,27 +14784,71 @@
         const easyPct = (easyTime / total) * 100;
         const thresholdPct = (thresholdTime / total) * 100;
         const hardPct = (hardTime / total) * 100;
-        // Verdict : Seiler suggère ~80% facile, ~10-15% seuil, ~10-15% intensif.
+
+        // Détecte la prochaine course pour adapter le verdict. Plus la distance
+        // est longue, plus le seuil (Z3) devient bénéfique (race-pace marathon
+        // est en zone seuil). Plus elle est courte, plus la VO2max (Z5+) est
+        // critique pour la perf.
+        let nextRace = null;
+        const today = Date.now();
+        if (Array.isArray(races) && races.length > 0) {
+          const future = races
+            .filter(r => r.date && new Date(r.date).getTime() >= today)
+            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+          nextRace = future[0] || null;
+        }
+        // Catégorise la distance pour le ton du verdict.
+        function raceCategory(r) {
+          if (!r) return 'generic';
+          const d = String(r.distance || '').toLowerCase();
+          if (/^5k|^10k|^5(?:km)?$|^10(?:km)?$/.test(d)) return 'short';     // 5K-10K
+          if (/^15k|^semi|^half|^21|^15(?:km)?$/.test(d)) return 'mid';       // 15K-semi
+          if (/marathon|^42/.test(d)) return 'long';                          // marathon
+          if (/trail.*long|^50|^60|^80|ultra/.test(d)) return 'ultra';        // ultra
+          if (/trail.*court|trail|^25|^30|^40/.test(d)) return 'long';        // trail court
+          return 'generic';
+        }
+        const cat = raceCategory(nextRace);
+        // Verdict adapté à la course visée.
+        // Modèles dominants par catégorie (consensus literature 2020+) :
+        //  - short (5K/10K) : polarisé strict, Z5+ ≥ 8 %
+        //  - mid (15K/semi) : polarisé acceptable, race-pace plus présent
+        //  - long (marathon/trail court) : pyramidal accepté, Z3 dominant en peak
+        //  - ultra : pyramidal/threshold dominant, Z5+ rare
         let verdict, verdictColor, verdictDetail;
-        if (easyPct >= 75 && hardPct >= 5) {
-          verdict = 'Polarisé (≈ 80/20)';
-          verdictColor = 'var(--go)';
-          verdictDetail = "Distribution proche du modèle Seiler. Tu construis ta base sans cramer.";
-        } else if (easyPct < 60) {
+        const raceName = nextRace ? (nextRace.name || String(nextRace.distance || '').toUpperCase()) : null;
+        const raceSuffix = raceName ? ` pour ton ${raceName.length < 24 ? raceName : nextRace.distance}` : '';
+        if (easyPct < 60) {
           verdict = 'Trop intense';
           verdictColor = 'var(--warn)';
-          verdictDetail = "Pas assez de Z1-Z2. Risque de stagnation + fatigue chronique. Ralentis les footings.";
-        } else if (hardPct < 5) {
+          verdictDetail = `Pas assez de Z1-Z2 (${easyPct.toFixed(0)} %). Risque de stagnation + fatigue chronique. Ralentis tes footings — vise 70-80 % en endurance facile${raceSuffix}.`;
+        } else if (hardPct < 5 && cat !== 'ultra' && cat !== 'long') {
           verdict = 'Manque d\'intensité';
           verdictColor = 'var(--caution)';
-          verdictDetail = "Très endurance, peu de qualité. Ajoute 1 séance intervals/tempo par semaine pour progresser.";
+          verdictDetail = `Très endurance, peu de qualité. Ajoute 1 séance intervals/VO2max par semaine pour progresser${raceSuffix}.`;
+        } else if (easyPct >= 75 && hardPct >= 5 && (cat === 'short' || cat === 'mid' || cat === 'generic')) {
+          verdict = 'Polarisé (≈ 80/20)';
+          verdictColor = 'var(--go)';
+          verdictDetail = `Distribution proche du modèle Seiler — optimal${raceSuffix}. Tu construis ta base sans cramer, l'intensité reste affûtée.`;
+        } else if (cat === 'long' && thresholdPct >= 15 && easyPct >= 65) {
+          verdict = 'Pyramidal (adapté marathon)';
+          verdictColor = 'var(--go)';
+          verdictDetail = `Distribution pyramidale (beaucoup d'easy + Z3 race-pace). Cohérent avec ${raceName || 'un marathon'} : l'allure cible est précisément en zone seuil, le travail Z3 paie ici.`;
+        } else if (cat === 'ultra' && easyPct >= 75) {
+          verdict = 'Profil aérobie (adapté ultra)';
+          verdictColor = 'var(--go)';
+          verdictDetail = `Distribution très aérobie, cohérent avec ${raceName || 'un ultra'}. La capacité à durer prime ; pas besoin de beaucoup de Z5+.`;
+        } else if (cat === 'short' || cat === 'mid') {
+          verdict = 'Pyramidal';
+          verdictColor = 'var(--caution)';
+          verdictDetail = `Plus de Z3 que de Z5+. Pour ${raceName || `un ${cat === 'short' ? '5K-10K' : 'semi'}`}, le modèle polarisé (Seiler 80/20) est plus efficace — privilégie des intervalles VO2max (Z5+) plutôt que du tempo (Z3) en phase Build.`;
         } else {
           verdict = 'Pyramidal';
           verdictColor = 'var(--text)';
-          verdictDetail = "Plus de Z3 que de Z5+. Pas mauvais mais moins efficace que polarisé pour les distances 5K-semi.";
+          verdictDetail = `Plus de Z3 que de Z5+${raceSuffix ? ` (${raceSuffix.trim().slice(4)})` : ''}. Acceptable, mais le polarisé est généralement plus efficace sur les distances courtes.`;
         }
-        return { easyPct, thresholdPct, hardPct, easyCount, thresholdCount, hardCount, verdict, verdictColor, verdictDetail, sessionCount: recent.length };
-      }, [activities, profile.cp, profile.vma]);
+        return { easyPct, thresholdPct, hardPct, easyCount, thresholdCount, hardCount, easyMin: easyTime/60, thresholdMin: thresholdTime/60, hardMin: hardTime/60, verdict, verdictColor, verdictDetail, sessionCount: recent.length, raceCategory: cat, raceName, nextRaceDistance: nextRace ? nextRace.distance : null };
+      }, [activities, profile.cp, profile.vma, races]);
       if (!data) {
         return (
           <Card className="p-6 h-full flex flex-col justify-center items-center text-center">
@@ -14820,12 +14858,35 @@
           </Card>
         );
       }
-      // Donut SVG
+      // Donut SVG interactif. Hover sur un segment → met en évidence + détail.
       const R = 60, r = 36, cx = 80, cy = 80;
+      const zoneDescriptions = {
+        easy: {
+          label: 'Endurance facile',
+          short: 'Endurance',
+          color: '#8FE86A',
+          range: '< 82 % CP / < 75 % VMA',
+          desc: "Z1-Z2. Tu peux tenir une conversation, FC bien sous le seuil aérobie. C'est ce qui construit ton moteur sur le long terme (capillaires, mitochondries, économie de course).",
+        },
+        threshold: {
+          label: 'Allure seuil',
+          short: 'Seuil',
+          color: '#FFB020',
+          range: '82-95 % CP / 75-92 % VMA',
+          desc: "Z3-Z4. Allure tempo / sub-LT / race-pace semi-marathon. Difficile à tenir mais soutenable 20-60 minutes. C'est l'allure qui pousse ton seuil lactique vers le haut.",
+        },
+        hard: {
+          label: 'Intensif (VO2max+)',
+          short: 'Intensif',
+          color: '#FF5B5B',
+          range: '> 95 % CP / > 92 % VMA',
+          desc: "Z5 et au-dessus. Intervalles VMA, séances test, intensité 3-10 minutes max. Crée l'adaptation cardiovasculaire centrale (VO2max).",
+        },
+      };
       const arcs = [
-        { pct: data.easyPct, color: '#8FE86A', label: 'Endurance', count: data.easyCount },
-        { pct: data.thresholdPct, color: '#FFB020', label: 'Seuil', count: data.thresholdCount },
-        { pct: data.hardPct, color: '#FF5B5B', label: 'Intensif', count: data.hardCount },
+        { key: 'easy',      pct: data.easyPct,      time: data.easyMin,      count: data.easyCount,      ...zoneDescriptions.easy },
+        { key: 'threshold', pct: data.thresholdPct, time: data.thresholdMin, count: data.thresholdCount, ...zoneDescriptions.threshold },
+        { key: 'hard',      pct: data.hardPct,      time: data.hardMin,      count: data.hardCount,      ...zoneDescriptions.hard },
       ];
       let cumPct = 0;
       const arcPaths = arcs.map(a => {
@@ -14837,33 +14898,77 @@
         const x2 = cx + R * Math.cos(endAngle), y2 = cy + R * Math.sin(endAngle);
         const x3 = cx + r * Math.cos(endAngle), y3 = cy + r * Math.sin(endAngle);
         const x4 = cx + r * Math.cos(startAngle), y4 = cy + r * Math.sin(startAngle);
-        return { d: `M ${x1} ${y1} A ${R} ${R} 0 ${largeArc} 1 ${x2} ${y2} L ${x3} ${y3} A ${r} ${r} 0 ${largeArc} 0 ${x4} ${y4} Z`, color: a.color };
+        return { key: a.key, d: `M ${x1} ${y1} A ${R} ${R} 0 ${largeArc} 1 ${x2} ${y2} L ${x3} ${y3} A ${r} ${r} 0 ${largeArc} 0 ${x4} ${y4} Z`, color: a.color };
       });
+      const fmtZoneTime = (min) => {
+        if (min >= 60) {
+          const h = Math.floor(min / 60);
+          const m = Math.round(min % 60);
+          return m === 0 ? `${h}h` : `${h}h${String(m).padStart(2, '0')}`;
+        }
+        return `${Math.round(min)} min`;
+      };
+      const focused = hoverZone ? arcs.find(a => a.key === hoverZone) : null;
       return (
-        <Card className="p-6 h-full" accent={data.verdictColor}>
-          <div className="flex items-center gap-2 mb-4">
-            <IconBarChart size={14} style={{ color: 'var(--compass)' }} />
-            <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>DISTRIBUTION D'INTENSITÉ · 4 SEMAINES</div>
+        <Card className="p-6 h-full" accent={focused ? focused.color : data.verdictColor}>
+          <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+            <div className="flex items-center gap-2">
+              <IconBarChart size={14} style={{ color: 'var(--compass)' }} />
+              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>DISTRIBUTION D'INTENSITÉ · 4 SEMAINES</div>
+            </div>
+            {data.raceName && (
+              <div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--compass)' }}>
+                COURSE VISÉE · {String(data.nextRaceDistance || '').toUpperCase()}
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-5 mb-4">
-            <svg viewBox="0 0 160 160" width="120" height="120" style={{ flexShrink: 0 }}>
-              {arcPaths.map((a, i) => <path key={i} d={a.d} fill={a.color} stroke="#0A0A0A" strokeWidth="1" />)}
+            <svg viewBox="0 0 160 160" width="120" height="120" style={{ flexShrink: 0 }} onMouseLeave={() => setHoverZone(null)}>
+              {arcPaths.map((a, i) => (
+                <path
+                  key={i}
+                  d={a.d}
+                  fill={a.color}
+                  stroke="#0A0A0A"
+                  strokeWidth="1"
+                  opacity={hoverZone && hoverZone !== a.key ? 0.35 : 1}
+                  style={{ cursor: 'pointer', transition: 'opacity 0.15s' }}
+                  onMouseEnter={() => setHoverZone(a.key)}
+                />
+              ))}
             </svg>
             <div className="flex-1">
               <div className="font-display text-lg font-bold mb-2" style={{ color: data.verdictColor }}>{data.verdict}</div>
               {arcs.map((a, i) => (
-                <div key={i} className="flex items-center gap-2 font-mono text-xs mb-1">
+                <div
+                  key={i}
+                  className="flex items-center gap-2 font-mono text-xs mb-1 cursor-pointer"
+                  style={{ opacity: hoverZone && hoverZone !== a.key ? 0.5 : 1, transition: 'opacity 0.15s' }}
+                  onMouseEnter={() => setHoverZone(a.key)}
+                  onMouseLeave={() => setHoverZone(null)}
+                >
                   <div className="w-3 h-3 rounded" style={{ background: a.color }}></div>
-                  <span style={{ color: 'var(--text-dim)' }}>{a.label}</span>
+                  <span style={{ color: 'var(--text-dim)' }}>{a.short}</span>
                   <span className="ml-auto tabular" style={{ color: 'var(--text)' }}>{a.pct.toFixed(0)}%</span>
-                  <span className="tabular" style={{ color: 'var(--text-faint)' }}>· {a.count} séance{a.count > 1 ? 's' : ''}</span>
+                  <span className="tabular" style={{ color: 'var(--text-faint)' }}>· {fmtZoneTime(a.time)}</span>
                 </div>
               ))}
             </div>
           </div>
-          <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>{data.verdictDetail}</div>
+          {/* Zone détaillée quand hover, sinon verdict global. */}
+          {focused ? (
+            <div className="fade-in">
+              <div className="font-display font-bold mb-1" style={{ color: focused.color }}>{focused.label} <span className="font-mono text-xs ml-2" style={{ color: 'var(--text-faint)' }}>{focused.range}</span></div>
+              <div className="text-sm leading-relaxed mb-2" style={{ color: 'var(--text-dim)' }}>{focused.desc}</div>
+              <div className="font-mono text-[11px] tabular" style={{ color: 'var(--text-faint)' }}>
+                Sur tes 4 dernières semaines : <span style={{ color: 'var(--text)' }}>{focused.count} séance{focused.count > 1 ? 's' : ''}</span> · <span style={{ color: 'var(--text)' }}>{fmtZoneTime(focused.time)}</span> cumulés ({focused.pct.toFixed(0)} % du temps total).
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>{data.verdictDetail}</div>
+          )}
           <div className="mt-3 font-mono text-[10px] leading-relaxed" style={{ color: 'var(--text-faint)' }}>
-            Modèle Seiler 3 zones · {data.sessionCount} séances analysées. Classement par type (intervals/tempo/easy) si la séance vient du plan, sinon par intensité moyenne.
+            Modèle Seiler 3 zones · {data.sessionCount} séances analysées · survole les zones pour le détail.
           </div>
         </Card>
       );
@@ -15463,8 +15568,8 @@
         );
       }
       const headline = isPace
-        ? `Tes efforts récents suggèrent une VMA plus basse (≈ ${drop.projectedVMA} km/h vs ${drop.currentVMA} déclarée)`
-        : `Tes meilleures puissances soutenues ont reculé (≈ ${drop.projectedCP}W vs ${drop.currentCP}W déclarée)`;
+        ? `Tes meilleures allures tenues 5 à 30 min ont baissé (équivalent VMA ≈ ${drop.projectedVMA} km/h vs ${drop.currentVMA} déclarée)`
+        : `Tes meilleurs watts tenus 5 à 30 min ont baissé (équivalent CP ≈ ${drop.projectedCP}W vs ${drop.currentCP}W déclarée)`;
       const lossLabel = isPace ? `−${drop.loss} km/h (−${(drop.lossPct * 100).toFixed(1)} %)` : `−${drop.lossW}W (−${(drop.lossPct * 100).toFixed(1)} %)`;
       return (
         <Card className="p-5 mb-4" accent="var(--caution)">
@@ -15478,10 +15583,12 @@
               </div>
               <div className="font-display text-base md:text-lg font-bold mb-1">{headline}</div>
               <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-                Écart constaté : <span style={{ color: 'var(--caution)' }}>{lossLabel}</span> sur les 5 dernières semaines vs les 8 précédentes (tu as bien fait des efforts soutenus, mais à puissance plus basse qu'avant).
-                {' '}Causes fréquentes : blessure, surcharge récente, maladie, manque de sommeil, retour de pause/grossesse.
-                {' '}Compass <strong>ne baisse jamais</strong> {isPace ? 'ta VMA' : 'ta CP'} automatiquement — décide toi-même si tu mets à jour ou si tu attends de remonter.
-                {' '}En attendant, garde en tête que tes prédictions de course peuvent être optimistes.
+                <strong>De quoi je parle :</strong> sur tes activités récentes, je regarde le meilleur {isPace ? 'temps tenu' : 'wattage tenu'} sur 4 durées (5 min, 10 min, 20 min, 30 min). Ça reflète ta capacité à maintenir un effort soutenu — c'est exactement ce que {isPace ? 'la VMA' : 'la CP'} mesure.
+                {' '}<br /><br />
+                <strong>Ce que je constate :</strong> écart de <span style={{ color: 'var(--caution)' }}>{lossLabel}</span> entre tes 5 dernières semaines et les 8 précédentes. Tu fais bien des efforts intenses, mais à un niveau plus bas qu'avant.
+                {' '}<br /><br />
+                <strong>Causes fréquentes :</strong> blessure, surcharge, maladie, manque de sommeil, retour de pause.
+                {' '}Compass <strong>ne baisse jamais</strong> {isPace ? 'ta VMA' : 'ta CP'} automatiquement — décide toi-même si tu mets à jour ou si tu attends de remonter. En attendant, garde en tête que tes prédictions de course peuvent être optimistes.
               </div>
             </div>
           </div>
@@ -17724,7 +17831,7 @@
           return {
             label: 'Test CP 3\'/20\' (Stryd)',
             detail: `15' échauffement progressif jusqu'à ${Math.round(cp*0.78)}W + 3' MAX (cible ~${target3min}W) + 30' récup easy à ${Math.round(cp*0.60)}W + 20' MAX (cible ~${target20min}W) + 10' retour au calme à ${Math.round(cp*0.60)}W`,
-            purpose: 'Test de calibrage CP : deux efforts max (3 min puis 20 min) séparés par 30 min de récup. Compass recalculera ta CP et W\' à l\'import via régression 2-points.',
+            purpose: 'Test de calibrage CP : 2 efforts max (3 min + 20 min) séparés par 30 min de récup easy. Compass recalculera CP et W\' à l\'import via régression linéaire 2-points. Méthode standard Stryd, valide scientifiquement (Hill 1993, Vanhatalo 2009) ; sous-estime la "vraie" CP de 3-7 % vs un protocole multi-jours, compromis pour faisabilité.',
             explicitDurationMin: 78,
           };
         },
@@ -17734,24 +17841,12 @@
           return {
             label: 'Recalibrage CP 3\'/20\'',
             detail: `15' échauffement progressif jusqu'à ${Math.round(cp*0.78)}W + 3' MAX (cible ~${target3min}W) + 30' récup easy à ${Math.round(cp*0.60)}W + 20' MAX (cible ~${target20min}W) + 10' retour au calme à ${Math.round(cp*0.60)}W`,
-            purpose: 'Re-test CP en milieu de plan : vérifie la progression avant la phase Peak. Si ta CP a monté, accepte la suggestion pour que le reste du plan s\'aligne.',
+            purpose: 'Re-test CP en fin de phase Build : vérifie la progression avant le Peak race-specific. Si la CP a monté, accepte la suggestion — le reste du plan se recalibre automatiquement aux nouveaux watts.',
             explicitDurationMin: 78,
           };
         },
-        // Peak / taper : pas de test. Si appelé quand même (sécurité), on
-        // retombe sur un footing easy court pour ne pas casser la séance.
-        peak: (cp, w, ctx) => ({
-          label: 'Footing léger (pas de test en peak)',
-          detail: `30' à ${Math.round(cp*0.70)}W`,
-          purpose: 'Pas de test en phase Peak — trop proche de la course objectif.',
-          explicitDurationMin: 30,
-        }),
-        taper: (cp, w, ctx) => ({
-          label: 'Footing léger (pas de test en taper)',
-          detail: `25' à ${Math.round(cp*0.70)}W`,
-          purpose: 'Pas de test en taper.',
-          explicitDurationMin: 25,
-        }),
+        // Pas de variants peak/taper : le test n'est jamais scheduled dans ces
+        // phases (cf. testWeeks dans buildPlan), trop près de la course.
       },
     };
 
@@ -19247,6 +19342,32 @@
         return { mar: t1, mer: 'easy', jeu: 'tempo', ven: 'easy', sam: 'easy', dim: 'long' };
       }
 
+      // Précalcul des semaines de test CP (Stryd 3'/20'). Placement :
+      //   - Semaine 2 : calibrage baseline (toujours non-récup).
+      //   - Plans ≥ 10 sem : retest à la dernière semaine non-récup de la
+      //     phase Build (juste avant Peak, où SESSION_TEMPLATES.test.build
+      //     est utilisé — pas en Peak directement, qui contient un placeholder
+      //     "pas de test" pour ne pas tester trop près de la course).
+      // Le scheduling est figé ici pour rester déterministe ; on ne le modifie
+      // pas pendant la boucle de génération.
+      const isPaceModePlan = cp === PACE_SCAFFOLD_CP;
+      const testWeeks = new Set();
+      if (!isPaceModePlan && totalWeeks >= 6) {
+        testWeeks.add(2);
+        if (totalWeeks >= 10) {
+          // Cherche la dernière semaine non-récup de Build, en remontant si besoin.
+          let candidate = phasePlan.base + phasePlan.build;
+          for (let i = 0; i < 4; i++) {
+            const candPhase = getPhaseForWeek(candidate, phasePlan);
+            const candIsRec = (candidate % 4 === 0) && candPhase !== 'taper' && (totalWeeks - candidate) >= 2 && candidate !== totalWeeks;
+            if (!candIsRec && candPhase === 'build') break;
+            candidate--;
+            if (candidate <= 2) { candidate = -1; break; }
+          }
+          if (candidate > 2) testWeeks.add(candidate);
+        }
+      }
+
       // Km réel de la semaine précédente — utilisé pour appliquer une règle
       // ABSOLUE de -30 % sur les semaines de récup (vs semaine précédente), au lieu
       // de partir de la cible théorique. Garantit un creux net dans le graphique.
@@ -19263,20 +19384,9 @@
         const isRaceWeek = w === totalWeeks;
 
         const pat = isRecoveryWeek ? reducedWeeklyPattern(sessionsPerWeek) : weeklyPattern(sessionsPerWeek, raceProfile, phase);
-        // Test CP 3'/20' (Stryd) en mode puissance — slotting automatique :
-        //   - Semaine 2 : calibrage baseline (Base phase, après 1 semaine d'adaptation).
-        //   - Pour les plans ≥ 10 sem : re-test au début du Peak (recalibrage avant
-        //     spécifique race-pace).
-        // Le test remplace le mardi (séance intensité régulière) — pas de séance
-        // ajoutée, juste remplacée. Pas en récup, pas en course, pas en pace mode
-        // (un user pace-mode passe par PACE_SCAFFOLD_CP, le test serait incohérent).
-        const isPaceModePlan = cp === (typeof PACE_SCAFFOLD_CP !== 'undefined' ? PACE_SCAFFOLD_CP : null);
-        const peakStartW = phasePlan.base + phasePlan.build + 1;
-        const isTestWeek = !isRecoveryWeek && !isPaceModePlan && (
-          w === 2 ||
-          (totalWeeks >= 10 && w === peakStartW)
-        );
-        if (isTestWeek && pat.mar) {
+        // Test CP : remplace le mardi (séance intensité) si cette semaine est
+        // marquée comme test week (précalculé en amont). Pas en récup.
+        if (testWeeks.has(w) && !isRecoveryWeek && pat.mar) {
           pat.mar = 'test';
         }
         const days = { lun: null, mar: null, mer: null, jeu: null, ven: null, sam: null, dim: null };
