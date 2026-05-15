@@ -14533,28 +14533,126 @@
         const usePower = !!profile.cp && recent.some(a => a.normalizedPower);
         const useVMA = !usePower && !!profile.vma;
         if (!usePower && !useVMA) return null;
-        // CLASSIFICATION PAR TYPE DE SÉANCE en priorité (Seiler 3 zones).
-        function classifySession(a) {
-          const linkedType = a.linkedSession && a.linkedSession.type;
-          if (linkedType === 'intervals' || linkedType === 'hills' || linkedType === 'test') return 'hard';
-          if (linkedType === 'tempo') return 'threshold';
-          if (linkedType === 'easy' || linkedType === 'long') return 'easy';
-          let cpFrac = null;
-          if (usePower && a.normalizedPower) cpFrac = a.normalizedPower / profile.cp;
-          else if (useVMA && a.paceMinPerKm) cpFrac = (60 / a.paceMinPerKm / profile.vma) * 1.10;
-          if (cpFrac == null) return null;
-          if (cpFrac < 0.82) return 'easy';
-          if (cpFrac <= 0.95) return 'threshold';
+        // CLASSIFICATION FINE PAR BLOCS, pas par type global de séance.
+        // Pourquoi : une séance d'intervalles 5×3' à 1.10 CP fait typiquement
+        // 50 min, mais seulement 15 min sont en zone "hard" (le travail VMA) —
+        // les 35 min restants sont en easy (échauffement + récup entre fractions
+        // + retour au calme). L'ancienne classification "intervals → 100 % hard"
+        // surestimait massivement le temps en seuil/hard et sous-estimait l'easy.
+        // Résultat dans la sim 20 personas : distribution affichée 50/26/24
+        // alors que la VRAIE répartition est ~75/15/10 (polarisée).
+        //
+        // Stratégie en cascade :
+        //   1. trackpointPowers (Stryd) : on classe seconde-par-seconde la puissance
+        //   2. linkedSession.blocks (séance liée au plan) : on somme les durées
+        //      par zone en se basant sur powerLow/powerHigh de chaque bloc, en
+        //      dépliant les groupes répétés.
+        //   3. Fallback : NP globale (ancienne méthode), uniquement quand on n'a
+        //      ni trackpoints ni blocks.
+        function classifyPower(pw, cp) {
+          if (!pw || !cp) return null;
+          const f = pw / cp;
+          if (f < 0.85) return 'easy';
+          if (f < 1.00) return 'threshold';
           return 'hard';
+        }
+        function classifyPace(paceSec, vma) {
+          if (!paceSec || !vma) return null;
+          // Vitesse km/h depuis pace en sec/km, puis fraction VMA.
+          const speedKmH = 3600 / paceSec;
+          const f = speedKmH / vma;
+          // Bornes calées sur des fractions de VMA équivalentes en cpFrac.
+          if (f < 0.78) return 'easy';
+          if (f < 0.92) return 'threshold';
+          return 'hard';
+        }
+        // Walk blocks tree : returns {easy, threshold, hard} en SECONDES.
+        function walkBlocks(blocks, cp, vma) {
+          const out = { easy: 0, threshold: 0, hard: 0 };
+          if (!Array.isArray(blocks)) return out;
+          const addSingle = (b, mult = 1) => {
+            const durSec = (b.durMin || 0) * 60 * mult;
+            if (durSec <= 0) return;
+            let zone = null;
+            // Bloc puissance : on prend la moyenne de la plage.
+            if (b.powerLow != null || b.powerHigh != null) {
+              const pwAvg = (b.powerLow != null && b.powerHigh != null) ? (b.powerLow + b.powerHigh) / 2 : (b.powerLow || b.powerHigh);
+              zone = classifyPower(pwAvg, cp);
+            } else if (b.paceSecLow != null || b.paceSecHigh != null) {
+              // Bloc allure : moyenne des paces.
+              const lo = b.paceSecLow != null ? b.paceSecLow : b.paceSecHigh;
+              const hi = b.paceSecHigh != null ? b.paceSecHigh : b.paceSecLow;
+              const paceAvg = (lo + hi) / 2;
+              zone = classifyPace(paceAvg, vma);
+            }
+            if (zone) out[zone] += durSec;
+          };
+          blocks.forEach(b => {
+            if (b.kind === 'single') addSingle(b, 1);
+            else if (b.kind === 'group' && Array.isArray(b.children)) {
+              b.children.forEach(c => addSingle(c, b.reps || 1));
+            }
+          });
+          return out;
+        }
+        // Classifie le temps d'une activité, retourne {easy, threshold, hard, source}.
+        function classifyActivity(a) {
+          const z = { easy: 0, threshold: 0, hard: 0, source: null };
+          // 1. Trackpoints seconde-par-seconde (le plus fidèle, dispo sur les
+          // imports Stryd qui contiennent trackpointPowers).
+          if (usePower && Array.isArray(a.trackpointPowers) && a.trackpointPowers.length > 0) {
+            a.trackpointPowers.forEach(pw => {
+              const zone = classifyPower(pw, profile.cp);
+              if (zone) z[zone] += 1; // 1 sec par point
+            });
+            // Si la classification a couvert ≥ 80 % de la durée d'activité,
+            // on garde le résultat ; sinon les trackpoints sont incomplets et
+            // on retombe sur les blocks.
+            const tot = z.easy + z.threshold + z.hard;
+            if (tot >= a.durationSec * 0.8) { z.source = 'trackpoints'; return z; }
+            z.easy = 0; z.threshold = 0; z.hard = 0;
+          }
+          // 2. Blocks (séance liée au plan).
+          const blocks = a.linkedSession && a.linkedSession.blocks;
+          if (Array.isArray(blocks) && blocks.length > 0) {
+            const w = walkBlocks(blocks, profile.cp, profile.vma);
+            z.easy = w.easy; z.threshold = w.threshold; z.hard = w.hard;
+            const tot = z.easy + z.threshold + z.hard;
+            if (tot > 60) { // au moins 1 min identifié dans les blocks
+              // Si les blocks ne couvrent pas toute l'activité (cas typique :
+              // détail "30' à 250W" mais durée réelle 35'), on étend pro-rata.
+              if (a.durationSec > 0 && tot < a.durationSec) {
+                const ratio = a.durationSec / tot;
+                z.easy *= ratio; z.threshold *= ratio; z.hard *= ratio;
+              }
+              z.source = 'blocks'; return z;
+            }
+          }
+          // 3. Fallback : NP globale → tout le temps dans une seule zone.
+          let zone = null;
+          if (usePower && a.normalizedPower) zone = classifyPower(a.normalizedPower, profile.cp);
+          else if (useVMA && a.paceMinPerKm) zone = classifyPace(a.paceMinPerKm * 60, profile.vma);
+          if (zone) { z[zone] = a.durationSec; z.source = 'np'; return z; }
+          return null;
         }
         let easyTime = 0, thresholdTime = 0, hardTime = 0;
         let easyCount = 0, thresholdCount = 0, hardCount = 0;
+        // Comptage source pour transparence (combien d'activités sont classées
+        // finement vs en fallback NP global).
+        const sourceCounts = { trackpoints: 0, blocks: 0, np: 0 };
         recent.forEach(a => {
-          const zone = classifySession(a);
-          if (!zone) return;
-          if (zone === 'easy') { easyTime += a.durationSec; easyCount++; }
-          else if (zone === 'threshold') { thresholdTime += a.durationSec; thresholdCount++; }
-          else { hardTime += a.durationSec; hardCount++; }
+          const z = classifyActivity(a);
+          if (!z) return;
+          easyTime += z.easy;
+          thresholdTime += z.threshold;
+          hardTime += z.hard;
+          // Pour le count par "séance dominante", on prend la zone qui a le
+          // plus de temps dans cette activité (rétrocompat avec l'affichage).
+          const max = Math.max(z.easy, z.threshold, z.hard);
+          if (max === z.hard && z.hard > 0) hardCount++;
+          else if (max === z.threshold && z.threshold > 0) thresholdCount++;
+          else if (max === z.easy && z.easy > 0) easyCount++;
+          if (z.source) sourceCounts[z.source]++;
         });
         const total = easyTime + thresholdTime + hardTime;
         if (total === 0) return null;
@@ -14624,7 +14722,7 @@
           verdictColor = 'var(--text)';
           verdictDetail = `Plus de Z3 que de Z5+${raceSuffix ? ` (${raceSuffix.trim().slice(4)})` : ''}. Acceptable, mais le polarisé est généralement plus efficace sur les distances courtes.`;
         }
-        return { easyPct, thresholdPct, hardPct, easyCount, thresholdCount, hardCount, easyMin: easyTime/60, thresholdMin: thresholdTime/60, hardMin: hardTime/60, verdict, verdictColor, verdictDetail, sessionCount: recent.length, raceCategory: cat, raceName, nextRaceDistance: nextRace ? nextRace.distance : null };
+        return { easyPct, thresholdPct, hardPct, easyCount, thresholdCount, hardCount, easyMin: easyTime/60, thresholdMin: thresholdTime/60, hardMin: hardTime/60, verdict, verdictColor, verdictDetail, sessionCount: recent.length, raceCategory: cat, raceName, nextRaceDistance: nextRace ? nextRace.distance : null, sourceCounts };
       }, [activities, profile.cp, profile.vma, races]);
       if (!data) {
         return (
@@ -14745,7 +14843,15 @@
             <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>{data.verdictDetail}</div>
           )}
           <div className="mt-3 font-mono text-[10px] leading-relaxed" style={{ color: 'var(--text-faint)' }}>
-            Modèle Seiler 3 zones · {data.sessionCount} séances analysées · survole les zones pour le détail.
+            Modèle Seiler 3 zones · {data.sessionCount} séance{data.sessionCount > 1 ? 's' : ''} analysée{data.sessionCount > 1 ? 's' : ''} · survole les zones pour le détail.
+            {(() => {
+              const sc = data.sourceCounts || {};
+              const parts = [];
+              if (sc.trackpoints) parts.push(`${sc.trackpoints} via trackpoints (précis)`);
+              if (sc.blocks) parts.push(`${sc.blocks} via plan (blocs)`);
+              if (sc.np) parts.push(`${sc.np} via puissance moyenne (approximé)`);
+              return parts.length > 0 ? <> · Méthode : {parts.join(' · ')}.</> : null;
+            })()}
           </div>
         </Card>
       );
