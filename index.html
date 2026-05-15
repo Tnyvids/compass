@@ -1632,7 +1632,17 @@
         timeSec = timeSec * (1 - elast * tsbBonus);
       }
 
-      return { timeSec: Math.round(timeSec), confidence, source };
+      // 5. Range d'incertitude (±sec). Ordres de grandeur indicatifs :
+      //   - PR à la distance cible (conf 3) : ±1.0 % du temps prédit
+      //   - PR à autre distance via Riegel (conf 2) : ±2.5 %
+      //   - Fallback VMA + scores (conf 1) : ±5.0 %
+      //   - Pénalité supplémentaire pour les distances longues (marathon/50K)
+      //     où l'incertitude est plus forte (mur, ravitos, conditions).
+      const confPct = confidence >= 3 ? 0.010 : confidence === 2 ? 0.025 : 0.050;
+      const distPenalty = distKey === 'marathon' ? 1.4 : distKey === '50k' ? 1.8 : distKey === '30k' ? 1.2 : 1.0;
+      const uncertaintySec = Math.round(timeSec * confPct * distPenalty);
+
+      return { timeSec: Math.round(timeSec), confidence, source, uncertaintySec };
     }
 
     function predictRaceTimeV2(cp, wprime, weightKg, distanceKm, prs, bestEfforts, tsb, baselineCp = null, prsDates = null) {
@@ -1723,6 +1733,11 @@
       const speedMs = (distanceKm * 1000) / timeSec;
       const racePower = Math.round(weightKg * re * speedMs);
 
+      // Range d'incertitude (±sec). Mêmes seuils que predictRaceTimePace.
+      const confPct = confidence >= 3 ? 0.010 : confidence === 2 ? 0.025 : 0.050;
+      const distPenalty = distKey === 'marathon' ? 1.4 : distKey === 'semi' ? 1.1 : 1.0;
+      const uncertaintySec = Math.round(timeSec * confPct * distPenalty);
+
       return {
         timeSec: Math.round(timeSec),
         racePower,
@@ -1732,6 +1747,7 @@
         source: anchor.source + (usedRiegel ? '+riegel' : ''),
         tsbBonus,
         anchor: { km: anchor.anchorKm, sec: anchor.anchorSec, key: anchor.anchorKey },
+        uncertaintySec,
       };
     }
 
@@ -3412,6 +3428,162 @@
     function openYT(q) { window.open(`https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`, '_blank', 'noopener,noreferrer'); }
 
     // ========================================================================
+    // WEEKLY SUMMARY CARD — Récap automatique de la semaine écoulée.
+    // S'affiche sur Today à partir de dimanche soir / lundi matin si :
+    //   - L'utilisateur a fait au moins 1 activité dans la semaine écoulée
+    //   - Il ne l'a pas déjà fermé pour cette semaine (localStorage)
+    // Contenu : km, sessions, TSS, % de la cible plan, vs semaine précédente.
+    // ========================================================================
+    function WeeklySummaryCard({ profile, activities, planOverrides }) {
+      const DISMISS_KEY = 'compass_weekly_summary_dismissed_v1';
+      const [dismissed, setDismissed] = useState(false);
+
+      const data = useMemo(() => {
+        const now = new Date();
+        // La semaine "écoulée" = semaine précédente (lundi → dimanche dernier).
+        const thisWeekStart = getWeekStart(now);
+        const lastWeekStart = new Date(thisWeekStart); lastWeekStart.setDate(thisWeekStart.getDate() - 7);
+        const lastWeekEnd = new Date(thisWeekStart); lastWeekEnd.setMilliseconds(-1);
+        const weekKey = lastWeekStart.toISOString().slice(0, 10);
+
+        // Skip si déjà fermée pour cette semaine
+        const lastDismissed = storage.get(DISMISS_KEY, null);
+        if (lastDismissed === weekKey) return { skip: true };
+
+        // Activités de la semaine écoulée
+        const wkActs = (activities || []).filter(a =>
+          a.startMs >= lastWeekStart.getTime() && a.startMs < thisWeekStart.getTime()
+        );
+        if (wkActs.length === 0) return { skip: true };
+
+        // Tu n'es valable qu'à partir du dimanche soir : pas la peine de
+        // proposer un récap le mardi de la semaine d'après — c'est obsolète.
+        // Cap : si on est plus de 3 jours après la fin de la semaine, skip.
+        const daysSinceWeekEnd = (now.getTime() - thisWeekStart.getTime()) / 86400000;
+        if (daysSinceWeekEnd > 3) return { skip: true };
+
+        // Stats de la semaine
+        const totalKm = wkActs.reduce((s, a) => s + (a.distanceMeters || 0), 0) / 1000;
+        const totalSec = wkActs.reduce((s, a) => s + (a.durationSec || 0), 0);
+        const totalTss = wkActs.reduce((s, a) => s + (a.tss || computeTSS(a, profile) || 0), 0);
+        const sessionsCount = wkActs.length;
+        const longestRun = wkActs.reduce((max, a) => Math.max(max, a.durationSec || 0), 0) / 60;
+        const elevGain = wkActs.reduce((s, a) => s + (a.elevGain || 0), 0);
+
+        // Cible plan : km plannedKm sur la semaine
+        const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
+        const weekStr = lastWeekStart.toISOString().slice(0, 10);
+        const planWeek = (planOverrides || {})[weekStr];
+        let plannedKm = 0;
+        if (planWeek) {
+          dayKeys.forEach(dk => {
+            const d = planWeek[dk];
+            if (d && Number.isFinite(d.plannedKm)) plannedKm += d.plannedKm;
+          });
+        }
+
+        // Comparaison semaine précédente (S-2)
+        const prevWeekStart = new Date(lastWeekStart); prevWeekStart.setDate(lastWeekStart.getDate() - 7);
+        const prevWkActs = (activities || []).filter(a =>
+          a.startMs >= prevWeekStart.getTime() && a.startMs < lastWeekStart.getTime()
+        );
+        const prevKm = prevWkActs.reduce((s, a) => s + (a.distanceMeters || 0), 0) / 1000;
+        const kmDelta = prevKm > 0 ? (totalKm - prevKm) / prevKm : null;
+
+        // Meilleure séance (max TSS)
+        const bestSession = wkActs.reduce((best, a) => {
+          const t = a.tss || computeTSS(a, profile) || 0;
+          return (!best || t > best.tss) ? { tss: t, activity: a } : best;
+        }, null);
+
+        return {
+          skip: false, weekKey,
+          totalKm, totalSec, totalTss: Math.round(totalTss),
+          sessionsCount, longestRun: Math.round(longestRun), elevGain: Math.round(elevGain),
+          plannedKm: Math.round(plannedKm * 10) / 10,
+          completionPct: plannedKm > 0 ? Math.round(totalKm / plannedKm * 100) : null,
+          kmDelta, prevKm,
+          bestSession: bestSession ? bestSession.activity : null,
+          weekLabel: `${lastWeekStart.getDate()}/${String(lastWeekStart.getMonth()+1).padStart(2,'0')} – ${lastWeekEnd.getDate()}/${String(lastWeekEnd.getMonth()+1).padStart(2,'0')}`,
+        };
+      }, [activities, profile, planOverrides]);
+
+      if (dismissed || !data || data.skip) return null;
+
+      function handleDismiss() {
+        storage.set(DISMISS_KEY, data.weekKey);
+        setDismissed(true);
+      }
+
+      const completionColor = data.completionPct == null
+        ? 'var(--text-dim)'
+        : data.completionPct >= 95 ? 'var(--positive)'
+        : data.completionPct >= 75 ? 'var(--compass)'
+        : 'var(--caution)';
+      const completionLabel = data.completionPct == null
+        ? 'pas de plan'
+        : data.completionPct >= 100 ? 'objectif atteint'
+        : data.completionPct >= 75 ? 'proche de l\'objectif'
+        : 'sous l\'objectif';
+      const fmtH = (sec) => {
+        const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+        return h > 0 ? `${h}h${String(m).padStart(2,'0')}` : `${m} min`;
+      };
+
+      return (
+        <Card className="p-5 mb-3" accent="var(--compass)">
+          <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
+            <div>
+              <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--compass)' }}>SEMAINE ÉCOULÉE · {data.weekLabel}</div>
+              <div className="font-display text-lg font-bold">Ton récap</div>
+            </div>
+            <button onClick={handleDismiss} className="btn px-3 py-1 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'transparent', color: 'var(--text-faint)' }}>FERMER</button>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div>
+              <div className="font-mono text-[9px] tracking-widest mb-0.5" style={{ color: 'var(--text-faint)' }}>VOLUME</div>
+              <div className="font-display text-xl font-bold tabular">{data.totalKm.toFixed(1)}<span className="font-mono text-[10px] ml-0.5" style={{ color: 'var(--text-dim)' }}>km</span></div>
+              {data.kmDelta != null && (
+                <div className="font-mono text-[10px]" style={{ color: data.kmDelta >= 0 ? 'var(--positive)' : 'var(--caution)' }}>
+                  {data.kmDelta >= 0 ? '+' : ''}{(data.kmDelta * 100).toFixed(0)} % vs S-1
+                </div>
+              )}
+            </div>
+            <div>
+              <div className="font-mono text-[9px] tracking-widest mb-0.5" style={{ color: 'var(--text-faint)' }}>SÉANCES</div>
+              <div className="font-display text-xl font-bold tabular">{data.sessionsCount}</div>
+              <div className="font-mono text-[10px]" style={{ color: 'var(--text-dim)' }}>{fmtH(data.totalSec)} cumulés</div>
+            </div>
+            <div>
+              <div className="font-mono text-[9px] tracking-widest mb-0.5" style={{ color: 'var(--text-faint)' }}>CHARGE <span style={{ opacity: 0.5 }}>TSS</span></div>
+              <div className="font-display text-xl font-bold tabular">{data.totalTss}</div>
+              <div className="font-mono text-[10px]" style={{ color: 'var(--text-dim)' }}>longue {data.longestRun} min</div>
+            </div>
+            <div>
+              <div className="font-mono text-[9px] tracking-widest mb-0.5" style={{ color: 'var(--text-faint)' }}>VS CIBLE PLAN</div>
+              {data.completionPct != null ? (
+                <>
+                  <div className="font-display text-xl font-bold tabular" style={{ color: completionColor }}>{data.completionPct}%</div>
+                  <div className="font-mono text-[10px]" style={{ color: 'var(--text-dim)' }}>{completionLabel}</div>
+                </>
+              ) : (
+                <>
+                  <div className="font-display text-xl font-bold tabular" style={{ color: 'var(--text-faint)' }}>—</div>
+                  <div className="font-mono text-[10px]" style={{ color: 'var(--text-dim)' }}>pas de plan</div>
+                </>
+              )}
+            </div>
+          </div>
+          {data.elevGain > 0 && (
+            <div className="mt-3 font-mono text-[10px]" style={{ color: 'var(--text-dim)' }}>
+              D+ cumulé : {data.elevGain} m
+            </div>
+          )}
+        </Card>
+      );
+    }
+
+    // ========================================================================
     // TODAY VIEW — Readiness + planned session + quick actions
     // ========================================================================
     function TodayView({ profile, checkins, todayCheckin, activities, strengthSessions = [], races, plannedSession, planOverrides, onCheckinStart, onCheckinView, onImport, onStrengthStart, onAddRace, onNav, onOpenPlanDay, onViewActivity, coachVerdict }) {
@@ -3422,7 +3594,7 @@
       const advice = todayCheckin ? readinessAdvice(todayCheckin.score, todayCheckin.inputs.soreness, plannedSession?.type, profile) : null;
 
       // Find next race
-      const nextRace = [...races].filter(r => new Date(r.date) >= now).sort((a, b) => new Date(a.date) - new Date(b.date))[0];
+      const nextRace = [...races].filter(r => !r.completedAt && new Date(r.date) >= now).sort((a, b) => new Date(a.date) - new Date(b.date))[0];
       const daysToRace = nextRace ? daysBetween(now, new Date(nextRace.date)) : null;
 
       // Last activity
@@ -3564,6 +3736,9 @@
             <WeekStripCard profile={profile} planOverrides={planOverrides} activities={activities} onNav={onNav} />
           </div>
 
+          {/* WEEKLY SUMMARY — récap de la semaine écoulée (dimanche soir / lundi). */}
+          <WeeklySummaryCard profile={profile} activities={activities} planOverrides={planOverrides} />
+
           {/* 90-DAY VOLUME HEATMAP — court terme, complète la mini-timeline ci-dessus */}
           {activities.length > 0 && (
             <div className="mb-3">
@@ -3571,8 +3746,12 @@
             </div>
           )}
 
-          {/* INJURY RISK INDEX — compact in safe zone, full-card when ≥ moderate. Hidden when no zone tracked. */}
-          {profile.cp && activities.length > 0 && Array.isArray(profile.injuryZones) && profile.injuryZones.length > 0 && (
+          {/* INJURY RISK INDEX — compact en zone safe, full-card si ≥ modéré.
+              Visible dès qu'on a un référentiel d'intensité (CP en power OU
+              VMA en pace) et au moins une zone surveillée. Avant on exigeait
+              CP, donc pace-mode users avec antécédent blessure n'avaient
+              jamais l'indicateur. */}
+          {(profile.cp || profile.vma) && activities.length > 0 && Array.isArray(profile.injuryZones) && profile.injuryZones.length > 0 && (
             <KneeRiskCard
               profile={profile}
               activities={activities}
@@ -3751,7 +3930,7 @@
         const hasPacePath = profile.vma;
         if (!hasPowerPath && !hasPacePath) return null;
         const now = new Date(); now.setHours(0, 0, 0, 0);
-        const future = (races || []).filter(r => new Date(r.date) >= now).sort((a, b) => new Date(a.date) - new Date(b.date));
+        const future = (races || []).filter(r => !r.completedAt && new Date(r.date) >= now).sort((a, b) => new Date(a.date) - new Date(b.date));
         if (!future.length) return null;
         const race = future[0];
         const raceDate = new Date(race.date);
@@ -3796,13 +3975,14 @@
           predictedSec: pred?.timeSec || null,
           confidence: pred?.confidence || 0,
           source: pred?.source || null,
+          uncertaintySec: pred?.uncertaintySec || 0,
           aerobic: aerobicForBadge,
           isPace: !hasPowerPath,
         };
       }, [profile, races, activities]);
 
       if (!data) return null;
-      const { race, raceDate, daysToRace, distKm, targetSec, predictedSec, confidence, source, aerobic, isPace } = data;
+      const { race, raceDate, daysToRace, distKm, targetSec, predictedSec, confidence, source, uncertaintySec, aerobic, isPace } = data;
 
       // En mode pace, si la prédiction marathon/semi vient du fallback VMA (pas
       // de PR frais) ET que l'enduranceScore est bas (<0.35), on signale une
@@ -3883,6 +4063,11 @@
             <div className="text-right flex-shrink-0">
               <div className="font-mono text-[11px] tracking-widest mb-2 px-3 py-1 rounded-full inline-block font-bold" style={{ background: statusColor, color: '#000' }}>{statusLabel}</div>
               <div className="font-display text-2xl font-bold tabular leading-none" style={{ color: 'var(--text)' }}>{fmtTime(predictedSec)}</div>
+              {uncertaintySec > 0 && (
+                <div className="font-mono text-[10px] tabular mt-0.5" style={{ color: 'var(--text-faint)' }} title="Marge d'incertitude — dépend de la qualité des données disponibles (record direct vs estimation).">
+                  ± {uncertaintySec >= 60 ? `${Math.floor(uncertaintySec / 60)}'${String(uncertaintySec % 60).padStart(2, '0')}` : `${uncertaintySec}s`}
+                </div>
+              )}
               {targetSec ? (
                 <>
                   <div className="font-display font-bold tabular mt-1.5 leading-none" style={{ fontSize: 18, color: statusColor }}>{deltaLabel}</div>
@@ -7715,11 +7900,9 @@
         vma: initialProfile?.vma || '',
         injuryZones: Array.isArray(initialProfile?.injuryZones) ? [...initialProfile.injuryZones] : [],
         // Course en vue : null = pas encore choisi, true = oui, false = pas pour l'instant.
+        // races = tableau permettant plusieurs objectifs (ex 10K puis semi).
         hasRace: null,
-        raceName: '',
-        raceDistance: '10K',
-        raceDate: '',
-        raceObjective: '',
+        races: [{ name: '', distance: '10K', date: '', objective: '' }],
       });
 
       const steps = [
@@ -7769,17 +7952,25 @@
           strengthArchetypes: [suggestArchetype(zonesArr)],
           onboardingDone: true,
         };
-        // Course renseignée pendant l'onboarding : on la passe à part au handler
-        // qui la pousse dans le state `races` de l'app.
-        const race = (draft.hasRace === true && draft.raceName.trim() && draft.raceDate) ? {
-          id: Date.now(),
-          name: draft.raceName.trim(),
-          distance: draft.raceDistance || '10K',
-          date: draft.raceDate,
-          objective: (draft.raceObjective || '').trim(),
-          priority: 'A',
-        } : null;
-        onComplete(updates, race);
+        // Courses renseignées pendant l'onboarding : on passe le tableau au
+        // handler. Première course (chrono) = priorité A, suivantes = B.
+        // Permet de rentrer plusieurs objectifs (ex Tony : 10K puis semi)
+        // sans devoir repasser dans Profil après.
+        let racesArr = [];
+        if (draft.hasRace === true && Array.isArray(draft.races)) {
+          racesArr = draft.races
+            .filter(r => r && r.name && r.name.trim() && r.date)
+            .sort((a, b) => new Date(a.date) - new Date(b.date))
+            .map((r, i) => ({
+              id: Date.now() + i,
+              name: r.name.trim(),
+              distance: r.distance || '10K',
+              date: r.date,
+              objective: (r.objective || '').trim(),
+              priority: i === 0 ? 'A' : 'B',
+            }));
+        }
+        onComplete(updates, racesArr);
       }
 
       // Per-step validation: minimal required fields, never blocks the user past blockers
@@ -7793,10 +7984,13 @@
           return parsePace(draft.easyPaceMinPerKm) !== null;
         }
         if (cur.key === 'race') {
-          // hasRace doit être choisi (oui/non). Si oui, nom + date requis.
+          // hasRace doit être choisi (oui/non). Si oui, au moins une course
+          // entièrement remplie (nom + date). Les autres entrées du tableau
+          // peuvent rester vides — elles seront ignorées au finish.
           if (draft.hasRace === null) return false;
           if (draft.hasRace === false) return true;
-          return draft.raceName.trim().length > 0 && !!draft.raceDate;
+          const arr = Array.isArray(draft.races) ? draft.races : [];
+          return arr.some(r => r && r.name && r.name.trim().length > 0 && r.date);
         }
         // welcome and zones always allow advance (zones can be empty = no tracking)
         return true;
@@ -8005,43 +8199,75 @@
 
               {cur.key === 'race' && (
                 <div>
-                  <div className="font-display text-2xl md:text-3xl font-bold mb-2 leading-tight">Une course en vue ?</div>
-                  <div className="text-sm mb-5" style={{ color: 'var(--text-dim)' }}>Si tu as déjà un objectif daté, renseigne-le maintenant — Compass calera ton plan dessus. Sinon tu pourras l'ajouter plus tard depuis Aujourd'hui ou Profil.</div>
+                  <div className="font-display text-2xl md:text-3xl font-bold mb-2 leading-tight">Des courses en vue ?</div>
+                  <div className="text-sm mb-5" style={{ color: 'var(--text-dim)' }}>Renseigne tes objectifs datés (10K, semi, marathon…) — tu peux en ajouter plusieurs. Compass calera ton plan sur la première, puis prendra le relais sur les suivantes. Modifiable plus tard depuis Plan.</div>
                   <div className="grid grid-cols-2 gap-2 mb-4">
                     <button onClick={() => setDraft({...draft, hasRace: true})} className="btn py-3 rounded-lg" style={{ background: draft.hasRace === true ? 'var(--compass)' : 'var(--bg-elev-2)', color: draft.hasRace === true ? '#000' : 'var(--text)', border: `1px solid ${draft.hasRace === true ? 'var(--compass)' : 'var(--border)'}` }}>
-                      <div className="font-display font-bold text-sm">Oui, j'ai une course prévue</div>
+                      <div className="font-display font-bold text-sm">Oui, au moins une</div>
                       <div className="font-mono text-[9px] tracking-widest mt-0.5">RENSEIGNER</div>
                     </button>
-                    <button onClick={() => setDraft({...draft, hasRace: false, raceName: '', raceDate: '', raceObjective: ''})} className="btn py-3 rounded-lg" style={{ background: draft.hasRace === false ? 'var(--compass)' : 'var(--bg-elev-2)', color: draft.hasRace === false ? '#000' : 'var(--text)', border: `1px solid ${draft.hasRace === false ? 'var(--compass)' : 'var(--border)'}` }}>
+                    <button onClick={() => setDraft({...draft, hasRace: false})} className="btn py-3 rounded-lg" style={{ background: draft.hasRace === false ? 'var(--compass)' : 'var(--bg-elev-2)', color: draft.hasRace === false ? '#000' : 'var(--text)', border: `1px solid ${draft.hasRace === false ? 'var(--compass)' : 'var(--border)'}` }}>
                       <div className="font-display font-bold text-sm">Pas pour l'instant</div>
                       <div className="font-mono text-[9px] tracking-widest mt-0.5">PLUS TARD</div>
                     </button>
                   </div>
                   {draft.hasRace === true && (
-                    <div style={cardStyle}>
-                      <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>NOM DE LA COURSE</div>
-                      <input type="text" autoFocus value={draft.raceName} onChange={(e) => setDraft({...draft, raceName: e.target.value})} placeholder="Ex: Foulées d'Erdeven" className="input mb-4" />
-                      <div className="grid grid-cols-2 gap-3 mb-4">
-                        <div>
-                          <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>DISTANCE</div>
-                          <select className="input" value={draft.raceDistance} onChange={(e) => setDraft({...draft, raceDistance: e.target.value})}>
-                            <option value="5K">5 km</option>
-                            <option value="10K">10 km</option>
-                            <option value="15K">15 km</option>
-                            <option value="Semi">Semi-marathon</option>
-                            <option value="Marathon">Marathon</option>
-                            <option value="Trail">Trail</option>
-                            <option value="Autre">Autre</option>
-                          </select>
-                        </div>
-                        <div>
-                          <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>DATE</div>
-                          <input type="date" className="input" value={draft.raceDate} onChange={(e) => setDraft({...draft, raceDate: e.target.value})} />
-                        </div>
+                    <div className="space-y-3">
+                      {(draft.races || []).map((race, idx) => {
+                        const updateRace = (patch) => {
+                          const next = [...(draft.races || [])];
+                          next[idx] = { ...next[idx], ...patch };
+                          setDraft({...draft, races: next});
+                        };
+                        const removeRace = () => {
+                          const next = (draft.races || []).filter((_, i) => i !== idx);
+                          setDraft({...draft, races: next.length > 0 ? next : [{ name: '', distance: '10K', date: '', objective: '' }]});
+                        };
+                        const canRemove = (draft.races || []).length > 1;
+                        return (
+                          <div key={idx} style={cardStyle}>
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--compass)' }}>COURSE {idx + 1}{idx === 0 && (draft.races || []).length > 1 ? ' · PRIORITÉ A' : (idx > 0 ? ' · PRIORITÉ B' : '')}</div>
+                              {canRemove && (
+                                <button onClick={removeRace} className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>RETIRER</button>
+                              )}
+                            </div>
+                            <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>NOM DE LA COURSE</div>
+                            <input type="text" autoFocus={idx === 0} value={race.name || ''} onChange={(e) => updateRace({ name: e.target.value })} placeholder={idx === 0 ? "Ex: Foulées d'Erdeven" : 'Ex: Semi de Nantes'} className="input mb-3" />
+                            <div className="grid grid-cols-2 gap-3 mb-3">
+                              <div>
+                                <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>DISTANCE</div>
+                                <select className="input" value={race.distance || '10K'} onChange={(e) => updateRace({ distance: e.target.value })}>
+                                  <option value="5K">5 km</option>
+                                  <option value="10K">10 km</option>
+                                  <option value="15K">15 km</option>
+                                  <option value="Semi">Semi-marathon</option>
+                                  <option value="Marathon">Marathon</option>
+                                  <option value="Trail">Trail</option>
+                                  <option value="Autre">Autre</option>
+                                </select>
+                              </div>
+                              <div>
+                                <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>DATE</div>
+                                <input type="date" className="input" value={race.date || ''} onChange={(e) => updateRace({ date: e.target.value })} />
+                              </div>
+                            </div>
+                            <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>OBJECTIF CHRONO (OPTIONNEL)</div>
+                            <input type="text" value={race.objective || ''} onChange={(e) => updateRace({ objective: e.target.value })} placeholder="Ex: sub-40, 1:30:00" className="input" />
+                          </div>
+                        );
+                      })}
+                      <button
+                        type="button"
+                        onClick={() => setDraft({...draft, races: [...(draft.races || []), { name: '', distance: '10K', date: '', objective: '' }]})}
+                        className="btn w-full py-3 rounded-lg font-mono text-[10px] tracking-widest"
+                        style={{ background: 'transparent', color: 'var(--compass)', border: '1px dashed var(--compass)' }}
+                      >
+                        + AJOUTER UNE AUTRE COURSE
+                      </button>
+                      <div className="text-xs mt-1 leading-relaxed" style={{ color: 'var(--text-faint)' }}>
+                        L'ordre chronologique est appliqué automatiquement. La 1ère course (la plus proche) est prioritaire « A », les suivantes « B ».
                       </div>
-                      <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>OBJECTIF CHRONO (OPTIONNEL)</div>
-                      <input type="text" value={draft.raceObjective} onChange={(e) => setDraft({...draft, raceObjective: e.target.value})} placeholder="Ex: sub-40, 1:30:00" className="input" />
-                      <div className="text-xs mt-3 leading-relaxed" style={{ color: 'var(--text-faint)' }}>Priorité « A » par défaut (course objectif). Modifiable plus tard depuis Profil.</div>
                     </div>
                   )}
                 </div>
@@ -13449,6 +13675,7 @@
             current: profile.prs?.[d.currentKey],
             predictedSec: neutral?.timeSec,
             todaySec: today?.timeSec,
+            uncertaintySec: neutral?.uncertaintySec,
             runningEconomy: neutral?.runningEconomy,
             calibrated: neutral?.calibrated,
             confidence: neutral?.confidence,
@@ -15365,6 +15592,11 @@
                       {/* Frais (TSB neutral) */}
                       <td className="py-4 text-right px-2">
                         <div className="font-display font-bold text-base tabular" style={{ color: 'var(--accent)' }}>{fmtTime(p.predictedSec)}</div>
+                        {p.uncertaintySec > 0 && (
+                          <div className="font-mono text-[10px] tabular" style={{ color: 'var(--text-faint)' }} title="Marge d'incertitude — dépend de la qualité des données (record direct, Riegel, ou VMA-fallback)">
+                            ± {p.uncertaintySec >= 60 ? `${Math.floor(p.uncertaintySec / 60)}'${String(p.uncertaintySec % 60).padStart(2, '0')}` : `${p.uncertaintySec}s`}
+                          </div>
+                        )}
                         {p.racePower && <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>{p.racePower}W</div>}
                       </td>
                       {/* Today (TSB-adjusted) */}
@@ -15676,13 +15908,35 @@
       now.setHours(0,0,0,0);
       const todayMs = now.getTime();
       const upcoming = useMemo(
-        () => [...(races || [])].filter(r => new Date(r.date) >= now).sort((a, b) => new Date(a.date) - new Date(b.date)),
+        () => [...(races || [])].filter(r => !r.completedAt && new Date(r.date) >= now).sort((a, b) => new Date(a.date) - new Date(b.date)),
         [races, now.getTime()]
       );
       const past = useMemo(
-        () => [...(races || [])].filter(r => new Date(r.date) < now).sort((a, b) => new Date(b.date) - new Date(a.date)),
+        () => [...(races || [])].filter(r => r.completedAt || new Date(r.date) < now).sort((a, b) => new Date(b.date) - new Date(a.date)),
         [races, now.getTime()]
       );
+
+      // Détection : course récemment terminée + une autre course à venir + le
+      // plan actuel ne couvre PAS la prochaine course → propose de générer un
+      // nouveau plan. Aide Tony qui enchaîne 10K (sept) → semi (avril).
+      const nextRacePlanReminder = useMemo(() => {
+        if (upcoming.length === 0) return null;
+        const lastCompleted = (races || []).filter(r => r.completedAt).sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt))[0];
+        if (!lastCompleted) return null;
+        const completedMs = new Date(lastCompleted.completedAt).getTime();
+        // Seulement si la course est récente (≤ 30 jours)
+        if (now.getTime() - completedMs > 30 * 86400000) return null;
+        const nextRace = upcoming[0];
+        const nextRaceMs = new Date(nextRace.date).getTime();
+        // Vérifie si le plan couvre la date de la prochaine course
+        const nextRaceWeekKey = getWeekStart(new Date(nextRace.date)).toISOString().slice(0, 10);
+        const planCoversNext = planOverrides && planOverrides[nextRaceWeekKey];
+        if (planCoversNext) return null; // plan déjà couvrant, rien à proposer
+        // Trop tôt si la prochaine course est dans moins de 4 sem ou plus de 30 sem
+        const weeksToNext = (nextRaceMs - now.getTime()) / (7 * 86400000);
+        if (weeksToNext < 4 || weeksToNext > 30) return null;
+        return { lastCompleted, nextRace, weeksToNext: Math.round(weeksToNext) };
+      }, [races, upcoming, planOverrides, now.getTime()]);
 
       // Project D-day CTL/ATL/CP for each upcoming race.
       // Dual path : en mode pace, on n'a pas de CP — on projette quand même
@@ -16021,6 +16275,24 @@
                   Pour <span style={{ color: 'var(--text)' }}>{w.race.name}</span> ({w.race.distance}), je vois <span style={{ color: 'var(--caution)' }}>{w.count}</span> sortie{w.count > 1 ? 's' : ''} longue{w.count > 1 ? 's' : ''} (≥1h30) sur les 90 derniers jours — recommandé : au moins <span style={{ color: 'var(--text)' }}>{w.need}</span>. Sans ce fond, la prédiction marathon/semi est optimiste et le jour J risque le mur.
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Banner : course récemment terminée → propose de générer plan pour la suivante */}
+          {nextRacePlanReminder && (
+            <div className="rounded-lg p-4 mb-4" style={{ background: 'rgba(74, 158, 255, 0.06)', border: '1px solid rgba(74, 158, 255, 0.3)' }}>
+              <div className="flex items-start gap-3 flex-wrap">
+                <IconTrending size={18} style={{ color: 'var(--compass)', flexShrink: 0, marginTop: 2 }} />
+                <div className="flex-1 min-w-[240px]">
+                  <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--compass)' }}>OBJECTIF SUIVANT</div>
+                  <div className="font-display text-base font-bold mb-1">
+                    Bravo pour <span style={{ color: 'var(--text-dim)' }}>{nextRacePlanReminder.lastCompleted.name}</span> — prochaine étape : <span style={{ color: 'var(--compass)' }}>{nextRacePlanReminder.nextRace.name}</span>
+                  </div>
+                  <div className="text-xs leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+                    {nextRacePlanReminder.weeksToNext} semaines pour préparer ta {nextRacePlanReminder.nextRace.distance.toLowerCase()}. Génère un nouveau plan depuis Plan → Générer pour caler ton entraînement sur cet objectif.
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
@@ -18837,9 +19109,25 @@
                       </div>
                     )}
                     {mode === 'race' && futureRaces.length > 0 && (
-                      <select className="input" value={selectedRaceId || ''} onChange={(e) => setSelectedRaceId(parseInt(e.target.value))}>
-                        {futureRaces.map(r => (<option key={r.id} value={r.id}>{r.name} · {r.distance} · {fmtDate(r.date, true)}</option>))}
-                      </select>
+                      <>
+                        <select className="input" value={selectedRaceId || ''} onChange={(e) => setSelectedRaceId(parseInt(e.target.value))}>
+                          {futureRaces.map(r => (<option key={r.id} value={r.id}>{r.name} · {r.distance} · {fmtDate(r.date, true)}</option>))}
+                        </select>
+                        {futureRaces.length > 1 && (() => {
+                          const idx = futureRaces.findIndex(r => r.id === selectedRaceId);
+                          const remaining = futureRaces.slice(idx + 1);
+                          if (remaining.length === 0) return null;
+                          return (
+                            <div className="mt-2 rounded-lg p-2 font-mono text-[10px] leading-relaxed" style={{ background: 'var(--bg-elev-2)', color: 'var(--text-dim)', border: '1px solid var(--border)' }}>
+                              <span style={{ color: 'var(--compass)' }}>Roadmap :</span> après cette course tu auras encore{' '}
+                              {remaining.map((r, i) => (
+                                <span key={r.id}>{i > 0 ? ' · ' : ''}<span style={{ color: 'var(--text)' }}>{r.name}</span> ({fmtDate(r.date, true)})</span>
+                              ))}.{' '}
+                              <br />Compass te proposera de générer un nouveau plan dès que la course actuelle sera terminée.
+                            </div>
+                          );
+                        })()}
+                      </>
                     )}
                     {mode === 'custom' && (
                       <div className="grid grid-cols-2 gap-2">
@@ -19767,6 +20055,77 @@
           }
         }
 
+        // Auto-detect race result : si l'activité tombe le jour d'une course
+        // « à venir » du profil ET que la distance correspond, on propose
+        // d'enregistrer le résultat (PR si meilleur, et marquage course faite).
+        // Évite à l'utilisateur de devoir mettre à jour manuellement son PR.
+        (() => {
+          const actMs = activity.startMs;
+          const dayMs = 86400000;
+          const actKm = (activity.distanceMeters || 0) / 1000;
+          if (!actKm || actKm < 1) return;
+          const distRaceToKm = (d) => {
+            const s = String(d || '').toLowerCase();
+            if (s.includes('marathon')) return 42.2;
+            if (s.includes('semi')) return 21.1;
+            const m = s.match(/(\d+(?:\.\d+)?)/);
+            return m ? parseFloat(m[1]) : null;
+          };
+          // Bucket distance activité → clé PR la plus proche
+          const prKeyFromKm = (km) => {
+            if (km < 4) return null; // trop court
+            if (km < 7) return '5k';
+            if (km < 12) return '10k';
+            if (km < 17) return '15k';
+            if (km < 25) return 'semi';
+            if (km < 35) return '30k';
+            if (km < 45) return 'marathon';
+            if (km < 60) return '50k';
+            return null;
+          };
+          const race = (races || []).find(r => {
+            if (r.completedAt) return false;
+            const raceMs = new Date(r.date).getTime();
+            if (!Number.isFinite(raceMs)) return false;
+            if (Math.abs(raceMs - actMs) > 1.5 * dayMs) return false;
+            const raceKm = distRaceToKm(r.distance);
+            if (!raceKm) return false;
+            return Math.abs(raceKm - actKm) / raceKm < 0.10;
+          });
+          if (!race) return;
+          const prKey = prKeyFromKm(actKm);
+          if (!prKey) return;
+          const actualSec = activity.durationSec;
+          const oldPrSec = parsePRSec(profile.prs && profile.prs[prKey]);
+          const isBetter = !oldPrSec || actualSec < oldPrSec;
+          const fmtTime = (sec) => {
+            const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = Math.round(sec % 60);
+            return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${m}:${String(s).padStart(2,'0')}`;
+          };
+          const msg = isBetter
+            ? (oldPrSec
+                ? `Tu as couru ${race.name} en ${fmtTime(actualSec)} — ancien record ${prKey} : ${fmtTime(oldPrSec)}. Mettre à jour le PR et marquer la course terminée ?`
+                : `Tu as couru ${race.name} en ${fmtTime(actualSec)} — c'est ton premier record ${prKey}. Enregistrer et marquer la course terminée ?`)
+            : `Tu as couru ${race.name} en ${fmtTime(actualSec)}. Ton PR ${prKey} actuel (${fmtTime(oldPrSec)}) reste meilleur. Marquer simplement la course terminée ?`;
+          dialog.confirm({
+            title: isBetter ? 'Nouveau record détecté !' : 'Course terminée',
+            message: msg,
+            confirmLabel: isBetter ? 'Mettre à jour le PR' : 'Marquer terminée',
+          }).then(ok => {
+            if (!ok) return;
+            const today = new Date().toISOString().slice(0, 10);
+            // Toujours marquer la course terminée + temps réalisé
+            handleUpdateRace(race.id, { completedAt: today, actualTimeSec: actualSec, actualActivityId: activity.id });
+            // Mettre à jour PR si meilleur
+            if (isBetter) {
+              const newPrs = { ...(profile.prs || {}), [prKey]: fmtTime(actualSec) };
+              const newPrsDates = { ...(profile.prsDates || {}), [prKey]: today };
+              setProfile({ ...profile, prs: newPrs, prsDates: newPrsDates });
+              toast.push(`PR ${prKey.toUpperCase()} mis à jour : ${fmtTime(actualSec)}.`, { kind: 'info', duration: 6000 });
+            }
+          });
+        })();
+
         // Auto-update CP if a new better effort detected.
         // Skip en mode allure : l'utilisateur n'a pas de CP, lui en parler ici
         // serait à la fois faux (pas de CP dans son profil) et déroutant. La
@@ -20259,9 +20618,11 @@
           {!profile.onboardingDone && (
             <OnboardingModal
               initialProfile={profile}
-              onComplete={(updates, race) => {
+              onComplete={(updates, racesArr) => {
                 setProfile({ ...profile, ...updates });
-                if (race) setRaces(r => [...r, race]);
+                if (Array.isArray(racesArr) && racesArr.length > 0) {
+                  setRaces(r => [...r, ...racesArr].sort((a, b) => new Date(a.date) - new Date(b.date)));
+                }
               }}
               onSkip={() => setProfile({ ...profile, onboardingDone: true })}
             />
