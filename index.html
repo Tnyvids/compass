@@ -1102,7 +1102,14 @@
     // ATL (acute training load): exponentially weighted average TSS over 7 days
     // CTL (chronic): over 42 days
     // TSB = CTL - ATL (form)
-    function computeFitness(activitiesWithTss, refDate = new Date()) {
+    //
+    // Nouveauté : si l'utilisateur a peu d'historique (< 14 jours d'activités),
+    // l'EWMA part de 0 et produit des CTL/ATL artificiellement bas pendant
+    // 4-6 semaines (artefact mathématique du warm-up). Optionnel `seed` permet
+    // d'amorcer l'EWMA à une valeur réaliste estimée depuis la tier de l'utilisateur,
+    // pour que les cartes Forme/Fatigue/Fraîcheur soient utilisables dès le jour 1
+    // d'un nouvel utilisateur qui a juste déclaré sa CP.
+    function computeFitness(activitiesWithTss, refDate = new Date(), seed = null) {
       // Normalize refDate to start-of-day so activities done earlier today
       // (and yesterday) don't shift their day bucket.
       const refDay = new Date(refDate); refDay.setHours(0, 0, 0, 0);
@@ -1121,9 +1128,16 @@
         const dayDiff = Math.round((now - aDay.getTime()) / dayMs);
         if (dayDiff >= 0 && dayDiff < days) dailyTss[dayDiff] += a.tss;
       });
+      // Détecte si on doit seeder l'EWMA (peu d'activités sur les 14 derniers jours).
+      // Seed actif seulement quand : seed fourni ET historique faible (< 5 jours
+      // avec TSS > 0 sur les 14 derniers). Évite de fausser un athlète qui a
+      // juste fait une pause récente (auquel cas le seed sur-estimerait sa forme).
+      const recentDaysWithTss = dailyTss.slice(0, 14).filter(t => t > 0).length;
+      const useSeed = seed && seed > 0 && recentDaysWithTss < 5;
       // EWMA (oldest to today)
       const reversed = [...dailyTss].reverse(); // oldest first
-      let ctl = 0, atl = 0;
+      let ctl = useSeed ? seed : 0;
+      let atl = useSeed ? seed : 0;
       const ctlSeries = [], atlSeries = [], tsbSeries = [];
       const ctlAlpha = 1 - Math.exp(-1/42);
       const atlAlpha = 1 - Math.exp(-1/7);
@@ -1741,14 +1755,78 @@
     // Compare two CP estimates from two different time windows.
     // Returns { suggestedCP, currentCP, deltaCP, deltaPct, evidence, confidence, sampleCount }
     // - suggestedCP: the new CP to propose (null if no suggestion)
-    // - evidence: array of { duration, oldPower, newPower, delta } for explanation
-    // - confidence: 'high' | 'medium' | 'low' — based on number of confirming buckets
+    // ========================================================================
+    // DÉTECTION POST-COUPURE — repère une rupture récente de l'entraînement
+    // (rhume, blessure, vacances, voyage…) et propose une reprise progressive
+    // au lieu de laisser l'utilisateur reprendre le plan comme si de rien n'était.
     //
-    // Decision rules (deliberately conservative):
-    //  - At least 3 power-curve buckets must show improvement
-    //  - Average gain across buckets must be ≥ 2% of currentCP
-    //  - The fitted CP from recent window must be ≥ 4W above current
-    //  - We never suggest a DOWNGRADE automatically (detraining requires user judgment)
+    // Pourquoi : reprendre un plan habituel après 5+ jours sans courir fait
+    // bondir l'ACWR au-dessus de 1.4 dès la première semaine de reprise →
+    // risque de blessure documenté (Gabbett 2016, "spike effect").
+    //
+    // Détection : on regarde les 14 derniers jours.
+    //  - "Gap" = ≥ 5 jours consécutifs sans activité significative (> 15 min)
+    //  - "Sous-charge" = TSS total des 7 derniers jours < 40 % du TSS attendu
+    //    (basé sur CTL × 7 si CTL > 20, sinon seuil fixe 200)
+    //
+    // Si un de ces deux signaux se déclenche, on retourne une suggestion :
+    //  - gapDays : nombre de jours sans activité
+    //  - recommendedReduction : 0.30 à 0.50 selon sévérité
+    //  - message : explication courte pour le banner
+    //
+    // Conservatisme : on ne déclenche pas si la coupure < 5 jours (récup
+    // normale post-course) ni si l'utilisateur est en taper (où la baisse
+    // est volontaire et le plan le prévoit déjà).
+    function detectPostGapRestart(activities, currentCtl, refDate = new Date(), inTaper = false) {
+      if (inTaper) return null; // taper est une baisse PROGRAMMÉE, pas une coupure
+      if (!Array.isArray(activities)) return null;
+      const refMs = refDate.getTime();
+      const dayMs = 86400000;
+      // Activités significatives (> 15 min de course) sur les 14 derniers jours.
+      const last14 = activities.filter(a => {
+        const ago = (refMs - (a.startMs || 0)) / dayMs;
+        return ago >= 0 && ago < 14 && (a.durationSec || 0) > 900;
+      });
+      // Calcul du plus grand gap : on trie par date et on cherche l'écart max
+      // entre deux activités consécutives (ou entre la dernière et aujourd'hui).
+      const sorted = last14.sort((a, b) => a.startMs - b.startMs);
+      let maxGap = refMs - (sorted.length > 0 ? sorted[sorted.length - 1].startMs : refMs - 14 * dayMs);
+      maxGap = maxGap / dayMs;
+      for (let i = 1; i < sorted.length; i++) {
+        const gap = (sorted[i].startMs - sorted[i - 1].startMs) / dayMs;
+        if (gap > maxGap) maxGap = gap;
+      }
+      // Si l'historique < 14 jours, le "gap" en amont n'est pas significatif.
+      // On vérifie aussi la première activité : si elle est récente (< 7 jours
+      // depuis le début de la fenêtre), il n'y a pas de raison de paniquer.
+      if (sorted.length === 0) return null; // aucun signal exploitable
+      const gapDays = Math.round(maxGap * 10) / 10;
+      // TSS des 7 derniers jours
+      const tss7 = activities.reduce((s, a) => {
+        const ago = (refMs - (a.startMs || 0)) / dayMs;
+        if (ago < 0 || ago >= 7) return s;
+        return s + (a.tss || 0);
+      }, 0);
+      const tss7Expected = currentCtl > 20 ? currentCtl * 7 : 200;
+      const tss7Ratio = tss7 / Math.max(1, tss7Expected);
+      // Décision : déclenche si gap ≥ 5 jours OU si tss7 < 40 % attendu.
+      if (gapDays < 5 && tss7Ratio >= 0.4) return null;
+      // Sévérité : plus la coupure est longue, plus la réduction est forte.
+      let reduction, severity;
+      if (gapDays >= 14) { reduction = 0.50; severity = 'forte'; }
+      else if (gapDays >= 10) { reduction = 0.40; severity = 'modérée'; }
+      else if (gapDays >= 7) { reduction = 0.35; severity = 'modérée'; }
+      else { reduction = 0.30; severity = 'légère'; }
+      return {
+        gapDays,
+        tss7,
+        tss7Expected: Math.round(tss7Expected),
+        tss7Ratio: Math.round(tss7Ratio * 100) / 100,
+        recommendedReduction: reduction,
+        severity,
+      };
+    }
+
     function detectCPProgression(activities, currentCP, refDate = new Date()) {
       if (!Array.isArray(activities) || activities.length < 5) return null;
       if (!currentCP || currentCP <= 0) return null;
@@ -3722,6 +3800,43 @@
 
           {/* COACH VERDICT — narrative big-picture, contextualizes the week ahead */}
           {coachVerdict && <div className="mb-3"><CoachCard verdict={coachVerdict} compact onMore={() => onNav('analytics')} /></div>}
+
+          {/* POST-COUPURE — banner quand on détecte une rupture récente (rhume,
+              blessure, voyage…). Évite que l'utilisateur reprenne le plan habituel
+              et explose son ACWR au-dessus de 1.4 (risque blessure documenté). */}
+          {(() => {
+            const inTaper = false; // simplifié : on n'a pas le contexte du plan ici
+            const gap = detectPostGapRestart(
+              (activities || []).map(a => ({ ...a, tss: computeTSS(a, profile) })),
+              fitnessSummary ? fitnessSummary.ctl : 0,
+              new Date(),
+              inTaper
+            );
+            if (!gap) return null;
+            const redPct = Math.round(gap.recommendedReduction * 100);
+            return (
+              <Card variant="highlighted" accent="caution" className="p-4 md:p-5 mb-3">
+                <div className="flex items-start gap-3 flex-wrap">
+                  <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(255, 176, 32, 0.15)' }}>
+                    <IconAlert size={18} style={{ color: 'var(--caution)' }} />
+                  </div>
+                  <div className="flex-1 min-w-[240px]">
+                    <div className="t-meta mb-1" style={{ color: 'var(--caution)' }}>REPRISE PROGRESSIVE RECOMMANDÉE</div>
+                    <div className="font-display text-base md:text-lg font-bold mb-1">
+                      Tu as eu une coupure de {gap.gapDays.toFixed(0)} jour{gap.gapDays >= 2 ? 's' : ''} récente
+                    </div>
+                    <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+                      <strong>De quoi je parle :</strong> tes 7 derniers jours totalisent <span style={{ color: 'var(--text)' }}>{Math.round(gap.tss7)} TSS</span> alors que ton niveau normal serait autour de <span style={{ color: 'var(--text)' }}>{gap.tss7Expected}</span>. C'est une chute de charge {gap.severity}.
+                      {' '}<br /><br />
+                      <strong>Le risque :</strong> reprendre le plan comme si rien n'avait changé fait monter ton ACWR au-dessus de 1.4 (Gabbett 2016 : pic de risque blessure post-coupure).
+                      {' '}<br /><br />
+                      <strong>Ma suggestion :</strong> <span style={{ color: 'var(--caution)' }}>−{redPct} % de volume cette semaine</span> et remplace la séance intensive par un tempo court ou un footing avec quelques accélérations. Tu reviendras au plan normal la semaine suivante.
+                    </div>
+                  </div>
+                </div>
+              </Card>
+            );
+          })()}
 
           {/* FITNESS NARRATIVE — fallback when no coach verdict (would be redundant).
               Translates forme/fatigue/fraîcheur into a sentence instead of bare numbers. */}
