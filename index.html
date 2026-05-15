@@ -1541,7 +1541,27 @@
       '50k': 50,
     };
 
-    function predictRaceTimePace(vma, distanceKm, prs, tsb, prsDates = null, scoresOrAerobic = null, easyPaceMinPerKm = null) {
+    // Coefficient d'exécution selon le tier athlète. Reflète la capacité
+    // physiologique RÉELLE à soutenir l'intensité théorique d'une course.
+    // Un vrai débutant ne peut pas tenir 99 % de son seuil pendant 1h —
+    // même si la table cpFrac le dit. Plus le coureur est entraîné, plus
+    // l'écart entre potentiel théorique et exécutable se réduit.
+    // Appliqué UNIQUEMENT au fallback VMA-based (le path PR-anchored est
+    // déjà calibré sur des perfs réelles → pas besoin d'ajustement).
+    //
+    // Valeurs : un débutant tient ~88 % du potentiel théorique sur 10K+,
+    // un amateur ~94 %, un confirmé est aligné, avancé/élite idem.
+    function tierExecutionCoef(tier) {
+      return {
+        'débutant': 0.88,
+        'amateur':  0.94,
+        'confirmé': 1.00,
+        'avancé':   1.00,
+        'élite':    1.00,
+      }[tier] || 1.00;
+    }
+
+    function predictRaceTimePace(vma, distanceKm, prs, tsb, prsDates = null, scoresOrAerobic = null, easyPaceMinPerKm = null, tier = null) {
       if (!vma || !distanceKm || vma <= 0) return null;
 
       let distKey;
@@ -1597,7 +1617,15 @@
         }
       }
 
-      // 3. TSB bonus : ±2.5 %, linéaire (cohérent avec predictRaceTimeV2)
+      // 3. Coefficient d'exécution par tier : on dilate le temps pour les
+      // niveaux faibles (un débutant ne soutient pas 99 % du seuil). N'agit
+      // que sur le fallback VMA — le PR-anchored est déjà calibré.
+      if (source === 'vma' && tier) {
+        const coef = tierExecutionCoef(tier);
+        if (coef > 0 && coef < 1) timeSec = timeSec / coef;
+      }
+
+      // 4. TSB bonus : ±2.5 %, linéaire (cohérent avec predictRaceTimeV2)
       if (Number.isFinite(tsb)) {
         const tsbBonus = Math.max(-0.025, Math.min(0.025, tsb * 0.001));
         const elast = timeElasticity(distKey);
@@ -3759,7 +3787,8 @@
         } else {
           // Pace path : prédiction depuis VMA + scores 2-axes + PRs frais éventuels.
           aerobicForBadge = deriveAerobicBaseScore(profile, activities || []);
-          pred = predictRaceTimePace(profile.vma, distKm, profile.prs, tsbForToday, profile.prsDates, aerobicForBadge, profile.easyPaceMinPerKm);
+          const tier = getFitnessTier({ cp: profile.cp, weightKg: profile.weightKg, races, sex: profile.sex, experienceLevel: profile.experienceLevel });
+          pred = predictRaceTimePace(profile.vma, distKm, profile.prs, tsbForToday, profile.prsDates, aerobicForBadge, profile.easyPaceMinPerKm, tier);
         }
 
         return {
@@ -10489,52 +10518,6 @@
             )}
           </Card>
 
-          {/* Goals */}
-          <Card className="p-6 mb-4">
-            <div className="font-display text-lg font-bold mb-4">Objectifs</div>
-            {!editing ? (
-              <div className="space-y-3">
-                {goalKeys.map(({k, l, accent}) => {
-                  const g = profile.goals[k] || {};
-                  if (!g.event && !g.target) return null;
-                  return <GoalRow key={k} label={l} goal={g} accent={accent} />;
-                })}
-                {goalKeys.every(({k}) => !profile.goals[k]?.event && !profile.goals[k]?.target) && <div className="text-sm" style={{ color: 'var(--text-dim)' }}>Aucun objectif défini. Clique Modifier pour les ajouter.</div>}
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {goalKeys.map(({k, l, accent}) => {
-                  const g = draft.goals[k] || {};
-                  return (
-                    <div key={k} className="rounded-xl p-4" style={{ background: 'var(--bg-elev-2)', border: `1px solid ${accent}30` }}>
-                      <div className="font-mono text-[10px] tracking-widest mb-3" style={{ color: accent }}>{l.toUpperCase()}</div>
-                      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                        <EditField label="Événement" type="text" value={g.event || ''} onChange={(v) => setDraftGoal(k, 'event', v)} />
-                        <div>
-                          <div className="font-mono text-[9px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>DISTANCE</div>
-                          <select className="input" value={g.distance || '10k'} onChange={(e) => setDraftGoal(k, 'distance', e.target.value)}>
-                            <option value="5k">5K</option>
-                            <option value="10k">10K</option>
-                            <option value="15k">15K</option>
-                            <option value="semi">Semi</option>
-                            <option value="marathon">Marathon</option>
-                            <option value="trail">Trail</option>
-                            <option value="autre">Autre</option>
-                          </select>
-                        </div>
-                        <EditField label="Date" type="date" value={g.date || ''} onChange={(v) => setDraftGoal(k, 'date', v)} />
-                        <GoalTimeInput value={g.target || ''} onChange={(v) => setDraftGoal(k, 'target', v)} />
-                      </div>
-                      <div className="text-xs mt-3 leading-relaxed" style={{ color: 'var(--text-faint)' }}>
-                        L'objectif chrono saisi ici est synchronisé avec ta liste des courses (onglet Plan) — il sert de référence pour les projections.
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </Card>
-
           {/* Activities access */}
           {onShowAllActivities && (
             <Card className="p-5 mb-4">
@@ -12474,12 +12457,19 @@
 
           const aerobicNow = deriveAerobicBaseScore(profile, activities || []);
           const currentScores = { endurance: aerobicNow.enduranceScore, intensity: aerobicNow.intensityScore };
+          // Tier athlète : on s'en sert pour dilater les temps prédits sur le
+          // fallback VMA (un débutant ne soutient pas 99 % du seuil). Le tier
+          // est figé au niveau ACTUEL — on n'auto-upgrade pas pendant la
+          // projection (un plan de 16 sem ne fait pas passer débutant→confirmé).
+          const tierForTimeline = getFitnessTier({ cp: profile.cp, weightKg: profile.weightKg, races, sex: profile.sex, experienceLevel: profile.experienceLevel });
 
           // Volume hebdo glissant à partir du plan : pour chaque date future,
           // somme des plannedKm sur les 6 dernières semaines à partir de cette date.
+          // Compte aussi les séances qualité (intervals/tempo/test) pour
+          // projeter la progression d'intensité.
           const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
-          const collectKm = (fromMs, toMs) => {
-            let total = 0;
+          const collectStats = (fromMs, toMs) => {
+            let totalKm = 0, qualityCount = 0, longRunMaxMin = 0;
             Object.entries(planOverrides || {}).forEach(([wsKey, week]) => {
               if (!week) return;
               const wsDate = new Date(wsKey + 'T00:00:00');
@@ -12490,10 +12480,14 @@
                 const dms = wsDate.getTime() + i * dayMs;
                 if (dms < fromMs || dms > toMs) return;
                 const km = Number.isFinite(d.plannedKm) ? d.plannedKm : 0;
-                total += km;
+                totalKm += km;
+                if (d.type === 'intervals' || d.type === 'tempo' || d.type === 'test') qualityCount++;
+                if (d.type === 'long' && Number.isFinite(d.plannedMin)) {
+                  longRunMaxMin = Math.max(longRunMaxMin, d.plannedMin);
+                }
               });
             });
-            return total;
+            return { totalKm, qualityCount, longRunMaxMin };
           };
 
           // Horizon : dernier jour du plan, sinon J+28.
@@ -12519,34 +12513,89 @@
 
           const computePoint = (ms, isToday) => {
             const isFuture = ms > todayMs;
-            // En futur, on projette enduranceScore depuis le volume hebdo projeté.
-            // En passé/présent, on prend le score actuel.
+            // En futur, on projette TROIS éléments : enduranceScore (depuis
+            // volume + longue), intensityScore (depuis nombre de séances
+            // qualité), et une VMA projetée (légère hausse selon qualité).
+            // Pour rester crédible, la VMA projetée plafonne à +5 % vs actuelle.
             let scores = currentScores;
+            let projectedVma = vma;
             if (isFuture) {
-              const weeklyKmAt = collectKm(ms - 6 * 7 * dayMs, ms) / 6;
-              if (weeklyKmAt > 0) {
-                const projVolScore = volumeScoreFromKm(weeklyKmAt);
+              const stats = collectStats(ms - 6 * 7 * dayMs, ms);
+              const weeklyKm = stats.totalKm / 6;
+              const qualityPerWeek = stats.qualityCount / 6;
+              // Endurance : le plan ne fait JAMAIS régresser l'endurance.
+              // On part du score actuel (forme intégrée 4-8 sem) et on AJOUTE
+              // des bonus selon ce que le plan apporte :
+              //  - volBonus : si le plan a plus de volume que le niveau actuel,
+              //    on bénéficie de l'écart (à 50 %, le reste vient avec le temps)
+              //  - longBonus : +0.10 dès qu'une longue ≥ 90 min existe (~½ semi),
+              //    +0.05 supplémentaire si ≥ 150 min (entrée marathon-ready)
+              //  - timeBonus : +0.005/semaine de plan (consolidation progressive
+              //    de la base aérobie même avec un volume modeste)
+              if (weeklyKm > 0) {
+                const projVolScore = volumeScoreFromKm(weeklyKm);
+                const projLongScore = longRunScoreFromMin(stats.longRunMaxMin) || 0;
+                const weeksFromNow = Math.max(0, (ms - todayMs) / (7 * dayMs));
                 if (projVolScore != null) {
-                  // Pondération : on garde longestRun + PR du score actuel, on
-                  // remplace juste la composante volume. Approche conservatrice :
-                  // 50 % nouveau volume + 50 % score endurance actuel.
-                  scores = { endurance: 0.5 * projVolScore + 0.5 * currentScores.endurance, intensity: currentScores.intensity };
+                  const volBonus = Math.max(0, 0.5 * (projVolScore - currentScores.endurance));
+                  const longBonus = projLongScore >= 0.8 ? 0.15 : projLongScore >= 0.6 ? 0.10 : 0;
+                  const timeBonus = Math.min(0.10, weeksFromNow * 0.005);
+                  scores = {
+                    ...scores,
+                    endurance: Math.min(1, currentScores.endurance + volBonus + longBonus + timeBonus),
+                  };
                 }
               }
+              // Intensité : à partir de 2 séances qualité/semaine sur 6 sem,
+              // on suppose une progression de +0.05/mois (max +0.20 total).
+              if (qualityPerWeek >= 1.5) {
+                const weeksFromNow = Math.max(0, (ms - todayMs) / (7 * dayMs));
+                const intGain = Math.min(0.20, weeksFromNow * 0.0125); // ~0.05/mois
+                scores = {
+                  ...scores,
+                  intensity: Math.min(1, currentScores.intensity + intGain),
+                };
+              }
+              // VMA projetée : croît avec qualité+volume cumulés. Modèle simple
+              // (linéaire dans le temps, plafonné à +5 % de la VMA actuelle) qui
+              // rend la progression visible sans devenir fantaisiste. Sans
+              // séances qualité, la VMA ne bouge pas — l'aérobie de base seule
+              // ne pousse pas la VMA pure.
+              if (qualityPerWeek >= 1.0 && weeklyKm > 0) {
+                const weeksFromNow = Math.max(0, (ms - todayMs) / (7 * dayMs));
+                const vmaGainPct = Math.min(0.05, weeksFromNow * 0.003); // ~+1,2 %/mois plafond +5%
+                projectedVma = vma * (1 + vmaGainPct);
+              }
             }
+            // Calcul direct des temps sans passer par predictRaceTimePace :
+            // sur la projection FUTURE on bypass volontairement l'ancre PR
+            // (le PR a été établi au niveau actuel, pas projeté). Pour le point
+            // « aujourd'hui » on garde l'ancre PR via predictRaceTimePace.
             const times = {}, paces = {}, conf = {};
+            const cpFracByDist = { '5k': 1.04, '10k': 0.99, semi: 0.92, marathon: 0.85 };
+            const execCoef = tierExecutionCoef(tierForTimeline);
             Object.entries(distMap).forEach(([k, km]) => {
-              // predictRaceTimePace gère nativement le path 2-axes (priorité PR
-              // frais sinon paceForIntensity à cpFrac canonique). On ignore TSB
-              // pour la « forme baseline » (le hero today montre TSB).
-              const pred = predictRaceTimePace(vma, km, profile.prs, 0, profile.prsDates, scores, profile.easyPaceMinPerKm);
-              if (pred) {
-                times[k] = pred.timeSec;
-                paces[k] = pred.timeSec / km;
-                conf[k] = pred.confidence;
+              if (!isFuture) {
+                const pred = predictRaceTimePace(vma, km, profile.prs, 0, profile.prsDates, scores, profile.easyPaceMinPerKm, tierForTimeline);
+                if (pred) {
+                  times[k] = pred.timeSec;
+                  paces[k] = pred.timeSec / km;
+                  conf[k] = pred.confidence;
+                }
+              } else {
+                const paceSec = paceForIntensity(cpFracByDist[k], projectedVma, scores, profile.easyPaceMinPerKm);
+                if (paceSec && isFinite(paceSec)) {
+                  // Sur la projection future on est dans le path VMA (bypass PR).
+                  // On applique le tierExecutionCoef pour être cohérent avec
+                  // predictRaceTimePace (point « aujourd'hui »).
+                  const t = Math.round((paceSec * km) / Math.max(execCoef, 0.5));
+                  times[k] = t;
+                  paces[k] = t / km;
+                  conf[k] = 1;
+                }
               }
             });
-            return { ms, date: new Date(ms), cp: null, vma, scores, isFuture, isToday, tsb: null, times, paces, conf };
+            return { ms, date: new Date(ms), cp: null, vma: projectedVma, scores, isFuture, isToday, tsb: null, times, paces, conf };
           };
 
           const seriesPts = samples.map((ms, i) => computePoint(ms, i === 0));
@@ -13385,11 +13434,12 @@
         ];
         const wprime = cpWpFit ? cpWpFit.wprime : 15000;
         const tsbForToday = (typeof fitness.tsbNow === 'number') ? fitness.tsbNow : fitness.tsb;
+        const tierForPred = getFitnessTier({ cp: profile.cp, weightKg: profile.weightKg, races, sex: profile.sex, experienceLevel: profile.experienceLevel });
         return distances.map(d => {
           let neutral, today;
           if (isPaceModePred) {
-            neutral = predictRaceTimePace(profile.vma, d.km, profile.prs, 0, profile.prsDates, aerobicForPred, profile.easyPaceMinPerKm);
-            today   = predictRaceTimePace(profile.vma, d.km, profile.prs, tsbForToday, profile.prsDates, aerobicForPred, profile.easyPaceMinPerKm);
+            neutral = predictRaceTimePace(profile.vma, d.km, profile.prs, 0, profile.prsDates, aerobicForPred, profile.easyPaceMinPerKm, tierForPred);
+            today   = predictRaceTimePace(profile.vma, d.km, profile.prs, tsbForToday, profile.prsDates, aerobicForPred, profile.easyPaceMinPerKm, tierForPred);
           } else {
             neutral = predictRaceTimeV2(profile.cp, wprime, profile.weightKg, d.km, profile.prs, mergedBestEfforts, 0, null, profile.prsDates);
             today   = predictRaceTimeV2(profile.cp, wprime, profile.weightKg, d.km, profile.prs, mergedBestEfforts, tsbForToday, null, profile.prsDates);
@@ -13424,17 +13474,27 @@
         </div>
       );
 
-      // Empty state
-      if (activities.length === 0) {
+      // Plan présent ? Si oui, on ne bloque pas Analytics même sans activité
+      // importée : la projection charge future, la timeline d'allures et les
+      // prédictions de course marchent depuis le plan + VMA/CP. L'utilisateur
+      // qui vient de générer un plan peut analyser sans devoir importer.
+      const hasPlan = planOverrides && Object.keys(planOverrides).some(k => {
+        const w = planOverrides[k];
+        if (!w) return false;
+        return ['lun','mar','mer','jeu','ven','sam','dim'].some(d => w[d] && w[d].type && w[d].type !== 'rest');
+      });
+
+      // Empty state strict : ni activité ni plan.
+      if (activities.length === 0 && !hasPlan) {
         return (
           <div className="max-w-[1500px] mx-auto px-5 md:px-10 py-6 md:py-10 fade-in pb-nav">
             {header}
             <div className="mb-4"><CoachCard verdict={verdict} /></div>
             <Card className="p-8 md:p-10 mb-4 text-center">
               <IconTrending size={32} style={{ color: 'var(--text-faint)' }} className="mx-auto mb-4" />
-              <div className="font-display text-xl font-bold mb-2">Pas encore d'activités importées</div>
+              <div className="font-display text-xl font-bold mb-2">Pas encore d'activités ni de plan</div>
               <div className="text-sm max-w-md mx-auto" style={{ color: 'var(--text-dim)' }}>
-                Pour compléter l'analyse (forme, fatigue, ratio de charge, courbe de puissance), importe au moins une séance dans le Journal.
+                Génère un plan depuis l'onglet Plan, ou importe au moins une séance dans le Journal — Compass aura alors de quoi t'afficher charge, forme, prédictions et timeline d'allures.
               </div>
             </Card>
             <RacePredictorCard predictions={predictions} cp={profile.cp} tsb={fitness.tsb} wprime={cpWpFit ? cpWpFit.wprime : 15000} weightKg={profile.weightKg} prs={profile.prs} prsDates={profile.prsDates} bestEfforts={mergedBestEfforts} paceMode={isPaceModePred} vma={profile.vma} />
@@ -15693,7 +15753,8 @@
           if (distKm) {
             if (isPaceModeRT) {
               const aerobicRT = deriveAerobicBaseScore(profile, activities || []);
-              pred = predictRaceTimePace(profile.vma, distKm, profile.prs, tsb, profile.prsDates, aerobicRT, profile.easyPaceMinPerKm);
+              const tierRT = getFitnessTier({ cp: profile.cp, weightKg: profile.weightKg, races, sex: profile.sex, experienceLevel: profile.experienceLevel });
+              pred = predictRaceTimePace(profile.vma, distKm, profile.prs, tsb, profile.prsDates, aerobicRT, profile.easyPaceMinPerKm, tierRT);
             } else {
               pred = predictRaceTimeV2(Math.round(projCp), wprime, profile.weightKg, distKm, profile.prs, cpWp.merged, tsb, baseCp, profile.prsDates);
             }
@@ -19706,26 +19767,32 @@
           }
         }
 
-        // Auto-update CP if a new better effort detected
-        const allBests = updated.map(a => a.bestEfforts).filter(Boolean);
-        const merged = {};
-        allBests.forEach(b => Object.entries(b).forEach(([d, p]) => {
-          const pNum = Number(p);
-          if (!Number.isFinite(pNum) || pNum <= 0) return;
-          if (!merged[d] || pNum > merged[d]) merged[d] = pNum;
-        }));
-        const newCp = estimateCPFromBests(merged);
-        if (newCp && newCp > profile.cp + 5) {
-          dialog.confirm({
-            title: 'Mettre à jour la puissance seuil ?',
-            message: `COMPASS détecte une nouvelle puissance seuil estimée à ${newCp}W (actuelle : ${profile.cp}W).`,
-            confirmLabel: 'Mettre à jour',
-          }).then(ok => {
-            if (ok) setProfile({
-              ...profile, cp: newCp, cpDate: new Date().toISOString().slice(0, 10),
-              cpHistory: [{ date: new Date().toISOString().slice(0, 10), value: newCp, source: 'auto-detected' }, ...(profile.cpHistory || [])],
+        // Auto-update CP if a new better effort detected.
+        // Skip en mode allure : l'utilisateur n'a pas de CP, lui en parler ici
+        // serait à la fois faux (pas de CP dans son profil) et déroutant. La
+        // suggestion de progression VMA passe par detectVMAProgression côté
+        // Profil/Analytics, qui est le bon canal en pace mode.
+        if (!isPaceMode(profile) && profile.cp) {
+          const allBests = updated.map(a => a.bestEfforts).filter(Boolean);
+          const merged = {};
+          allBests.forEach(b => Object.entries(b).forEach(([d, p]) => {
+            const pNum = Number(p);
+            if (!Number.isFinite(pNum) || pNum <= 0) return;
+            if (!merged[d] || pNum > merged[d]) merged[d] = pNum;
+          }));
+          const newCp = estimateCPFromBests(merged);
+          if (newCp && newCp > profile.cp + 5) {
+            dialog.confirm({
+              title: 'Mettre à jour la puissance seuil ?',
+              message: `COMPASS détecte une nouvelle puissance seuil estimée à ${newCp}W (actuelle : ${profile.cp}W).`,
+              confirmLabel: 'Mettre à jour',
+            }).then(ok => {
+              if (ok) setProfile({
+                ...profile, cp: newCp, cpDate: new Date().toISOString().slice(0, 10),
+                cpHistory: [{ date: new Date().toISOString().slice(0, 10), value: newCp, source: 'auto-detected' }, ...(profile.cpHistory || [])],
+              });
             });
-          });
+          }
         }
       }
       function handleConfirmDate(timestamp) {
