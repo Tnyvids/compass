@@ -10679,6 +10679,86 @@
     }
 
     // ========================================================================
+    // FORM HISTORY EDITOR — édition manuelle des points d'historique CP/VMA.
+    // La timeline reconstruit le passé depuis ce journal ; sans interface
+    // pour saisir des points datés rétroactivement, la courbe restait plate.
+    // Mode CP → profile.cpHistory ; mode pace → profile.vmaHistory (nouveau,
+    // lecture défensive : [] si absent, aucune migration nécessaire).
+    // ========================================================================
+    function FormHistoryEditor({ profile, onSave }) {
+      const paceMode = isPaceMode(profile);
+      const key = paceMode ? 'vmaHistory' : 'cpHistory';
+      const unit = paceMode ? 'km/h' : 'W';
+      const label = paceMode ? 'VMA' : 'Puissance seuil (CP)';
+      const parseVal = (v) => paceMode ? parseFloat(v) : parseInt(v, 10);
+      const history = Array.isArray(profile[key]) ? [...profile[key]] : [];
+      history.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+      const [newDate, setNewDate] = useState('');
+      const [newVal, setNewVal] = useState('');
+
+      const commit = (next) => {
+        next.sort((a, b) => new Date(a.date) - new Date(b.date));
+        onSave({ ...profile, [key]: next.slice(-50) });
+      };
+      const addPoint = () => {
+        const val = parseVal(newVal);
+        if (!newDate || !Number.isFinite(val) || val <= 0) return;
+        // Bornes physiologiques larges (mêmes esprit que la validation profil)
+        if (!paceMode && (val < 50 || val > 600)) return;
+        if (paceMode && (val < 6 || val > 26)) return;
+        const filtered = history.filter(h => h.date !== newDate);
+        commit([...filtered, { date: newDate, value: val, source: 'manual' }]);
+        setNewDate(''); setNewVal('');
+      };
+      const removePoint = (date) => commit(history.filter(h => h.date !== date));
+
+      const todayStr = new Date().toISOString().slice(0, 10);
+
+      return (
+        <Card className="p-6 mb-4">
+          <div className="font-display text-lg font-bold mb-1">Historique de forme ({paceMode ? 'VMA' : 'CP'})</div>
+          <div className="text-xs mb-4" style={{ color: 'var(--text-dim)' }}>
+            La timeline d'allures reconstruit ta progression passée depuis ces points. Ajoute ce que tu connais de ton historique ({label.toLowerCase()}) pour que la courbe ne soit plus plate. Chaque mise à jour automatique en crée un aussi.
+          </div>
+
+          {history.length > 0 ? (
+            <div className="space-y-1.5 mb-4">
+              {history.map((h) => (
+                <div key={h.date} className="flex items-center gap-3 rounded-lg px-3 py-2" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--border)' }}>
+                  <div className="font-mono text-xs tabular" style={{ color: 'var(--text-dim)', minWidth: 92 }}>
+                    {new Date(h.date).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}
+                  </div>
+                  <div className="font-display font-bold tabular flex-1" style={{ color: 'var(--accent)' }}>
+                    {h.value} <span className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>{unit}</span>
+                  </div>
+                  {h.source && <span className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>{h.source === 'manual' ? 'MANUEL' : h.source === 'auto-detected' ? 'AUTO' : h.source.toUpperCase()}</span>}
+                  <button onClick={() => removePoint(h.date)} className="btn opacity-40 hover:opacity-100 transition w-7 h-7 rounded-full flex items-center justify-center" title="Supprimer ce point" style={{ background: 'transparent', border: '1px solid var(--border)' }}>
+                    <IconTrash size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-xs italic mb-4" style={{ color: 'var(--text-faint)' }}>Aucun point d'historique. Ajoute-en un ci-dessous — par exemple ta valeur d'il y a 3 mois.</div>
+          )}
+
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-2">
+            <div style={{ flex: 1 }}>
+              <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>DATE</div>
+              <input type="date" max={todayStr} value={newDate} onChange={(e) => setNewDate(e.target.value)} className="input" style={{ width: '100%' }} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>{label.toUpperCase()} ({unit})</div>
+              <input type="number" inputMode="decimal" step={paceMode ? '0.1' : '1'} value={newVal} onChange={(e) => setNewVal(e.target.value)} placeholder={paceMode ? '17.0' : '253'} className="input" style={{ width: '100%' }} />
+            </div>
+            <Button variant="primary" onClick={addPoint} style={{ background: 'var(--compass)', color: '#000', borderColor: 'var(--compass)' }}>Ajouter</Button>
+          </div>
+        </Card>
+      );
+    }
+
+    // ========================================================================
     // PROFILE VIEW — Tony's data, editable
     // ========================================================================
     function ProfileView({ profile, onSave, activities, planOverrides, onRecalibratePlan, onRecalibratePlanPace, onShowAllActivities, phaseGraduations = [], races = [], onAddRace, onUpdateRace }) {
@@ -11213,6 +11293,9 @@
               </div>
             )}
           </Card>
+
+          {/* Éditeur d'historique CP/VMA — alimente la timeline d'allures */}
+          {!editing && <FormHistoryEditor profile={profile} onSave={onSave} />}
 
           {/* Suggestions de calibration — discrètes, non bloquantes. Aide
               l'utilisateur à compléter les signaux qui affinent les scores
@@ -13574,8 +13657,26 @@
             return { ms, date: new Date(ms), cp: null, vma: projectedVma, scores, isFuture, isToday, tsb: null, times, paces, conf };
           };
 
+          // ---- PAST PORTION (pace) : reconstruite depuis profile.vmaHistory ----
+          // Sans ça la timeline pace n'avait AUCUN point passé (série plate /
+          // commençant à aujourd'hui). Chaque point d'historique VMA produit
+          // une prédiction de temps avec la VMA de l'époque.
+          const vmaHist = (profile.vmaHistory || [])
+            .filter(h => h && h.value && new Date(h.date).getTime() < todayMs)
+            .map(h => ({ ms: new Date(h.date).getTime(), vma: h.value }))
+            .sort((a, b) => a.ms - b.ms);
+          const pastPts = vmaHist.map(e => {
+            const times = {}, paces = {}, conf = {};
+            Object.entries(distMap).forEach(([k, km]) => {
+              const pred = predictRaceTimePace(e.vma, km, profile.prs, 0, profile.prsDates, currentScores, profile.easyPaceMinPerKm, tierForTimeline);
+              if (pred) { times[k] = pred.timeSec; paces[k] = pred.timeSec / km; conf[k] = pred.confidence; }
+            });
+            return { ms: e.ms, date: new Date(e.ms), cp: null, vma: e.vma, scores: currentScores, isFuture: false, isToday: false, tsb: null, times, paces, conf };
+          });
+
           const seriesPts = samples.map((ms, i) => computePoint(ms, i === 0));
-          return { series: seriesPts, todayMs, todayIdx: 0, futureDays: Math.round((horizonMs - todayMs) / dayMs), baseCp: null, cpWpFit: null, wprime: null, paceMode: true };
+          const allPts = [...pastPts, ...seriesPts];
+          return { series: allPts, todayMs, todayIdx: pastPts.length, futureDays: Math.round((horizonMs - todayMs) / dayMs), baseCp: null, cpWpFit: null, wprime: null, paceMode: true };
         }
 
         if (!profile.cp || !profile.weightKg) return null;
@@ -13732,7 +13833,7 @@
         // Combined series, sorted
         const combined = [...pastSeries, ...futureSeries].sort((a, b) => a.ms - b.ms);
         return { series: combined, todayMs, todayIdx: combined.findIndex(s => s.isToday), futureDays: totalDays, baseCp, cpWpFit: cpWp.fit, wprime, paceMode: false };
-      }, [activities, profile.cp, profile.weightKg, profile.vma, profile.easyPaceMinPerKm, profile.unitMode, profile.prs, profile.prsDates, profile.cpHistory, profile.fcMax, planOverrides, cpWp, isPaceModeTL]);
+      }, [activities, profile.cp, profile.weightKg, profile.vma, profile.easyPaceMinPerKm, profile.unitMode, profile.prs, profile.prsDates, profile.cpHistory, profile.vmaHistory, profile.fcMax, planOverrides, cpWp, isPaceModeTL]);
 
       if (!series || !series.series || series.series.length < 2) {
         return (
@@ -14024,9 +14125,21 @@
             <text x={padL - 6} y={padT - 8} textAnchor="end" fontFamily="JetBrains Mono" fontSize="8" fill="#8FE86A">↑ vite</text>
             <text x={padL - 6} y={padT + ch + 12} textAnchor="end" fontFamily="JetBrains Mono" fontSize="8" fill="#FFB020">↓ lent</text>
 
-            {/* Future zone subtle bg fill */}
+            {/* Future zone subtle bg fill + label PROJECTION explicite */}
             {todayIdx >= 0 && todayX < W - padR && (
-              <rect x={todayX} y={padT} width={W - padR - todayX} height={ch} fill="#4A9EFF" opacity="0.03" />
+              <>
+                <rect x={todayX} y={padT} width={W - padR - todayX} height={ch} fill="#4A9EFF" opacity="0.05" />
+                <text
+                  x={todayX + (W - padR - todayX) / 2}
+                  y={padT + 14}
+                  textAnchor="middle"
+                  fontFamily="JetBrains Mono"
+                  fontSize="9"
+                  fill="var(--compass)"
+                  opacity="0.55"
+                  letterSpacing="2"
+                >PROJECTION · NE MODIFIE PAS {series.paceMode ? 'TA VMA' : 'TA CP'}</text>
+              </>
             )}
 
             {/* Today vertical line */}
