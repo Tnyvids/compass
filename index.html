@@ -21799,31 +21799,48 @@
           setPendingPRCelebration({ candidates, activity });
         })();
 
-        // Auto-update CP if a new better effort detected.
-        // Skip en mode allure : l'utilisateur n'a pas de CP, lui en parler ici
-        // serait à la fois faux (pas de CP dans son profil) et déroutant. La
-        // suggestion de progression VMA passe par detectVMAProgression côté
-        // Profil/Analytics, qui est le bon canal en pace mode.
+        // Auto-ajuste la CP — fenêtre temporelle + symétrique (hausse OU baisse).
+        //
+        // Ancien comportement (corrigé) : max all-time de TOUTES les activités +
+        // uniquement vers le haut (newCp > cp + 5). Conséquence : la CP restait
+        // soudée sur le meilleur jour historique (ex : vieux test piste avec
+        // virages qui boostent la puissance) et ne reflétait jamais une perte
+        // de forme réelle. Un athlète qui refait 3 tests propres sur route ne
+        // voyait rien bouger.
+        //
+        // Nouveau : on n'agrège QUE les bestEfforts des 42 derniers jours (un
+        // mésocycle) via bestEffortsInWindow → les vieux tests cessent de
+        // polluer. Et on propose un ajustement dans les DEUX sens, avec un ton
+        // factuel orienté "tes zones et prédictions doivent rester justes"
+        // (pas "tu as régressé").
+        //
+        // Skip en mode allure : pas de CP dans le profil. La détection VMA
+        // passe par detectVMAProgression / detectVMADrop côté Profil/Analytics.
         if (!isPaceMode(profile) && profile.cp) {
-          const allBests = updated.map(a => a.bestEfforts).filter(Boolean);
-          const merged = {};
-          allBests.forEach(b => Object.entries(b).forEach(([d, p]) => {
-            const pNum = Number(p);
-            if (!Number.isFinite(pNum) || pNum <= 0) return;
-            if (!merged[d] || pNum > merged[d]) merged[d] = pNum;
-          }));
-          const newCp = estimateCPFromBests(merged);
-          if (newCp && newCp > profile.cp + 5) {
-            dialog.confirm({
-              title: 'Mettre à jour la puissance seuil ?',
-              message: `COMPASS détecte une nouvelle puissance seuil estimée à ${newCp}W (actuelle : ${profile.cp}W).`,
-              confirmLabel: 'Mettre à jour',
-            }).then(ok => {
-              if (ok) setProfile({
-                ...profile, cp: newCp, cpDate: new Date().toISOString().slice(0, 10),
-                cpHistory: [{ date: new Date().toISOString().slice(0, 10), value: newCp, source: 'auto-detected' }, ...(profile.cpHistory || [])],
+          const refMs = activity.startMs || Date.now();
+          const recentBests = bestEffortsInWindow(updated, refMs, 42);
+          const fit = estimateCPandWprime(recentBests);
+          if (fit && fit.cp) {
+            const newCp = fit.cp;
+            const deltaW = newCp - profile.cp;
+            const absPct = Math.abs(deltaW) / profile.cp;
+            // Seuils : ≥ 6W absolus ET ≥ 2.5 % pour filtrer le bruit séance-à-séance.
+            if (Math.abs(deltaW) >= 6 && absPct >= 0.025) {
+              const isUp = deltaW > 0;
+              const today = new Date().toISOString().slice(0, 10);
+              dialog.confirm({
+                title: isUp ? 'Puissance seuil en hausse' : 'Puissance seuil à recaler',
+                message: isUp
+                  ? `Tes efforts des 6 dernières semaines indiquent une puissance seuil de ${newCp}W (profil : ${profile.cp}W). Mettre à jour pour des zones et prédictions justes ?`
+                  : `Tes efforts des 6 dernières semaines indiquent une puissance seuil de ${newCp}W, en-dessous de ton profil (${profile.cp}W). Les anciens tests ne reflètent plus ta forme actuelle — recaler pour des zones et prédictions justes ?`,
+                confirmLabel: isUp ? 'Mettre à jour' : 'Recaler',
+              }).then(ok => {
+                if (ok) setProfile({
+                  ...profile, cp: newCp, cpDate: today,
+                  cpHistory: [{ date: today, value: newCp, source: 'auto-detected' }, ...(profile.cpHistory || [])].slice(0, 50),
+                });
               });
-            });
+            }
           }
         }
       }
