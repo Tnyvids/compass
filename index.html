@@ -1175,6 +1175,113 @@
       return distKm + Math.min(extra, cap);
     }
 
+    // ========================================================================
+    // STRATÉGIE DE COURSE — pacing calibré au dénivelé (modèle Minetti 2002)
+    // Import du GPX du parcours → allure cible par segment pour tenir un
+    // EFFORT (puissance métabolique) constant : on ralentit en côte, on
+    // accélère en descente modérée. Méthode Grade Adjusted Pace inversée.
+    // ========================================================================
+
+    // Coût énergétique de la course Cr (J/kg/m) selon le gradient i
+    // (Minetti et al. 2002, J Appl Physiol). i = m vertical / m horizontal.
+    // Domaine validé [-0.45, +0.45]. À plat Cr ≈ 3.6.
+    function minettiCost(i) {
+      const g = Math.max(-0.45, Math.min(0.45, i));
+      return 155.4*g**5 - 30.4*g**4 - 43.3*g**3 + 46.3*g**2 + 19.5*g + 3.6;
+    }
+    const CR_FLAT = 3.6;
+
+    // Parse un GPX de PARCOURS (pas une activité) → points {dist, ele}.
+    // Réutilise haversine() défini plus bas. DOMParser dispo en navigateur.
+    function parseCourseGPX(xmlText) {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(xmlText, 'application/xml');
+      if (doc.querySelector && doc.querySelector('parsererror')) throw new Error('GPX invalide');
+      const trkpts = doc.getElementsByTagName('trkpt');
+      if (!trkpts.length) throw new Error('Aucun point de trace dans le GPX');
+      const pts = [];
+      let cum = 0, prev = null;
+      for (let i = 0; i < trkpts.length; i++) {
+        const pt = trkpts[i];
+        const lat = parseFloat(pt.getAttribute('lat'));
+        const lng = parseFloat(pt.getAttribute('lon'));
+        if (isNaN(lat) || isNaN(lng)) continue;
+        const eleEl = pt.getElementsByTagName('ele')[0];
+        const ele = eleEl ? parseFloat(eleEl.textContent) : null;
+        if (prev) cum += haversine(prev.lat, prev.lng, lat, lng);
+        pts.push({ dist: cum, ele });
+        prev = { lat, lng };
+      }
+      if (pts.length < 2 || cum < 500) throw new Error('Parcours trop court ou sans GPS');
+      // Lissage altitude (fenêtre 120 m) — l'altitude GPS brute est très
+      // bruitée, sans lissage les pentes instantanées sont aberrantes.
+      const win = 120;
+      const sm = pts.map((p, idx) => {
+        let sum = 0, n = 0;
+        for (let j = idx; j >= 0 && p.dist - pts[j].dist <= win/2; j--) { if (pts[j].ele != null) { sum += pts[j].ele; n++; } }
+        for (let j = idx+1; j < pts.length && pts[j].dist - p.dist <= win/2; j++) { if (pts[j].ele != null) { sum += pts[j].ele; n++; } }
+        return { dist: p.dist, ele: n ? sum/n : p.ele };
+      });
+      // Échantillonnage tous les ~25 m pour rester léger en localStorage.
+      const sampled = [];
+      let nextAt = 0;
+      for (const p of sm) { if (p.dist >= nextAt) { sampled.push({ d: Math.round(p.dist), e: Math.round((p.ele||0)*10)/10 }); nextAt += 25; } }
+      if (sampled[sampled.length-1].d !== Math.round(cum)) sampled.push({ d: Math.round(cum), e: Math.round((sm[sm.length-1].ele||0)*10)/10 });
+      let gain = 0, loss = 0;
+      for (let i = 1; i < sm.length; i++) { const d = (sm[i].ele||0)-(sm[i-1].ele||0); if (d>0) gain+=d; else loss+=-d; }
+      return { points: sampled, totalDist: Math.round(cum), gain: Math.round(gain), loss: Math.round(loss) };
+    }
+
+    // Construit la stratégie : pour chaque segment, allure cible = allure plate
+    // × Cr(pente)/Cr(0). flatPaceSecPerKm = allure visée sur le plat.
+    // Retourne { segments, totalTimeSec, kmSplits }.
+    function buildRaceStrategy(coursePoints, flatPaceSecPerKm) {
+      if (!coursePoints || coursePoints.length < 2 || !flatPaceSecPerKm) return null;
+      const segs = [];
+      for (let i = 1; i < coursePoints.length; i++) {
+        const dx = coursePoints[i].d - coursePoints[i-1].d;
+        if (dx < 1) continue;
+        const dz = coursePoints[i].e - coursePoints[i-1].e;
+        const grade = dz / dx;
+        const cr = minettiCost(grade);
+        const paceSecPerKm = flatPaceSecPerKm * (cr / CR_FLAT);
+        const timeSec = (dx / 1000) * paceSecPerKm;
+        segs.push({ distStart: coursePoints[i-1].d, dx, grade, paceSecPerKm, timeSec });
+      }
+      const totalTimeSec = segs.reduce((s, x) => s + x.timeSec, 0);
+      // Splits par km
+      const kmSplits = [];
+      let kmDist = 0, kmTime = 0, kmGN = 0, kmGW = 0, idx = 1;
+      for (const s of segs) {
+        kmDist += s.dx; kmTime += s.timeSec; kmGN += s.grade * s.dx; kmGW += s.dx;
+        if (kmDist >= 1000 || s === segs[segs.length-1]) {
+          kmSplits.push({
+            km: idx, distM: Math.round(kmDist),
+            avgGradePct: kmGW > 0 ? Math.round(kmGN/kmGW*1000)/10 : 0,
+            paceSecPerKm: Math.round(kmTime / (kmDist/1000)),
+            timeSec: Math.round(kmTime),
+          });
+          idx++; kmDist = 0; kmTime = 0; kmGN = 0; kmGW = 0;
+        }
+      }
+      return { segments: segs, totalTimeSec: Math.round(totalTimeSec), kmSplits };
+    }
+
+    // Parse un objectif chrono ("sub-40", "39:30", "1:30:00", "40") → secondes.
+    function parseObjectiveSec(str) {
+      if (!str) return null;
+      const s = String(str).replace(/sub-?/i, '').trim();
+      if (s.includes(':')) {
+        const p = s.split(':').map(Number);
+        if (p.some(isNaN)) return null;
+        if (p.length === 2) return p[0]*60 + p[1];
+        if (p.length === 3) return p[0]*3600 + p[1]*60 + p[2];
+        return null;
+      }
+      const n = parseFloat(s);
+      return isNaN(n) ? null : n * 60; // nombre seul = minutes
+    }
+
     function computeTSS(activity, cpOrProfile, aerobicScore = 0.5) {
       if (!activity || !activity.durationSec) return null;
       // Path 0 : activité cross-training avec TSS pré-calculé (saisie manuelle
@@ -17175,6 +17282,138 @@
     //  - "What's missing" hints (e.g. "no long run > 90min in past 3 weeks")
     //  - Inline add/remove
     // ========================================================================
+    // Stratégie de course calibrée au dénivelé. Import du GPX du parcours,
+    // calcul d'allure cible km par km à effort constant (Minetti), profil
+    // altimétrique. flatPace = objectif chrono déclaré de la course.
+    function RaceStrategySection({ race, profile, onUpdateRace }) {
+      const fileRef = useRef(null);
+      const [err, setErr] = useState(null);
+      const distKm = (() => {
+        const s = String(race.distance || '').toLowerCase();
+        if (s.includes('marathon')) return 42.195;
+        if (s.includes('semi')) return 21.0975;
+        const m = s.match(/(\d+(?:\.\d+)?)/);
+        return m ? parseFloat(m[1]) : null;
+      })();
+
+      const onFile = async (file) => {
+        setErr(null);
+        try {
+          const text = await file.text();
+          const parsed = parseCourseGPX(text);
+          onUpdateRace(race.id, {
+            coursePts: parsed.points, courseGain: parsed.gain,
+            courseLoss: parsed.loss, courseDist: parsed.totalDist,
+            courseFileName: file.name,
+          });
+        } catch (e) { setErr(e.message || 'Échec de lecture du GPX'); }
+      };
+
+      const strategy = useMemo(() => {
+        if (!race.coursePts || !race.coursePts.length) return null;
+        const objSec = parseObjectiveSec(race.objective);
+        if (!objSec || !distKm) return { needObjective: true };
+        const flatPace = objSec / distKm; // sec/km visé sur le plat
+        return buildRaceStrategy(race.coursePts, flatPace);
+      }, [race.coursePts, race.objective, distKm]);
+
+      const fmtP = sec => { if (!sec) return '—'; const m = Math.floor(sec/60); let s = Math.round(sec%60); let mm=m; if (s===60){s=0;mm++;} return `${mm}:${String(s).padStart(2,'0')}`; };
+      const fmtT = sec => { if (!sec) return '—'; const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=Math.round(sec%60); return h>0?`${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${m}:${String(s).padStart(2,'0')}`; };
+
+      // Mini profil altimétrique SVG
+      const profileSvg = useMemo(() => {
+        if (!race.coursePts || race.coursePts.length < 2) return null;
+        const W = 600, H = 70, pad = 4;
+        const eles = race.coursePts.map(p => p.e);
+        const minE = Math.min(...eles), maxE = Math.max(...eles);
+        const range = Math.max(1, maxE - minE);
+        const maxD = race.coursePts[race.coursePts.length-1].d;
+        const x = d => pad + (d / maxD) * (W - 2*pad);
+        const y = e => pad + (1 - (e - minE) / range) * (H - 2*pad);
+        const path = race.coursePts.map((p,i) => `${i===0?'M':'L'} ${x(p.d).toFixed(1)} ${y(p.e).toFixed(1)}`).join(' ');
+        const area = `${path} L ${x(maxD).toFixed(1)} ${H-pad} L ${pad} ${H-pad} Z`;
+        return { W, H, path, area };
+      }, [race.coursePts]);
+
+      return (
+        <div className="mt-4 pt-3 border-t" style={{ borderColor: 'var(--border)' }}>
+          <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+            <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--compass)' }}>STRATÉGIE PARCOURS (DÉNIVELÉ)</div>
+            <input ref={fileRef} type="file" accept=".gpx" style={{ display:'none' }} onChange={(e) => e.target.files[0] && onFile(e.target.files[0])} />
+            {!race.coursePts ? (
+              <button onClick={() => fileRef.current?.click()} className="btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)', color: 'var(--compass)' }}>
+                <IconUpload size={12} /> IMPORTER LE GPX DU PARCOURS
+              </button>
+            ) : (
+              <button onClick={() => onUpdateRace(race.id, { coursePts: null, courseGain: null, courseLoss: null, courseDist: null, courseFileName: null })} className="btn opacity-50 hover:opacity-100 px-2 py-1 rounded font-mono text-[10px] tracking-widest" style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-dim)' }}>
+                RETIRER
+              </button>
+            )}
+          </div>
+          {err && <div className="text-xs mb-2" style={{ color: 'var(--danger)' }}>✗ {err}</div>}
+          {!race.coursePts && (
+            <div className="text-xs" style={{ color: 'var(--text-faint)' }}>
+              Importe le fichier GPX du parcours (depuis le site de la course ou Strava). Compass calcule ton allure cible km par km pour tenir un effort constant malgré le dénivelé.
+            </div>
+          )}
+          {race.coursePts && (
+            <>
+              <div className="flex items-center gap-4 flex-wrap mb-2 font-mono text-[10px]" style={{ color: 'var(--text-dim)' }}>
+                <span>{(race.courseDist/1000).toFixed(2)} km</span>
+                <span style={{ color: 'var(--go)' }}>D+ {race.courseGain} m</span>
+                <span style={{ color: 'var(--negative)' }}>D− {race.courseLoss} m</span>
+                {race.courseFileName && <span style={{ color: 'var(--text-faint)' }}>{race.courseFileName}</span>}
+              </div>
+              {profileSvg && (
+                <svg viewBox={`0 0 ${profileSvg.W} ${profileSvg.H}`} className="w-full mb-3" style={{ display:'block' }}>
+                  <path d={profileSvg.area} fill="var(--compass)" opacity="0.10" />
+                  <path d={profileSvg.path} fill="none" stroke="var(--compass)" strokeWidth="1.5" />
+                </svg>
+              )}
+              {strategy && strategy.needObjective && (
+                <div className="text-xs rounded-lg p-3" style={{ background: 'rgba(255,176,32,0.08)', border: '1px solid rgba(255,176,32,0.25)', color: 'var(--text-dim)' }}>
+                  Ajoute un <span style={{ color: 'var(--caution)' }}>objectif chrono</span> à cette course (ci-dessus) pour calculer ta stratégie d'allure.
+                </div>
+              )}
+              {strategy && !strategy.needObjective && (
+                <>
+                  <div className="rounded-lg p-3 mb-2 flex items-baseline gap-3 flex-wrap" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--border)' }}>
+                    <div className="font-display text-2xl font-bold tabular" style={{ color: 'var(--compass)' }}>{fmtT(strategy.totalTimeSec)}</div>
+                    <div className="font-mono text-[10px]" style={{ color: 'var(--text-dim)' }}>temps estimé · allure moy {fmtP(strategy.totalTimeSec / (race.courseDist/1000))}/km</div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+                      <thead>
+                        <tr style={{ color: 'var(--text-faint)' }} className="font-mono text-[9px] tracking-widest">
+                          <th className="text-left py-1">KM</th><th className="text-right py-1">PENTE</th><th className="text-right py-1">ALLURE CIBLE</th><th className="text-right py-1">TEMPS</th>
+                        </tr>
+                      </thead>
+                      <tbody className="font-mono tabular">
+                        {strategy.kmSplits.map(s => {
+                          const c = s.avgGradePct > 1.5 ? 'var(--negative)' : s.avgGradePct < -1.5 ? 'var(--go)' : 'var(--text)';
+                          return (
+                            <tr key={s.km} style={{ borderTop: '1px solid var(--border)' }}>
+                              <td className="py-1" style={{ color: 'var(--text-dim)' }}>{s.km}</td>
+                              <td className="text-right py-1" style={{ color: c }}>{s.avgGradePct>=0?'+':''}{s.avgGradePct}%</td>
+                              <td className="text-right py-1 font-bold" style={{ color: 'var(--compass)' }}>{fmtP(s.paceSecPerKm)}/km</td>
+                              <td className="text-right py-1" style={{ color: 'var(--text-dim)' }}>{fmtP(s.timeSec)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="text-[10px] mt-2" style={{ color: 'var(--text-faint)' }}>
+                    Allures calculées pour un effort constant (modèle Minetti). Ralentis en côte, accélère en descente — l'effort reste identique.
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      );
+    }
+
     function RaceTimeline({ races, profile, activities, planOverrides, onAddRace, onRemoveRace, onUpdateRace }) {
       const [adding, setAdding] = useState(false);
       const [form, setForm] = useState({ name: '', distance: '10k', date: '', objective: '', priority: 'A' });
@@ -17879,6 +18118,9 @@
                             })}
                           </div>
                         )}
+
+                        {/* Stratégie de course calibrée au dénivelé */}
+                        <RaceStrategySection race={r} profile={profile} onUpdateRace={onUpdateRace} />
 
                         {/* Plan summary + Remove */}
                         <div className="flex items-center justify-between mt-4 pt-3 border-t flex-wrap gap-2" style={{ borderColor: 'var(--border)' }}>
