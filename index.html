@@ -20539,12 +20539,19 @@
             ? Math.round(raceKm * racePaceSec / 60)
             : (cp && weightKg ? Math.round(raceKm * 1000 / ((cp * raceProfile.racePaceMul / weightKg) / 1.04) / 60) : Math.round(raceKm * 5));
 
-          days.lun = { type: 'rest', label: 'Repos', detail: '' };
-          days.mar = { type: 'easy', label: 'Footing léger', detail: `28' à ${Math.round(cp*0.72)}W`, purpose: 'Garder la foulée active sans fatiguer.' };
-          days.mer = { type: 'rest', label: 'Repos', detail: '' };
-          days.jeu = { type: 'easy', label: 'Activation', detail: `15' à ${Math.round(cp*0.70)}W + 4×30" à ${Math.round(cp*1.00)}W (R 90" à ${Math.round(cp*0.65)}W)`, purpose: 'Réveil neuromusculaire à J-3/J-4.' };
-          days.ven = { type: 'rest', label: 'Repos', detail: 'Hydratation, glucides complexes' };
-          days.sam = { type: 'easy', label: 'Déblocage', detail: `15' très cool à ${Math.round(cp*0.68)}W + 3×20" à ${Math.round(cp*1.00)}W`, purpose: 'Dernière activation la veille de course.' };
+          // Helper : construit les jours de la sem de course avec leurs blocks
+          // parsés (sinon l'UI ne peut pas calculer TSS depuis les blocks et
+          // certains rendus tombent en panne — défaut détecté en audit S26).
+          const dayWithBlocks = (type, label, detail, purpose) => ({
+            type, label, detail, purpose,
+            blocks: detail ? parseSessionDetail(detail, { cp, weightKg, ppt: powerPaceTable }) : [],
+          });
+          days.lun = { type: 'rest', label: 'Repos', detail: '', blocks: [] };
+          days.mar = dayWithBlocks('easy', 'Footing léger', `28' à ${Math.round(cp*0.72)}W`, 'Garder la foulée active sans fatiguer.');
+          days.mer = { type: 'rest', label: 'Repos', detail: '', blocks: [] };
+          days.jeu = dayWithBlocks('easy', 'Activation', `15' à ${Math.round(cp*0.70)}W + 4×30" à ${Math.round(cp*1.00)}W (R 90" à ${Math.round(cp*0.65)}W)`, 'Réveil neuromusculaire à J-3/J-4.');
+          days.ven = { type: 'rest', label: 'Repos', detail: 'Hydratation, glucides complexes', blocks: [] };
+          days.sam = dayWithBlocks('easy', 'Déblocage', `15' très cool à ${Math.round(cp*0.68)}W + 3×20" à ${Math.round(cp*1.00)}W`, 'Dernière activation la veille de course.');
           const raceDetail = `${raceKm} km à ${rpW}W (${raceProfile.racePaceLabel}) — JOUR J, donne tout`;
           days.dim = {
             type: 'test',
