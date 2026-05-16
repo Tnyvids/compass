@@ -18464,7 +18464,7 @@
           const variants = [
             { label: 'Footing qualitatif', detail: `${T0}' à ${Math.round(cp*0.75)}W + 5×30" à ${Math.round(cp*1.05)}W (R 1' à ${Math.round(cp*0.65)}W)`, purpose: 'Endurance aérobie avec sollicitation neuromusculaire brève.', explicitDurationMin: T },
             { label: 'Footing + strides', detail: `${T0}' à ${Math.round(cp*0.75)}W + 6×20" à ${Math.round(cp*1.15)}W (R 1' à ${Math.round(cp*0.60)}W)`, purpose: 'Maintient la vivacité pendant les semaines de volume.', explicitDurationMin: T },
-            { label: 'Footing avec pickups', detail: `${T1}' à ${Math.round(cp*0.78)}W + 4×1' à ${Math.round(cp*0.95)}W (R 2' à ${Math.round(cp*0.70)}W)`, purpose: 'Intègre de la variation d\'intensité dans l\'aérobie sans stress majeur.', explicitDurationMin: T },
+            { label: 'Footing avec pickups', detail: `${T0}' à ${Math.round(cp*0.78)}W + 5×30" à ${Math.round(cp*1.00)}W (R 90" à ${Math.round(cp*0.65)}W)`, purpose: 'Touches neuromusculaires courtes (30", filière alactique) sur fond aérobie — stimule la foulée sans tempo déguisé.', explicitDurationMin: T },
             { label: 'Footing récup', detail: `${T}' à ${Math.round(cp*0.65)}-${Math.round(cp*0.72)}W très strict`, purpose: 'Facilite la récupération entre deux séances qualité, relance la circulation.', explicitDurationMin: T },
             { label: 'Easy progressive', detail: `${Math.round(T/3)}' à ${Math.round(cp*0.70)}W + ${Math.round(T/3)}' à ${Math.round(cp*0.78)}W + ${T - 2*Math.round(T/3)}' à ${Math.round(cp*0.85)}W`, purpose: 'Habitue le corps à monter en intensité sur un même effort long, 3 tiers.', explicitDurationMin: T },
             { label: 'Easy + sprints', detail: `${T0}' à ${Math.round(cp*0.72)}W + 8×10" à ${Math.round(cp*1.35)}W (R 50" à ${Math.round(cp*0.60)}W)`, purpose: 'Recrutement des fibres rapides, entretien de la puissance max — sprints.', explicitDurationMin: T },
@@ -18753,6 +18753,20 @@
         // contourne le boost +15 % / floor de durée.
         base: (cp, w, ctx) => {
           const T = (ctx && Number.isFinite(ctx.targetMin)) ? ctx.targetMin : (60 + Math.min(30, (w - 1) * 5));
+          const rp = (ctx && ctx.raceProfile) || null;
+          // 5K/10K base : sortie longue STRICTEMENT aérobie (pas de bloc seuil
+          // déguisé). Les "pickups 6×1' à 0.92" sont raccourcis en strides
+          // (30", neuromusculaire) pour rester en filière aérobie pure — le
+          // seuil sera travaillé en build via les séances tempo dédiées.
+          if (rp && (rp.key === '5k' || rp.key === '10k')) {
+            const variants = [
+              { label: 'Sortie longue aérobie', detail: `${T}' constant à ${Math.round(cp*0.72)}-${Math.round(cp*0.82)}W`, purpose: 'Construire la durée supportable en aérobie pur, base de tout plan.', explicitDurationMin: T },
+              { label: 'Longue + strides', detail: `${Math.max(20, T - 10)}' à ${Math.round(cp*0.75)}W + 6×30" à ${Math.round(cp*1.08)}W (R 90" à ${Math.round(cp*0.65)}W)`, purpose: 'Volume aérobie + touches neuromusculaires courtes (filière alactique) — entretien foulée vive sans charge VO2.', explicitDurationMin: T },
+              { label: 'Progressive longue', detail: `${Math.round(T/3)}' à ${Math.round(cp*0.72)}W + ${Math.round(T/3)}' à ${Math.round(cp*0.80)}W + ${T - 2*Math.round(T/3)}' à ${Math.round(cp*0.85)}W`, purpose: 'Apprend à finir fort en endurance haute — 3 tiers, max ≤0.85 CP.', explicitDurationMin: T },
+              { label: 'Longue vallonnée', detail: `${T}' à ${Math.round(cp*0.75)}-${Math.round(cp*0.85)}W avec relances en côte`, purpose: 'Renforcement musculaire intégré sur fond aérobie.', explicitDurationMin: T },
+            ];
+            return variants[(w - 1) % variants.length];
+          }
           const variants = [
             { label: 'Sortie longue aérobie', detail: `${T}' constant à ${Math.round(cp*0.72)}-${Math.round(cp*0.82)}W`, purpose: 'Construire la durée supportable en aérobie pur, base de tout plan.', explicitDurationMin: T },
             { label: 'Longue avec pickups', detail: `${Math.max(20, T - 23)}' à ${Math.round(cp*0.75)}W + 6×1' à ${Math.round(cp*0.92)}W (R 2' à ${Math.round(cp*0.70)}W) + 5' à ${Math.round(cp*0.70)}W`, purpose: 'Introduit de la variabilité dans la longue, stimule la fin de course.', explicitDurationMin: T },
@@ -18767,6 +18781,24 @@
           const tempoW = Math.round(cp * 0.92);
           const rpW = rp ? Math.round(cp * rp.racePaceMul) : Math.round(cp * 0.92);
           const isLongRace = rp && (rp.key === 'marathon' || rp.key === 'semi' || rp.key === '15k');
+          // 5K/10K build : la longue reste AÉROBIE avec finition tempo SOBRE
+          // (≤15' à ≤0.90 CP, jamais à allure course 0.99-1.04). La spécificité
+          // race-pace est couverte par les séances tempo/intervals de la semaine
+          // — la longue n'a pas à la dupliquer. Sinon = grosse charge cumulée
+          // + dénature la longue (signalé par Tony : "30' à allure 10K dans
+          // une longue, c'est énorme").
+          if (rp && (rp.key === '5k' || rp.key === '10k')) {
+            const subW = Math.round(cp * 0.88);
+            const aeroMid = Math.round(cp * 0.80), aeroHi = Math.round(cp * 0.85);
+            const t3 = Math.round(T / 3);
+            const variants = [
+              { label: 'Longue + finition tempo', detail: `${Math.max(20, T - 15)}' à ${Math.round(cp*0.75)}W + 15' à ${subW}W`, purpose: 'Finir fatigué à un tempo sub-seuil contrôlé (pas à allure course).', explicitDurationMin: T },
+              { label: 'Longue avec fractions courtes', detail: `${Math.max(20, T - 18)}' à ${Math.round(cp*0.75)}W + 5×1' à ${Math.round(cp*0.95)}W (R 2' à ${Math.round(cp*0.72)}W) + 8' à ${Math.round(cp*0.72)}W`, purpose: 'Petites touches sub-seuil sur fond aérobie (5\' cumulés, court), stimule la fin de course sans surcharge.', explicitDurationMin: T },
+              { label: 'Progressive longue', detail: `${t3}' à ${Math.round(cp*0.72)}W + ${t3}' à ${aeroMid}W + ${T - 2*t3}' à ${aeroHi}W`, purpose: 'Négative split aérobie, max ≤0.85 CP.', explicitDurationMin: T },
+              { label: 'Pfitz MLR', detail: `${T}' à ${aeroMid}-${aeroHi}W constante`, purpose: 'Medium-Long Run : endurance aérobie soutenue, pilier du fond.', explicitDurationMin: T },
+            ];
+            return variants[(w - 1) % variants.length];
+          }
           const variants = [
             { label: 'Longue + finish seuil', detail: `${Math.max(30, T - 20)}' à ${Math.round(cp*0.75)}W + 20' à ${tempoW}-${Math.round(cp*0.93)}W`, purpose: 'Apprend à pousser fatigué, simulation fin de semi/marathon.', explicitDurationMin: T },
             { label: 'Longue avec fractions', detail: `${Math.max(25, T - 45)}' à ${Math.round(cp*0.75)}W + 6×3' à ${Math.round(cp*0.95)}W (R 2' à ${Math.round(cp*0.70)}W) + 15' à ${Math.round(cp*0.72)}W`, purpose: 'Combine volume et intensité, séance très qualitative.', explicitDurationMin: T },
