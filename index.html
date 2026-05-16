@@ -14138,7 +14138,7 @@
                   fill="var(--compass)"
                   opacity="0.55"
                   letterSpacing="2"
-                >PROJECTION · NE MODIFIE PAS {series.paceMode ? 'TA VMA' : 'TA CP'}</text>
+                >PROJECTION</text>
               </>
             )}
 
@@ -21937,9 +21937,22 @@
             const newCp = fit.cp;
             const deltaW = newCp - profile.cp;
             const absPct = Math.abs(deltaW) / profile.cp;
+            const isUp = deltaW > 0;
+            // Garde-fou baisse : ne JAMAIS proposer de descendre la CP si aucun
+            // effort vraiment soutenu n'a été produit récemment. Sans test/séance
+            // maximale 5-30 min, des bestEfforts bas = "pas testé ses limites",
+            // PAS "perte de forme". Un coureur qui s'entraîne dur mais sans aller
+            // à fond ne doit pas voir sa CP chuter à tort. La HAUSSE reste libre
+            // (battre un record = forcément un effort réel).
+            const hardestRecent = Math.max(0,
+              recentBests[300] || 0, recentBests[600] || 0,
+              recentBests[1200] || 0, recentBests[1800] || 0);
+            const hasHardEffort = hardestRecent > 0 && (hardestRecent / profile.cp) >= 0.85;
+            if (!isUp && !hasHardEffort) {
+              // pas d'effort soutenu récent → on ne dit rien (ni baisse ni bruit)
+            } else
             // Seuils : ≥ 6W absolus ET ≥ 2.5 % pour filtrer le bruit séance-à-séance.
             if (Math.abs(deltaW) >= 6 && absPct >= 0.025) {
-              const isUp = deltaW > 0;
               const today = new Date().toISOString().slice(0, 10);
               dialog.confirm({
                 title: isUp ? 'Puissance seuil en hausse' : 'Puissance seuil à recaler',
