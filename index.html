@@ -22007,6 +22007,28 @@
         if (!race) return;
         const prev = races;
         setRaces(races.filter(r => r.id !== id));
+
+        // Casse la boucle de résurrection : si un objectif du profil référence
+        // cette course (par raceId, ou par nom+date pour un objectif "fantôme"
+        // dont l'UI a disparu), on délie l'objectif. Sans ça, la synchro
+        // objectif→course recréait la course au prochain enregistrement de
+        // profil ("Foulées d'Erdeven qui revient tout le temps").
+        if (profile && profile.goals) {
+          let goalsChanged = false;
+          const newGoals = { ...profile.goals };
+          for (const k of Object.keys(newGoals)) {
+            const g = newGoals[k];
+            if (!g) continue;
+            const matchById = g.raceId != null && g.raceId === id;
+            const matchByName = !!g.event && g.event.trim() === (race.name || '').trim();
+            if (matchById || matchByName) {
+              newGoals[k] = { ...g, event: '', date: '', target: '', raceId: null };
+              goalsChanged = true;
+            }
+          }
+          if (goalsChanged) setProfile({ ...profile, goals: newGoals });
+        }
+
         toast.push(`Course "${race.name}" supprimée.`, {
           kind: 'info',
           undo: () => setRaces(prev),
