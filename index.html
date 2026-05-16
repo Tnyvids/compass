@@ -17333,19 +17333,19 @@
           if (km <= 17) return 0.95;
           return 0.92;
         })();
-        const sustainW = Math.round(profile.cp * rpMul);
-        const gapPct = (targetW - sustainW) / sustainW * 100;
-        // Temps que la forme actuelle permettrait (traduit en chrono : bien
-        // plus parlant que des watts pour juger objectif vs potentiel).
-        const sustainSpeedMs = sustainW / (profile.weightKg * 1.04);
-        const sustainTimeSec = sustainSpeedMs > 0 ? Math.round((distKm * 1000) / sustainSpeedMs) : null;
-        const marginSec = sustainTimeSec ? objSec - sustainTimeSec : null; // >0 = marge (objectif plus lent que potentiel)
+        // % de CP que l'objectif demande. PAS de 2ᵉ calcul de temps ici :
+        // le temps que la forme permet est donné par le RacePredictor
+        // (source de vérité unique). On situe juste l'effort demandé vs CP.
+        // Repères : un 10K se court ≈ 97-100 % CP, semi ≈ 92 %, marathon ≈ 86 %.
+        const pctCp = Math.round(targetW / profile.cp * 100);
+        const targetPctOfRace = Math.round(rpMul * 100); // % CP typique pour la distance
+        const delta = pctCp - targetPctOfRace; // >0 = plus dur que la normale de la distance
         let verdict, vColor;
-        if (gapPct <= -4) { verdict = 'objectif PRUDENT — ta forme permet déjà mieux, tu as de la marge'; vColor = 'var(--go)'; }
-        else if (gapPct <= 3) { verdict = 'objectif RÉALISTE — pile dans tes cordes'; vColor = 'var(--go)'; }
-        else if (gapPct <= 9) { verdict = 'objectif AMBITIEUX — jouable si tu es affûté et progresses d\'ici le jour J'; vColor = 'var(--caution)'; }
-        else { verdict = 'objectif TRÈS AMBITIEUX — au-delà de ta forme actuelle, à revoir'; vColor = 'var(--negative)'; }
-        return { targetW, sustainW, gapPct, verdict, vColor, rpMul, sustainTimeSec, marginSec };
+        if (delta <= -4) { verdict = `objectif PRUDENT — demande ${pctCp} % de ta CP, sous le ${targetPctOfRace} % typique d'un ${race.distance}. Tu peux viser plus vite.`; vColor = 'var(--go)'; }
+        else if (delta <= 3) { verdict = `objectif RÉALISTE — demande ${pctCp} % de ta CP, pile dans la zone d'un ${race.distance} (~${targetPctOfRace} %).`; vColor = 'var(--go)'; }
+        else if (delta <= 9) { verdict = `objectif AMBITIEUX — demande ${pctCp} % de ta CP, au-dessus du ${targetPctOfRace} % normal. Jouable si affûté/en progrès.`; vColor = 'var(--caution)'; }
+        else { verdict = `objectif TRÈS AMBITIEUX — ${pctCp} % de ta CP, bien au-delà du soutenable sur un ${race.distance}.`; vColor = 'var(--negative)'; }
+        return { targetW, pctCp, verdict, vColor, rpMul };
       }, [race.objective, race.distance, distKm, profile.weightKg, profile.cp]);
 
       const strategy = useMemo(() => {
@@ -17503,15 +17503,13 @@
                       <div className="flex items-baseline gap-3 flex-wrap mb-1">
                         <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--compass)' }}>PUISSANCE CIBLE JOUR J</div>
                         <div className="font-display text-2xl font-bold tabular" style={{ color: 'var(--compass)' }}>{powerPlan.targetW}<span className="font-mono text-[11px] ml-0.5">W</span></div>
-                        <div className="font-mono text-[10px]" style={{ color: 'var(--text-dim)' }}>pour viser ton objectif {race.objective}</div>
-                      </div>
-                      <div className="font-mono text-[10px] mb-1.5" style={{ color: 'var(--text-dim)' }}>
-                        Ta forme actuelle (CP {profile.cp}W) permet ~<span style={{ color: 'var(--text)' }}>{fmtT(powerPlan.sustainTimeSec)}</span> sur {race.distance} ({powerPlan.sustainW}W).
-                        {powerPlan.marginSec != null && powerPlan.marginSec > 5 && <span style={{ color: 'var(--go)' }}> Tu as ~{fmtT(powerPlan.marginSec)} de marge — objectif sécurisé, pas une régression.</span>}
-                        {powerPlan.marginSec != null && powerPlan.marginSec < -5 && <span style={{ color: 'var(--caution)' }}> Il te manque ~{fmtT(-powerPlan.marginSec)} — il faudra progresser/être affûté d'ici là.</span>}
+                        <div className="font-mono text-[10px]" style={{ color: 'var(--text-dim)' }}>= {powerPlan.pctCp} % de ta CP ({profile.cp}W) · pour viser {race.objective}</div>
                       </div>
                       <div className="text-[11px] mb-1.5 font-bold" style={{ color: powerPlan.vColor }}>
                         {powerPlan.verdict}
+                      </div>
+                      <div className="text-[10px] mb-1.5" style={{ color: 'var(--text-faint)' }}>
+                        Pour savoir si ton objectif est atteignable, regarde le <span style={{ color: 'var(--text-dim)' }}>temps prédit</span> (Today / Analytics) — c'est LA référence, calculée sur ta forme complète. Ici, on te donne seulement la puissance à tenir pour réaliser l'objectif que TU as fixé.
                       </div>
                       <div className="text-[10px] leading-relaxed" style={{ color: 'var(--text-faint)' }}>
                         Le jour J : cours à <span style={{ color: 'var(--compass)' }}>{powerPlan.targetW}W constants</span> sur ton Stryd. Le capteur gère le dénivelé tout seul — tu ralentis en côte, tu accélères en descente, mais la puissance (donc l'effort) reste identique. Les allures ci-dessous ne sont que l'illustration de ce que ça donnera km par km.
