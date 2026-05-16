@@ -17274,8 +17274,33 @@
 
         const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
         const baseCp = isPaceModeRT ? PACE_SCAFFOLD_CP : profile.cp;
-        const cpCeil = baseCp * 1.05, cpFloor = baseCp * 0.95;
-        const K = 0.4;
+        // IMPORTANT : projection CP UNIFIÉE avec PaceTimelineCard. Avant, ce
+        // bloc utilisait K=0.4 fixe + cap ±5 % fixe alors que la timeline
+        // utilise K dynamique (densité qualité) + cap par tier (W/kg). Les
+        // deux écrans affichaient donc une CP projetée différente pour la
+        // MÊME date/course (ex : timeline 257 W vs countdown 255 W) et des
+        // temps prédits divergents. On aligne sur la logique validée (S2/S9).
+        const wkg = profile.weightKg ? baseCp / profile.weightKg : 4.2;
+        let capPct;
+        if (wkg < 3.0) capPct = 0.15;
+        else if (wkg < 3.85) capPct = 0.10;
+        else if (wkg < 4.6) capPct = 0.07;
+        else if (wkg < 5.4) capPct = 0.05;
+        else capPct = 0.03;
+        const cpCeil = baseCp * (1 + capPct);
+        const cpFloor = baseCp * (1 - capPct * 0.5);
+        let qualityCount = 0, totalSessionsK = 0;
+        Object.values(planOverrides || {}).forEach(week => {
+          if (!week) return;
+          dayKeys.forEach(dk => {
+            const d = week[dk];
+            if (!d || d.type === 'rest') return;
+            totalSessionsK++;
+            if (d.type === 'intervals' || d.type === 'tempo' || d.type === 'test' || d.type === 'hills') qualityCount++;
+          });
+        });
+        const qualityDensity = totalSessionsK > 0 ? qualityCount / totalSessionsK : 0.25;
+        const K = 0.5 + 1.25 * Math.max(0, Math.min(0.4, qualityDensity - 0.1));
 
         const out = {};
         for (const r of upcoming) {
