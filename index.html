@@ -20519,8 +20519,12 @@
         }
         const days = { lun: null, mar: null, mer: null, jeu: null, ven: null, sam: null, dim: null };
 
-        // Durée cible de la longue calculée hors massage : ramp progressif + retrait récup + taper
-        const longRunMin = computeLongRunMin({ weekIdx: w, totalWeeks, phasePlan, isRecoveryWeek, raceProfile });
+        // Durée cible de la longue calculée hors massage : ramp progressif + retrait récup + taper.
+        // volumeMul appliqué aussi à la longue : un primomarathonien (firstMarathonMul=0.85)
+        // ou un coureur en reprise/maintenance (trainingModeMul=0.75/0.85) doit voir SA longue
+        // plafonnée, pas seulement son volume hebdo total. Sans ça la longue restait identique
+        // entre confirmé et novice (cas signalé en audit S21).
+        const longRunMin = Math.round(computeLongRunMin({ weekIdx: w, totalWeeks, phasePlan, isRecoveryWeek, raceProfile }) * volumeMul);
 
         if (isRaceWeek) {
           // Distance officielle de la course pour que les stats hebdo soient correctes
