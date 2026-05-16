@@ -18783,6 +18783,29 @@
           const T = (ctx && Number.isFinite(ctx.targetMin)) ? ctx.targetMin : 100;
           const rp = (ctx && ctx.raceProfile) || { key: '10k', racePaceMul: 0.99, racePaceLabel: 'allure 10K', raceLabelShort: '10K' };
           const rpW = Math.round(cp * rp.racePaceMul);
+
+          // DISTANCES COURTES (5K/10K) : la sortie longue reste AÉROBIE. Mettre
+          // 22-40' à allure 5K/10K (0.99-1.04 CP, au seuil) dans une longue la
+          // dénature — ce serait une séance de seuil déguisée, charge énorme
+          // (30' à allure 10K = 75 % du temps de course pour un coureur à 40').
+          // La spécificité race-pace est déjà couverte par les intervals/tempo
+          // de la semaine. Ici : volume Z2 + finition tempo COURTE (≤15' à
+          // ~0.88 CP, sub-seuil) ou strides neuromusculaires. Les blocs à
+          // allure course dans la longue sont réservés au marathon/semi/15K
+          // (allure ≤0.92 CP = endurance haute, soutenable, transfert direct
+          // — Pfitzinger MLR / Hanson).
+          if (rp.key === '5k' || rp.key === '10k') {
+            const subW = Math.round(cp * 0.88);   // tempo sub-seuil (finition)
+            const aeroLo = Math.round(cp * 0.72), aeroMid = Math.round(cp * 0.80), aeroHi = Math.round(cp * 0.85);
+            const t3 = Math.round(T / 3);
+            const variants = [
+              { label: 'Longue aérobie (Pfitz MLR)', detail: `${T}' à ${aeroMid}-${aeroHi}W constante`, purpose: 'Medium-Long Run : endurance aérobie soutenue, le pilier du développement de fond.', explicitDurationMin: T },
+              { label: 'Longue + finition tempo', detail: `${Math.max(20, T - 15)}' à ${aeroLo}-${aeroMid}W + 15' à ${subW}W`, purpose: 'Finir fatigué à un tempo sub-seuil contrôlé (pas à allure course) — transfert sans surcharge.', explicitDurationMin: T },
+              { label: 'Longue progressive', detail: `${t3}' à ${aeroLo}W + ${t3}' à ${aeroMid}W + ${T - 2*t3}' à ${aeroHi}W`, purpose: 'Négative split aérobie : intensité finale = endurance haute (pas seuil), classique et formateur.', explicitDurationMin: T },
+              { label: 'Longue + strides finaux', detail: `${Math.max(20, T - 6)}' à ${aeroLo}-${aeroMid}W + 6×20" à ${Math.round(cp*1.10)}W (R 100" à ${aeroLo}W)`, purpose: 'Volume aérobie + réveil neuromusculaire bref en fin (alactique, aucune charge VO2 soutenue).', explicitDurationMin: T },
+            ];
+            return variants[(w - 1) % variants.length];
+          }
           const tempoW = Math.round(cp * Math.max(0.88, Math.min(0.95, rp.racePaceMul - 0.04)));
           const rpBlockMin = rp.key === 'marathon' ? 50 : (rp.key === 'semi' || rp.key === '15k') ? 40 : 30;
           // « Demi-distance » : literally the half of the race distance run à
