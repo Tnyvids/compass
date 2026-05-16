@@ -18668,22 +18668,33 @@
         peak: (cp, w, ctx) => {
           const rp = (ctx && ctx.raceProfile) || { key: '10k', racePaceMul: 0.99, racePaceLabel: 'allure 10K', raceLabelShort: '10K', vmaPolicy: { peak: 'race-pace' } };
           const rpW = Math.round(cp * rp.racePaceMul);
+          // SHARPENING : en Peak, le jour intervals (mardi) doit stresser une
+          // filière DIFFÉRENTE du jour tempo/race-pace (jeudi). Sinon les deux
+          // séances qualité de la semaine sont redondantes (même intensité,
+          // même format) → stimulus appauvri, monotonie (Daniels/Pfitzinger :
+          // associer "sharpening" vivacité + "specific endurance" race-pace).
+          // Ici → vitesse spécifique UN CRAN au-dessus de l'allure course,
+          // fractions courtes, récup généreuse. Le jeudi (tempo.peak) garde
+          // le race-pace soutenu pile à l'allure.
+          const sharpW = Math.round(cp * Math.min(rp.racePaceMul + 0.06, 1.12));
           if (rp.key === '5k') {
-            // 5K Peak — triés par cumul/intensité 5K croissants
+            // 5K Peak — sharpening au-dessus de l'allure 5K (zone 3K/VO2),
+            // fractions courtes, triés cumul croissant.
             const variants = [
-              { label: 'Race-pace 200m', detail: `${wUp(cp)} + 12×200m à ${Math.round(cp*1.06)}W (R 200m à ${Math.round(cp*0.65)}W) + ${wDown(cp)}`, purpose: 'Densité de 200m légèrement plus rapide qu\'allure 5K, foulée vive (introduction).' },
-              { label: 'Spécifique 5K', detail: `${wUp(cp)} + 6×800m à ${rpW}W (R 90" à ${Math.round(cp*0.65)}W) + ${wDown(cp)}`, purpose: 'Mime l\'effort 5K sur 6×800m (4.8km à allure 5K).' },
-              { label: '1000m à allure 5K', detail: `${wUp(cp)} + 4×1000m à ${rpW}W (R 2' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: '4×1km à allure 5K, vérification rythme course.' },
-              { label: 'Bookend 5K', detail: `${wUp(cp)} + 200m + 400m + 800m + 1000m + 800m + 400m + 200m à ${rpW}W (R 200m à ${Math.round(cp*0.65)}W) + ${wDown(cp)}`, purpose: 'Pyramide à allure 5K (3.8km), mental + variation, le plus exigeant.' },
+              { label: 'Vivacité 200m', detail: `${wUp(cp)} + 12×200m à ${Math.round(cp*1.10)}W (R 200m à ${Math.round(cp*0.65)}W) + ${wDown(cp)}`, purpose: 'Foulée vive nettement plus rapide qu\'allure 5K — entretient la vitesse pure (introduction).' },
+              { label: 'VO2 court 400m', detail: `${wUp(cp)} + 8×400m à ${sharpW}W (R 200m à ${Math.round(cp*0.65)}W) + ${wDown(cp)}`, purpose: 'VO2max au-dessus de l\'allure course — donne de la marge sur le 5K.' },
+              { label: 'Sharpening 600m', detail: `${wUp(cp)} + 6×600m à ${sharpW}W (R 2' à ${Math.round(cp*0.65)}W) + ${wDown(cp)}`, purpose: 'Vitesse spécifique supra-5K, récup large pour tenir la qualité.' },
+              { label: 'Pyramide vive', detail: `${wUp(cp)} + 200m + 400m + 600m + 400m + 200m à ${Math.round(cp*1.10)}W (R 200m à ${Math.round(cp*0.65)}W) + ${wDown(cp)}`, purpose: 'Variation neuromusculaire au-dessus de l\'allure 5K, le plus vif.' },
             ];
             return pickByWeekInPhase(variants, ctx);
           }
-          // 10K / 15K Peak : intervalles à l'allure de la course visée — triés léger → dur
+          // 10K / 15K Peak : sharpening — fractions courtes UN CRAN au-dessus
+          // de l'allure course (le jeudi tempo.peak fait le race-pace soutenu).
           const variants = [
-            { label: `Race-pace 1000m`, detail: `${wUp(cp)} + 6×1000m à ${rpW}W (R 90" à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: `Précision à ${rp.racePaceLabel} sur 6×1km — introduction race-pace.` },
-            { label: `Spécifique ${rp.raceLabelShort}`, detail: `${wUp(cp)} + 3×8' à ${rpW}W (R 3' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: `24\' à ${rp.racePaceLabel} en 3×8\', apprend à tenir la CP.` },
-            { label: 'Simulation surge', detail: `${wUp(cp)} + 2×(6' à ${rpW}W + 2' à ${Math.round(cp*Math.min(1.05, rp.racePaceMul + 0.04))}W) R 4' à ${Math.round(cp*0.70)}W + ${wDown(cp)}`, purpose: 'Mime une relance de milieu de course — surge tactique.' },
-            { label: `${rp.racePaceLabel} en continu`, detail: `${wUp(cp)} + 2×12' à ${rpW}W (R 3' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: `2×12\' à ${rp.racePaceLabel}, blocs longs — endurance à allure course.` },
+            { label: 'Vivacité 400m', detail: `${wUp(cp)} + 10×400m à ${sharpW}W (R 1' à ${Math.round(cp*0.65)}W) + ${wDown(cp)}`, purpose: `Vitesse au-dessus de ${rp.racePaceLabel} — entretien VO2/foulée vive, complète le race-pace du jeudi.` },
+            { label: 'VO2 600m', detail: `${wUp(cp)} + 6×600m à ${sharpW}W (R 90" à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: `Supra-allure course en fractions courtes — donne de la marge sur la CP.` },
+            { label: 'Simulation surge', detail: `${wUp(cp)} + 2×(6' à ${rpW}W + 2' à ${Math.round(cp*Math.min(1.08, rp.racePaceMul + 0.07))}W) R 4' à ${Math.round(cp*0.70)}W + ${wDown(cp)}`, purpose: 'Mime une relance de milieu de course — surge tactique au-dessus de l\'allure.' },
+            { label: 'Pyramide vive', detail: `${wUp(cp)} + 400m + 800m + 1200m + 800m + 400m à ${sharpW}W (R 2' à ${Math.round(cp*0.65)}W) + ${wDown(cp)}`, purpose: 'Variation d\'allure au-dessus de la course, sollicitation VO2 + mental.' },
           ];
           return pickByWeekInPhase(variants, ctx);
         },
