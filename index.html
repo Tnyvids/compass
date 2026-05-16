@@ -17888,6 +17888,62 @@
       const plannedTypeLabel = { rest: 'Repos', easy: 'Footing easy', tempo: 'Seuil', intervals: 'Intervalles', long: 'Sortie longue', test: 'Test' }[linked.type] || linked.type;
       const fullSessionNp = activity.normalizedPower;
 
+      // Mismatch detection : la séance prévue est-elle cohérente avec ce qui
+      // a été réalisé ? Signal utile quand l'utilisateur change de séance dans
+      // sa tête (5×1000 prévu mais footing fait, ou 6×800 à la place).
+      // Bannière d'alerte au-dessus du verdict, mais on N'EFFACE PAS le link —
+      // l'utilisateur reste maître. On n'analyse qu'en mode puissance (en pace
+      // pur on n'a pas assez de signal pour distinguer).
+      const sessionMismatch = useMemo(() => {
+        const powers = activity.trackpointPowers;
+        if (!powers || powers.length < 60 || !cp) return null;
+        const mean = powers.reduce((a, b) => a + b, 0) / powers.length;
+        const variance = powers.reduce((a, b) => a + (b - mean) ** 2, 0) / powers.length;
+        const cv = mean > 0 ? Math.sqrt(variance) / mean : 0;
+        const np = fullSessionNp || mean;
+        const variability = mean > 0 ? np / mean : 1;
+        const ratioCp = mean / cp;
+        // Classification grossière de l'activité
+        let actualKind;
+        if (cv > 0.18 || variability > 1.08) actualKind = 'intervals';
+        else if (ratioCp < 0.78) actualKind = 'easy';
+        else if (ratioCp < 0.92) actualKind = 'endurance';
+        else actualKind = 'tempo';
+        // Type prévu mappé sur les mêmes catégories
+        const plannedKind = (() => {
+          switch (linked.type) {
+            case 'intervals': case 'test': return 'intervals';
+            case 'tempo': case 'threshold': return 'tempo';
+            case 'easy': case 'long': return 'easy';
+            default: return null;
+          }
+        })();
+        if (!plannedKind) return null;
+        // Cas durs : easy planifié + intervals fait, ou intervals planifié + easy fait
+        const flagrant =
+          (plannedKind === 'intervals' && actualKind === 'easy') ||
+          (plannedKind === 'easy' && actualKind === 'intervals');
+        if (flagrant) {
+          const label = { intervals: 'fractionnés', tempo: 'tempo/seuil', easy: 'footing' };
+          return {
+            severity: 'high',
+            actualKind, plannedKind,
+            message: `Cette séance ressemble plutôt à ${label[actualKind]} que ${label[plannedKind]}.`,
+          };
+        }
+        // Cas modéré : tempo prévu mais intervals fait (ou inverse) — possible mais à signaler
+        if ((plannedKind === 'tempo' && actualKind === 'intervals') ||
+            (plannedKind === 'intervals' && actualKind === 'tempo')) {
+          const label = { intervals: 'fractionnés', tempo: 'tempo', easy: 'footing' };
+          return {
+            severity: 'medium',
+            actualKind, plannedKind,
+            message: `Plutôt ${label[actualKind]} que ${label[plannedKind]} prévu — structure différente.`,
+          };
+        }
+        return null;
+      }, [activity, cp, linked, fullSessionNp]);
+
       // For each work block, find the best matching window in trackpoints
       const blockResults = useMemo(() => {
         if (!workBlocks.length || !activity.trackpointPowers || activity.trackpointPowers.length < 30) return null;
@@ -18005,20 +18061,24 @@
 
       const blockData = blockResults || blockFallback;
 
-      // Overall verdict: average delta weighted by block duration
+      // Overall verdict: average delta weighted by block duration + completion ratio
       const overallVerdict = useMemo(() => {
         if (!blockData) return null;
         let totalDelta = 0, totalWeight = 0;
+        let totalPlannedReps = 0, totalDetectedReps = 0;
         for (const br of blockData) {
+          totalPlannedReps += br.block.reps;
           if (!br.reps) continue;
+          totalDetectedReps += br.reps.length;
           for (const r of br.reps) {
             totalDelta += r.delta * br.block.durSec;
             totalWeight += br.block.durSec;
           }
         }
-        if (totalWeight === 0) return null;
+        if (totalWeight === 0) return { avgDelta: null, totalPlannedReps, totalDetectedReps, completionRatio: 0 };
         const avgDelta = totalDelta / totalWeight;
-        return { avgDelta: Math.round(avgDelta) };
+        const completionRatio = totalPlannedReps > 0 ? totalDetectedReps / totalPlannedReps : 1;
+        return { avgDelta: Math.round(avgDelta), totalPlannedReps, totalDetectedReps, completionRatio };
       }, [blockData]);
 
       let verdictColor = 'var(--text-dim)';
@@ -18026,14 +18086,42 @@
       let verdictText = null;
       if (overallVerdict) {
         const d = overallVerdict.avgDelta;
-        const absD = Math.abs(d);
-        if (absD <= 8) { verdictText = 'Objectif atteint pile poil'; verdictColor = 'var(--go)'; verdictIcon = IconCheck; }
-        else if (d > 0) { verdictText = `${d}W au-dessus de la cible en moyenne — ${d > 20 ? 'belle forme ou cibles trop faciles' : 'bonne marge, ta puissance seuil réelle est peut-être plus haute'}.`; verdictColor = 'var(--accent)'; verdictIcon = IconZap; }
-        else { verdictText = `${absD}W en-dessous de la cible en moyenne — ${absD > 20 ? 'fatigue ou mauvaise journée' : 'un peu court, surveille la récup'}.`; verdictColor = 'var(--warn)'; verdictIcon = IconAlert; }
+        const { totalPlannedReps, totalDetectedReps, completionRatio } = overallVerdict;
+        const repsMissing = totalPlannedReps - totalDetectedReps;
+        // Cas 1 : abandon manifeste — moins de 80% des reps détectées. Le delta
+        // moyen serait trompeur (3 reps parfaites = "cible atteinte" alors qu'il
+        // en manque 2). On signale d'abord l'abandon.
+        if (totalPlannedReps > 1 && completionRatio < 0.80) {
+          verdictText = `${totalDetectedReps} bloc${totalDetectedReps > 1 ? 's' : ''} trouvé${totalDetectedReps > 1 ? 's' : ''} sur ${totalPlannedReps} prévu${totalPlannedReps > 1 ? 's' : ''} — ${repsMissing} rep${repsMissing > 1 ? 's' : ''} manquante${repsMissing > 1 ? 's' : ''}. Abandon, séance écourtée ou structure différente du plan.`;
+          verdictColor = 'var(--warn)';
+          verdictIcon = IconAlert;
+        }
+        // Cas 2 : pas d'analyse possible (aucune rep trouvée du tout)
+        else if (d == null) {
+          verdictText = 'Pas de bloc d\'effort détecté dans la séance. Structure peut-être différente du plan.';
+          verdictColor = 'var(--warn)';
+          verdictIcon = IconAlert;
+        }
+        // Cas 3 : exécution complète — verdict classique sur l'écart moyen.
+        else {
+          const absD = Math.abs(d);
+          if (absD <= 8) { verdictText = 'Objectif atteint pile poil'; verdictColor = 'var(--go)'; verdictIcon = IconCheck; }
+          else if (d > 0) { verdictText = `${d}W au-dessus de la cible en moyenne — ${d > 20 ? 'belle forme ou cibles trop faciles' : 'bonne marge, ta puissance seuil réelle est peut-être plus haute'}.`; verdictColor = 'var(--accent)'; verdictIcon = IconZap; }
+          else { verdictText = `${absD}W en-dessous de la cible en moyenne — ${absD > 20 ? 'fatigue ou mauvaise journée' : 'un peu court, surveille la récup'}.`; verdictColor = 'var(--warn)'; verdictIcon = IconAlert; }
+        }
       }
 
       return (
-        <Card className="p-5" accent={verdictColor}>
+        <Card className="p-5" accent={sessionMismatch ? 'var(--warn)' : verdictColor}>
+          {sessionMismatch && (
+            <div className="rounded-lg p-3 mb-4 flex items-start gap-2.5" style={{ background: sessionMismatch.severity === 'high' ? 'rgba(255,128,64,0.10)' : 'rgba(255,176,32,0.10)', border: `1px solid ${sessionMismatch.severity === 'high' ? 'var(--negative)' : 'var(--caution)'}40` }}>
+              <IconAlert size={16} style={{ color: sessionMismatch.severity === 'high' ? 'var(--negative)' : 'var(--caution)', flexShrink: 0, marginTop: 2 }} />
+              <div className="text-xs leading-relaxed" style={{ color: 'var(--text)' }}>
+                <span className="font-mono tracking-widest" style={{ color: sessionMismatch.severity === 'high' ? 'var(--negative)' : 'var(--caution)' }}>SÉANCE DIFFÉRENTE DU PLAN</span>
+                <div className="mt-0.5" style={{ color: 'var(--text-dim)' }}>{sessionMismatch.message} L'analyse ci-dessous compare quand même à la cible prévue — délie la séance si tu préfères.</div>
+              </div>
+            </div>
+          )}
           <div className="flex items-start gap-3 mb-4 flex-wrap">
             <div className="flex-1 min-w-0">
               <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: verdictColor }}>PLANIFIÉ VS RÉALISÉ</div>
