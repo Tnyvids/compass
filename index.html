@@ -8231,19 +8231,56 @@
     // mais reste dans le langage clinique de Compass (chiffres en gros, delta
     // explicite, source de vérité = bestDistanceEfforts).
     function PRCelebrationModal({ candidates, activity, onConfirm, onDismiss }) {
-      useEffect(() => {
-        const h = (e) => { if (e.key === 'Escape') onDismiss(); if (e.key === 'Enter') onConfirm(); };
-        window.addEventListener('keydown', h);
-        return () => window.removeEventListener('keydown', h);
-      }, [onConfirm, onDismiss]);
-      if (!candidates || !candidates.length) return null;
+      // Ajustements manuels du temps (cas : séance interrompue, GPS fantaisiste,
+      // test CP 20' où la trace continue en cooldown lent et fausse le 5K mesuré…).
+      // Tony édite le temps qu'il veut voir sauvegardé dans son profil ; la trace
+      // GPS reste intacte, seul profile.prs est ajusté.
+      const [adjustments, setAdjustments] = useState({}); // { key: secValue }
+      const [editingKey, setEditingKey] = useState(null);
+      const [editValue, setEditValue] = useState('');
 
       const fmtTime = (sec) => {
         if (sec == null) return '—';
         const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = Math.round(sec % 60);
         return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${m}:${String(s).padStart(2,'0')}`;
       };
+      const parseTimeInput = (str) => {
+        if (!str) return null;
+        const parts = String(str).trim().split(':').map(p => parseInt(p, 10));
+        if (parts.some(p => !Number.isFinite(p) || p < 0)) return null;
+        if (parts.length === 2) return parts[0] * 60 + parts[1];
+        if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+        return null;
+      };
+
+      const handleConfirm = () => onConfirm(adjustments);
+
+      useEffect(() => {
+        const h = (e) => {
+          if (editingKey) return; // ne pas hijacker Enter/Echap pendant l'édition d'un champ
+          if (e.key === 'Escape') onDismiss();
+          if (e.key === 'Enter') handleConfirm();
+        };
+        window.addEventListener('keydown', h);
+        return () => window.removeEventListener('keydown', h);
+      }, [onConfirm, onDismiss, editingKey, adjustments]);
+      if (!candidates || !candidates.length) return null;
+
       const DISPLAY_LABEL = { '5k': '5 KM', '10k': '10 KM', '15k': '15 KM', semi: 'SEMI', '30k': '30 KM', marathon: 'MARATHON', '50k': '50 KM' };
+
+      const startEdit = (c) => {
+        const cur = adjustments[c.key] ?? c.newSec;
+        setEditValue(fmtTime(cur));
+        setEditingKey(c.key);
+      };
+      const saveEdit = (c) => {
+        const sec = parseTimeInput(editValue);
+        if (sec != null && sec >= 60 && sec <= 24 * 3600) {
+          setAdjustments({ ...adjustments, [c.key]: sec });
+        }
+        setEditingKey(null);
+      };
+      const cancelEdit = () => setEditingKey(null);
 
       // Confettis CSS — 36 particules en signal/positive/compass, positions et timings randomisés.
       // Stable (useMemo) pour ne pas re-randomiser à chaque render.
@@ -8310,10 +8347,14 @@
                 </div>
               </div>
 
-              {/* Liste des PRs — gros chiffre + delta */}
+              {/* Liste des PRs — gros chiffre + delta + bouton "Ajuster" */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                 {candidates.map((c, idx) => {
-                  const delta = c.oldSec ? c.oldSec - c.newSec : null;
+                  const adjusted = adjustments[c.key];
+                  const finalSec = adjusted ?? c.newSec;
+                  const isAdjusted = adjusted != null && adjusted !== c.newSec;
+                  const delta = c.oldSec ? c.oldSec - finalSec : null;
+                  const isEditing = editingKey === c.key;
                   return (
                     <div key={c.key} className="pr-count" style={{
                       animationDelay: `${0.25 + idx * 0.12}s`,
@@ -8331,15 +8372,62 @@
                         </div>
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div className="font-display font-bold tabular leading-none" style={{ color: 'var(--signal)', fontSize: 'clamp(32px, 6vw, 44px)', letterSpacing: '-0.02em' }}>
-                          {fmtTime(c.newSec)}
-                        </div>
-                        {c.oldSec ? (
-                          <div className="font-mono text-[11px] mt-1.5 flex items-center gap-2" style={{ color: 'var(--text-dim)' }}>
-                            <span style={{ textDecoration: 'line-through', opacity: 0.6 }}>{fmtTime(c.oldSec)}</span>
-                            <span style={{ color: 'var(--positive)' }}>−{fmtTime(delta)}</span>
+                        {isEditing ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <input
+                              autoFocus
+                              type="text"
+                              value={editValue}
+                              onChange={(e) => setEditValue(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') { e.preventDefault(); saveEdit(c); }
+                                else if (e.key === 'Escape') { e.preventDefault(); cancelEdit(); }
+                              }}
+                              placeholder="20:30"
+                              className="font-display font-bold tabular"
+                              style={{
+                                flex: 1, minWidth: 0,
+                                background: 'rgba(0,0,0,0.4)',
+                                border: '2px solid var(--signal)',
+                                borderRadius: 8,
+                                color: 'var(--signal)',
+                                fontSize: 'clamp(28px, 5vw, 38px)',
+                                padding: '6px 12px',
+                                outline: 'none',
+                                letterSpacing: '-0.02em',
+                              }}
+                            />
+                            <button onClick={() => saveEdit(c)} className="btn" style={{ background: 'var(--signal)', color: '#000', border: 'none', padding: '8px 14px', borderRadius: 8, fontWeight: 700, cursor: 'pointer' }}>OK</button>
+                            <button onClick={cancelEdit} className="btn" style={{ background: 'transparent', color: 'var(--text-dim)', border: '1px solid var(--border)', padding: '8px 12px', borderRadius: 8, cursor: 'pointer' }}>✗</button>
                           </div>
                         ) : (
+                          <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
+                            <div className="font-display font-bold tabular leading-none" style={{ color: 'var(--signal)', fontSize: 'clamp(32px, 6vw, 44px)', letterSpacing: '-0.02em' }}>
+                              {fmtTime(finalSec)}
+                            </div>
+                            <button
+                              onClick={() => startEdit(c)}
+                              className="btn"
+                              style={{ background: 'transparent', color: 'var(--text-dim)', border: '1px solid var(--border)', padding: '4px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontFamily: 'JetBrains Mono, monospace', letterSpacing: '0.08em', textTransform: 'uppercase' }}
+                              title="Ajuster le temps si la séance a été interrompue, GPS douteux, etc."
+                            >
+                              Ajuster
+                            </button>
+                          </div>
+                        )}
+                        {!isEditing && isAdjusted && (
+                          <div className="font-mono text-[10px] mt-1.5" style={{ color: 'var(--caution)' }}>
+                            ajusté manuellement · mesuré {fmtTime(c.newSec)}
+                          </div>
+                        )}
+                        {!isEditing && c.oldSec && (
+                          <div className="font-mono text-[11px] mt-1.5 flex items-center gap-2" style={{ color: 'var(--text-dim)' }}>
+                            <span style={{ textDecoration: 'line-through', opacity: 0.6 }}>{fmtTime(c.oldSec)}</span>
+                            {delta > 0 && <span style={{ color: 'var(--positive)' }}>−{fmtTime(delta)}</span>}
+                            {delta <= 0 && <span style={{ color: 'var(--caution)' }}>plus lent que le PR actuel</span>}
+                          </div>
+                        )}
+                        {!isEditing && !c.oldSec && (
                           <div className="font-mono text-[11px] mt-1.5" style={{ color: 'var(--text-faint)' }}>première fois sur cette distance</div>
                         )}
                       </div>
@@ -8359,7 +8447,7 @@
 
             <div className="px-7 pb-6 pt-3 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-2">
               <Button variant="ghost" onClick={onDismiss}>Plus tard</Button>
-              <Button variant="primary" onClick={onConfirm} style={{ background: 'var(--signal)', color: '#000', borderColor: 'var(--signal)', fontWeight: 700, letterSpacing: '0.02em' }}>
+              <Button variant="primary" onClick={handleConfirm} style={{ background: 'var(--signal)', color: '#000', borderColor: 'var(--signal)', fontWeight: 700, letterSpacing: '0.02em' }}>
                 {isMulti ? `Mettre à jour les ${candidates.length} records` : 'Mettre à jour mon profil'}
               </Button>
             </div>
@@ -21505,7 +21593,7 @@
         setPendingPainCheckin(null);
       }
 
-      function confirmPRCelebration() {
+      function confirmPRCelebration(adjustments = {}) {
         if (!pendingPRCelebration) return;
         const { candidates } = pendingPRCelebration;
         const fmtTime = (sec) => {
@@ -21515,14 +21603,21 @@
         const today = new Date().toISOString().slice(0, 10);
         const newPrs = { ...(profile.prs || {}) };
         const newPrsDates = { ...(profile.prsDates || {}) };
+        let adjustedCount = 0;
         for (const c of candidates) {
-          newPrs[c.key] = fmtTime(c.newSec);
+          // Si l'utilisateur a ajusté manuellement le temps (séance interrompue,
+          // GPS douteux), on stocke la version ajustée plutôt que la mesurée.
+          // La trace GPS d'origine et activity.bestDistanceEfforts ne sont PAS
+          // touchés — seul profile.prs reflète l'ajustement.
+          const finalSec = adjustments[c.key] ?? c.newSec;
+          if (adjustments[c.key] != null && adjustments[c.key] !== c.newSec) adjustedCount++;
+          newPrs[c.key] = fmtTime(finalSec);
           newPrsDates[c.key] = today;
         }
         setProfile({ ...profile, prs: newPrs, prsDates: newPrsDates });
         const summary = candidates.length === 1
-          ? `PR ${candidates[0].key.toUpperCase()} mis à jour : ${fmtTime(candidates[0].newSec)}.`
-          : `${candidates.length} PRs mis à jour.`;
+          ? `PR ${candidates[0].key.toUpperCase()} mis à jour : ${fmtTime(adjustments[candidates[0].key] ?? candidates[0].newSec)}${adjustedCount ? ' (ajusté)' : ''}.`
+          : `${candidates.length} PRs mis à jour${adjustedCount ? `, dont ${adjustedCount} ajusté${adjustedCount > 1 ? 's' : ''}` : ''}.`;
         toast.push(summary, { kind: 'info', duration: 6000 });
         setPendingPRCelebration(null);
       }
