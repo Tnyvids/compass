@@ -169,6 +169,44 @@
     .slide-up { animation: slideUp 0.32s cubic-bezier(0.22, 1, 0.36, 1); }
     @keyframes slideUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
 
+    /* PR celebration — réservé à la modal record. Glow signal pulsé + confettis. */
+    @keyframes prPulse {
+      0%, 100% { box-shadow: 0 0 80px rgba(212,255,0,0.25), 0 30px 80px rgba(0,0,0,0.6), inset 0 1px 0 rgba(212,255,0,0.15); }
+      50% { box-shadow: 0 0 120px rgba(212,255,0,0.4), 0 30px 80px rgba(0,0,0,0.6), inset 0 1px 0 rgba(212,255,0,0.25); }
+    }
+    .pr-glow { animation: prPulse 2.4s ease-in-out infinite; }
+    @keyframes prRise {
+      from { opacity: 0; transform: translateY(60px) scale(0.92); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    .pr-rise { animation: prRise 0.55s cubic-bezier(0.22, 1, 0.36, 1); }
+    @keyframes prCount {
+      from { opacity: 0; transform: translateY(20px); filter: blur(8px); }
+      to { opacity: 1; transform: translateY(0); filter: blur(0); }
+    }
+    .pr-count { animation: prCount 0.7s cubic-bezier(0.22, 1, 0.36, 1) both; }
+    @keyframes prConfetti {
+      0% { transform: translateY(-20px) translateX(0) rotate(0deg); opacity: 0; }
+      8% { opacity: 1; }
+      100% { transform: translateY(110vh) translateX(var(--drift, 40px)) rotate(720deg); opacity: 0; }
+    }
+    .pr-confetti-piece {
+      position: absolute; width: 10px; height: 14px; top: -20px;
+      animation: prConfetti var(--dur, 4s) linear var(--delay, 0s) infinite;
+      pointer-events: none;
+    }
+    @keyframes prShimmer {
+      0% { background-position: -200% 0; }
+      100% { background-position: 200% 0; }
+    }
+    .pr-shimmer {
+      background: linear-gradient(90deg, transparent 0%, rgba(212,255,0,0.35) 50%, transparent 100%);
+      background-size: 200% 100%;
+      animation: prShimmer 3s linear infinite;
+      -webkit-background-clip: text; background-clip: text;
+      color: transparent;
+    }
+
     /* ==========================================================================
        BUTTON SYSTEM — exactly 3 variants. Always min-height 40px (44 on mobile).
        Use the .btn-* classes; never inline-style buttons.
@@ -724,6 +762,50 @@
         const n = parseFloat(cleaned);
         return isNaN(n) ? null : n;
       };
+      // Parse elapsed time : accepte secondes brutes OU format hh:mm:ss / mm:ss
+      // (certains exports Garmin Connect / Strava donnent l'elapsed comme "0:30:15")
+      const parseElapsedSec = (v) => {
+        if (v === undefined || v === '' || v === null) return null;
+        const s = String(v).trim();
+        if (s.includes(':')) {
+          const parts = s.split(':').map(p => parseFloat(p.replace(',', '.')));
+          if (parts.some(p => !Number.isFinite(p))) return null;
+          if (parts.length === 2) return parts[0] * 60 + parts[1];
+          if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+          return null;
+        }
+        return parseNum(s);
+      };
+
+      // Détection de l'unité de distance depuis le header.
+      // Compass stocke la distance en MÈTRES en interne. Certains exports
+      // donnent km, miles, voire centimètres — on convertit ici.
+      let distanceMultiplier = 1;
+      let distanceUnit = 'm';
+      if (idx.distance >= 0) {
+        const distHeader = rawHeader[idx.distance].toLowerCase();
+        if (/\((mi|miles?|mile)\)|\b(mi|miles?)\b/.test(distHeader)) {
+          distanceMultiplier = 1609.344; distanceUnit = 'mi';
+        } else if (/\(km\)|\bkm\b/.test(distHeader)) {
+          distanceMultiplier = 1000; distanceUnit = 'km';
+        } else if (/\(cm\)|\bcm\b/.test(distHeader)) {
+          distanceMultiplier = 0.01; distanceUnit = 'cm';
+        }
+      }
+      // Heuristique de sécurité : sample la dernière valeur de distance.
+      // Si pas d'unité détectée mais la dernière valeur < 1000, c'est très
+      // probablement des km (un Run sérieux fait au moins 1 km = 1000 m).
+      if (distanceMultiplier === 1 && idx.distance >= 0) {
+        let lastNumeric = null;
+        for (let i = rows.length - 1; i >= 0 && lastNumeric == null; i--) {
+          const v = parseNum(rows[i] && rows[i][idx.distance]);
+          if (v != null && v > 0) lastNumeric = v;
+        }
+        if (lastNumeric != null && lastNumeric < 200) {
+          // < 200 = on est presque sûr que c'est des km (200 m est trop court)
+          distanceMultiplier = 1000; distanceUnit = 'km (auto)';
+        }
+      }
 
       let baseTime = null;
       if (idx.datetime >= 0 && rows[0] && rows[0][idx.datetime]) {
@@ -751,14 +833,15 @@
           const parsed = new Date(r[idx.datetime]).getTime();
           if (!isNaN(parsed) && parsed > 946684800000) t = parsed;
         } else if (idx.elapsed >= 0 && r[idx.elapsed]) {
-          const n = parseNum(r[idx.elapsed]);
+          const n = parseElapsedSec(r[idx.elapsed]);
           if (n !== null && n >= 0 && n < 100000) t = baseTime + n * 1000;
         }
         const num = (col) => col >= 0 ? parseNum(r[col]) : null;
         const rawPower = num(idx.power);
+        const rawDist = num(idx.distance);
         trackpoints.push({
           t,
-          dist: num(idx.distance),
+          dist: rawDist !== null ? rawDist * distanceMultiplier : null,
           hr: num(idx.hr),
           cadence: num(idx.cadence),
           // Multiply if W/kg detected
@@ -778,6 +861,8 @@
         headerPreview: rawHeader.slice(0, 12).join(' | '),
         powerUnit: powerIsWattsPerKg ? `W/kg × ${powerMultiplier}kg → W` : 'W',
         powerIsWattsPerKg,
+        distanceUnit,
+        distanceMultiplier,
         columnsDetected: {
           datetime: idx.datetime >= 0 ? rawHeader[idx.datetime] : null,
           elapsed: idx.elapsed >= 0 ? rawHeader[idx.elapsed] : null,
@@ -848,10 +933,24 @@
       }
 
       // Pace
-      const paceMinPerKm = (distMeters > 0 && durationSec > 0) ? (durationSec / 60) / (distMeters / 1000) : null;
+      const paceMinPerKmRaw = (distMeters > 0 && durationSec > 0) ? (durationSec / 60) / (distMeters / 1000) : null;
+      // Garde-fou physiologique : un pace < 2:00/km (= records mondiaux 800m) ou
+      // > 15:00/km (= marche très lente) signale un problème d'unités côté import.
+      // On flag l'activité plutôt que de propager des chiffres aberrants dans
+      // les calculs CTL/ATL et la prédiction de course.
+      const paceAberrant = paceMinPerKmRaw != null && (paceMinPerKmRaw < 2.0 || paceMinPerKmRaw > 15.0);
+      const paceMinPerKm = paceAberrant ? null : paceMinPerKmRaw;
 
       // Best efforts (mean max power) for CP detection
       const bestEfforts = computeBestEfforts(powers);
+
+      // Best distance efforts (temps par distance) — pour l'auto-PR
+      // Sliding window two-pointers : pour chaque distance cible, on cherche
+      // le meilleur intervalle de temps qui couvre cette distance.
+      const distSamples = valid
+        .filter(p => typeof p.dist === 'number' && !isNaN(p.dist) && p.dist >= 0)
+        .map(p => ({ t: p.t, dist: p.dist }));
+      const bestDistanceEfforts = computeBestDistanceEfforts(distSamples);
 
       // Elevation gain
       const alts = valid.map(p => p.alt).filter(a => typeof a === 'number' && !isNaN(a));
@@ -969,7 +1068,10 @@
         avgCadence: avgCad,
         elevGain: Math.round(elevGain),
         paceMinPerKm,
+        paceAberrant,
+        paceMinPerKmRaw: paceAberrant ? paceMinPerKmRaw : null,
         bestEfforts,
+        bestDistanceEfforts,
         sampleCount: valid.length,
         splits,
         cardiacDrift,
@@ -978,6 +1080,41 @@
         // Skip first 10 seconds (startup spike)
         trackpointPowers: powers.length > 10 ? powers.slice(10) : powers,
       };
+    }
+
+    // Pour chaque distance cible, le meilleur temps trouvé dans la séance.
+    // Sliding window two-pointers en O(n). Utilisé pour l'auto-détection
+    // de PR à l'import : si l'utilisateur fait un 8 km mais que ses 5 km
+    // les plus rapides battent son PR 5K, on doit le voir.
+    function computeBestDistanceEfforts(samples) {
+      const targets = [1000, 1609, 3000, 5000, 10000, 15000, 21097.5, 30000, 42195, 50000];
+      const out = {};
+      if (!samples || samples.length < 2) return out;
+      // Sanity : skip samples avec dist non strictement croissant (anti-bug GPS)
+      const cleaned = [];
+      for (const s of samples) {
+        if (!cleaned.length || s.dist > cleaned[cleaned.length - 1].dist) cleaned.push(s);
+      }
+      if (cleaned.length < 2) return out;
+      for (const D of targets) {
+        const totalSpan = cleaned[cleaned.length - 1].dist - cleaned[0].dist;
+        if (totalSpan < D) continue;
+        let best = Infinity;
+        let j = 1;
+        for (let i = 0; i < cleaned.length - 1; i++) {
+          if (j <= i) j = i + 1;
+          while (j < cleaned.length && (cleaned[j].dist - cleaned[i].dist) < D) j++;
+          if (j >= cleaned.length) break;
+          // Interpolation linéaire pour viser pile la distance D
+          const overshoot = (cleaned[j].dist - cleaned[i].dist) - D;
+          const segDist = cleaned[j].dist - cleaned[j - 1].dist;
+          const segTime = (cleaned[j].t - cleaned[j - 1].t) / 1000;
+          const adjusted = (cleaned[j].t - cleaned[i].t) / 1000 - (segDist > 0 ? (overshoot / segDist) * segTime : 0);
+          if (adjusted > 0 && adjusted < best) best = adjusted;
+        }
+        if (best < Infinity) out[Math.round(D)] = Math.round(best);
+      }
+      return out;
     }
 
     // Compute mean max power for key durations (in seconds)
@@ -8075,6 +8212,149 @@
             </div>
             <div className="px-7 pb-5 pt-2 flex justify-end">
               <Button variant="primary" onClick={onClose} style={{ background: 'var(--accent)', color: '#000', borderColor: 'var(--accent)' }}>Continuer la phase suivante</Button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // PR CELEBRATION MODAL — déclenchée à l'import quand Compass détecte qu'une
+    // séance bat un ou plusieurs records personnels. Réservée aux PR : tokens
+    // --signal (accent jaune néon) + confettis + glow pulsé. Le ton est festif
+    // mais reste dans le langage clinique de Compass (chiffres en gros, delta
+    // explicite, source de vérité = bestDistanceEfforts).
+    function PRCelebrationModal({ candidates, activity, onConfirm, onDismiss }) {
+      useEffect(() => {
+        const h = (e) => { if (e.key === 'Escape') onDismiss(); if (e.key === 'Enter') onConfirm(); };
+        window.addEventListener('keydown', h);
+        return () => window.removeEventListener('keydown', h);
+      }, [onConfirm, onDismiss]);
+      if (!candidates || !candidates.length) return null;
+
+      const fmtTime = (sec) => {
+        if (sec == null) return '—';
+        const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = Math.round(sec % 60);
+        return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${m}:${String(s).padStart(2,'0')}`;
+      };
+      const DISPLAY_LABEL = { '5k': '5 KM', '10k': '10 KM', '15k': '15 KM', semi: 'SEMI', '30k': '30 KM', marathon: 'MARATHON', '50k': '50 KM' };
+
+      // Confettis CSS — 36 particules en signal/positive/compass, positions et timings randomisés.
+      // Stable (useMemo) pour ne pas re-randomiser à chaque render.
+      const confetti = useMemo(() => {
+        const colors = ['var(--signal)', 'var(--positive)', 'var(--compass)', 'var(--signal)', 'var(--signal)'];
+        return Array.from({ length: 36 }, (_, i) => ({
+          left: Math.random() * 100,
+          drift: (Math.random() - 0.5) * 200,
+          dur: 3.5 + Math.random() * 2.5,
+          delay: Math.random() * 4,
+          color: colors[i % colors.length],
+          rotate: Math.random() * 360,
+        }));
+      }, []);
+
+      const isMulti = candidates.length > 1;
+      const isFirstEver = candidates.every(c => !c.oldSec);
+      const headline = isFirstEver ? (isMulti ? 'Premiers records' : 'Premier record') : (isMulti ? `${candidates.length} nouveaux records` : 'Nouveau record');
+
+      return (
+        <div onClick={onDismiss} style={{ position: 'fixed', inset: 0, background: 'radial-gradient(ellipse at center, rgba(40,55,0,0.45) 0%, rgba(0,0,0,0.85) 60%)', backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)', zIndex: 400, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, overflow: 'hidden' }}>
+          {/* Confettis en fond, derrière la carte */}
+          <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}>
+            {confetti.map((c, i) => (
+              <div
+                key={i}
+                className="pr-confetti-piece"
+                style={{
+                  left: `${c.left}%`,
+                  background: c.color,
+                  '--drift': `${c.drift}px`,
+                  '--dur': `${c.dur}s`,
+                  '--delay': `${c.delay}s`,
+                  transform: `rotate(${c.rotate}deg)`,
+                  borderRadius: i % 3 === 0 ? '50%' : '2px',
+                }}
+              />
+            ))}
+          </div>
+
+          <div onClick={(e) => e.stopPropagation()} className="pr-rise pr-glow" style={{
+            background: 'linear-gradient(180deg, rgba(20,24,12,0.98) 0%, var(--bg) 100%)',
+            border: '2px solid var(--signal)',
+            borderRadius: 20,
+            width: '100%',
+            maxWidth: 560,
+            position: 'relative',
+            overflow: 'hidden',
+          }}>
+            {/* Bande supérieure signal */}
+            <div style={{ height: 4, background: 'linear-gradient(90deg, transparent 0%, var(--signal) 25%, var(--signal) 75%, transparent 100%)' }} />
+
+            <div className="px-7 pt-7 pb-2">
+              <div className="pr-count" style={{ animationDelay: '0.1s' }}>
+                <div className="font-mono text-[11px] tracking-[0.35em] mb-3 flex items-center gap-2" style={{ color: 'var(--signal)' }}>
+                  <IconTrophy size={14} />
+                  <span>RECORD PERSONNEL</span>
+                </div>
+                <div className="font-display font-bold leading-none mb-1" style={{ color: 'var(--text)', fontSize: 'clamp(36px, 7vw, 52px)', letterSpacing: '-0.02em' }}>
+                  {headline}
+                </div>
+                <div className="text-sm mb-6" style={{ color: 'var(--text-dim)' }}>
+                  {isMulti ? 'Cette séance a établi plusieurs nouveaux temps de référence dans ton profil.' : 'Cette séance vient d\'établir un nouveau temps de référence dans ton profil.'}
+                </div>
+              </div>
+
+              {/* Liste des PRs — gros chiffre + delta */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                {candidates.map((c, idx) => {
+                  const delta = c.oldSec ? c.oldSec - c.newSec : null;
+                  return (
+                    <div key={c.key} className="pr-count" style={{
+                      animationDelay: `${0.25 + idx * 0.12}s`,
+                      background: 'linear-gradient(135deg, rgba(212,255,0,0.06) 0%, rgba(212,255,0,0.02) 100%)',
+                      border: '1px solid rgba(212,255,0,0.25)',
+                      borderRadius: 14,
+                      padding: '16px 18px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 16,
+                    }}>
+                      <div style={{ flex: '0 0 auto', minWidth: 64 }}>
+                        <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--signal)' }}>
+                          {DISPLAY_LABEL[c.key] || c.key.toUpperCase()}
+                        </div>
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="font-display font-bold tabular leading-none" style={{ color: 'var(--signal)', fontSize: 'clamp(32px, 6vw, 44px)', letterSpacing: '-0.02em' }}>
+                          {fmtTime(c.newSec)}
+                        </div>
+                        {c.oldSec ? (
+                          <div className="font-mono text-[11px] mt-1.5 flex items-center gap-2" style={{ color: 'var(--text-dim)' }}>
+                            <span style={{ textDecoration: 'line-through', opacity: 0.6 }}>{fmtTime(c.oldSec)}</span>
+                            <span style={{ color: 'var(--positive)' }}>−{fmtTime(delta)}</span>
+                          </div>
+                        ) : (
+                          <div className="font-mono text-[11px] mt-1.5" style={{ color: 'var(--text-faint)' }}>première fois sur cette distance</div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {activity && (
+                <div className="text-xs mt-5 mb-2" style={{ color: 'var(--text-faint)' }}>
+                  Détecté dans la séance du {new Date(activity.startMs).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })}
+                  {activity.distanceMeters ? ` · ${(activity.distanceMeters/1000).toFixed(1)} km` : ''}
+                  {activity.durationSec ? ` · ${fmtTime(activity.durationSec)}` : ''}.
+                </div>
+              )}
+            </div>
+
+            <div className="px-7 pb-6 pt-3 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-2">
+              <Button variant="ghost" onClick={onDismiss}>Plus tard</Button>
+              <Button variant="primary" onClick={onConfirm} style={{ background: 'var(--signal)', color: '#000', borderColor: 'var(--signal)', fontWeight: 700, letterSpacing: '0.02em' }}>
+                {isMulti ? `Mettre à jour les ${candidates.length} records` : 'Mettre à jour mon profil'}
+              </Button>
             </div>
           </div>
         </div>
@@ -20957,6 +21237,9 @@
       const [phaseGraduations, setPhaseGraduations] = useState(() => storage.get(KEYS.phaseGraduations, []));
       const [pendingGraduation, setPendingGraduation] = useState(null);
       const [pendingPainCheckin, setPendingPainCheckin] = useState(null);
+      // PR célébration — déclenchée par doImport quand un nouveau record est détecté.
+      // Forme : { candidates: [{key, distanceM, newSec, oldSec}], activity }
+      const [pendingPRCelebration, setPendingPRCelebration] = useState(null);
 
       // Track CP changes: whenever CP updates, log a history entry
       useEffect(() => {
@@ -21064,6 +21347,28 @@
         }
         setPendingPainCheckin(null);
       }
+
+      function confirmPRCelebration() {
+        if (!pendingPRCelebration) return;
+        const { candidates } = pendingPRCelebration;
+        const fmtTime = (sec) => {
+          const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = Math.round(sec % 60);
+          return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${m}:${String(s).padStart(2,'0')}`;
+        };
+        const today = new Date().toISOString().slice(0, 10);
+        const newPrs = { ...(profile.prs || {}) };
+        const newPrsDates = { ...(profile.prsDates || {}) };
+        for (const c of candidates) {
+          newPrs[c.key] = fmtTime(c.newSec);
+          newPrsDates[c.key] = today;
+        }
+        setProfile({ ...profile, prs: newPrs, prsDates: newPrsDates });
+        const summary = candidates.length === 1
+          ? `PR ${candidates[0].key.toUpperCase()} mis à jour : ${fmtTime(candidates[0].newSec)}.`
+          : `${candidates.length} PRs mis à jour.`;
+        toast.push(summary, { kind: 'info', duration: 6000 });
+        setPendingPRCelebration(null);
+      }
       useEffect(() => { storage.set(KEYS.races, races); }, [races]);
       useEffect(() => { storage.set(KEYS.planOverrides, planOverrides); }, [planOverrides]);
       useEffect(() => { storage.set(KEYS.sessionTemplates, sessionTemplates); }, [sessionTemplates]);
@@ -21135,10 +21440,17 @@
           }
         }
 
+        // Helper format temps partagé par les blocs PR (race + opportuniste).
+        const fmtPRTime = (sec) => {
+          const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = Math.round(sec % 60);
+          return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${m}:${String(s).padStart(2,'0')}`;
+        };
+
         // Auto-detect race result : si l'activité tombe le jour d'une course
         // « à venir » du profil ET que la distance correspond, on propose
         // d'enregistrer le résultat (PR si meilleur, et marquage course faite).
         // Évite à l'utilisateur de devoir mettre à jour manuellement son PR.
+        let raceMatchedPrKey = null;
         (() => {
           const actMs = activity.startMs;
           const dayMs = 86400000;
@@ -21175,18 +21487,15 @@
           if (!race) return;
           const prKey = prKeyFromKm(actKm);
           if (!prKey) return;
+          raceMatchedPrKey = prKey;
           const actualSec = activity.durationSec;
           const oldPrSec = parsePRSec(profile.prs && profile.prs[prKey]);
           const isBetter = !oldPrSec || actualSec < oldPrSec;
-          const fmtTime = (sec) => {
-            const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = Math.round(sec % 60);
-            return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${m}:${String(s).padStart(2,'0')}`;
-          };
           const msg = isBetter
             ? (oldPrSec
-                ? `Tu as couru ${race.name} en ${fmtTime(actualSec)} — ancien record ${prKey} : ${fmtTime(oldPrSec)}. Mettre à jour le PR et marquer la course terminée ?`
-                : `Tu as couru ${race.name} en ${fmtTime(actualSec)} — c'est ton premier record ${prKey}. Enregistrer et marquer la course terminée ?`)
-            : `Tu as couru ${race.name} en ${fmtTime(actualSec)}. Ton PR ${prKey} actuel (${fmtTime(oldPrSec)}) reste meilleur. Marquer simplement la course terminée ?`;
+                ? `Tu as couru ${race.name} en ${fmtPRTime(actualSec)} — ancien record ${prKey} : ${fmtPRTime(oldPrSec)}. Mettre à jour le PR et marquer la course terminée ?`
+                : `Tu as couru ${race.name} en ${fmtPRTime(actualSec)} — c'est ton premier record ${prKey}. Enregistrer et marquer la course terminée ?`)
+            : `Tu as couru ${race.name} en ${fmtPRTime(actualSec)}. Ton PR ${prKey} actuel (${fmtPRTime(oldPrSec)}) reste meilleur. Marquer simplement la course terminée ?`;
           dialog.confirm({
             title: isBetter ? 'Nouveau record détecté !' : 'Course terminée',
             message: msg,
@@ -21198,12 +21507,44 @@
             handleUpdateRace(race.id, { completedAt: today, actualTimeSec: actualSec, actualActivityId: activity.id });
             // Mettre à jour PR si meilleur
             if (isBetter) {
-              const newPrs = { ...(profile.prs || {}), [prKey]: fmtTime(actualSec) };
+              const newPrs = { ...(profile.prs || {}), [prKey]: fmtPRTime(actualSec) };
               const newPrsDates = { ...(profile.prsDates || {}), [prKey]: today };
               setProfile({ ...profile, prs: newPrs, prsDates: newPrsDates });
-              toast.push(`PR ${prKey.toUpperCase()} mis à jour : ${fmtTime(actualSec)}.`, { kind: 'info', duration: 6000 });
+              toast.push(`PR ${prKey.toUpperCase()} mis à jour : ${fmtPRTime(actualSec)}.`, { kind: 'info', duration: 6000 });
             }
           });
+        })();
+
+        // Auto-detect PR opportuniste : à chaque import on regarde si l'activité
+        // bat un PR existant — y compris sur un split interne (ex: 5K rapide au
+        // début d'un 10K). Le bloc course ci-dessus a déjà géré la distance
+        // principale si une course était planifiée → on l'exclut pour éviter
+        // un double dialog. Le reste (splits internes, autres distances) reste
+        // traité ici, via la modal célébration PRCelebrationModal (pas le dialog
+        // générique : un PR mérite mieux).
+        (() => {
+          if (!activity.bestDistanceEfforts) return;
+          const isRun = !activity.sport || /run|course/i.test(activity.sport);
+          if (!isRun) return;
+          const PR_KEY_BY_DIST = {
+            5000: '5k', 10000: '10k', 15000: '15k', 21098: 'semi',
+            30000: '30k', 42195: 'marathon', 50000: '50k',
+          };
+          const candidates = [];
+          for (const [distStr, key] of Object.entries(PR_KEY_BY_DIST)) {
+            if (key === raceMatchedPrKey) continue;
+            const newSec = activity.bestDistanceEfforts[parseInt(distStr)];
+            if (!newSec || newSec <= 0) continue;
+            const oldSec = parsePRSec(profile.prs && profile.prs[key]);
+            if (oldSec && newSec >= oldSec) continue;
+            // Garde-fou : le temps doit être physiologiquement plausible.
+            // Vitesse > 25 km/h sur la distance = artefact (record monde ≈ 23 km/h sur 5K).
+            const speedKmh = (parseInt(distStr) / newSec) * 3.6;
+            if (speedKmh > 25) continue;
+            candidates.push({ key, distanceM: parseInt(distStr), newSec, oldSec });
+          }
+          if (!candidates.length) return;
+          setPendingPRCelebration({ candidates, activity });
         })();
 
         // Auto-update CP if a new better effort detected.
@@ -21662,6 +22003,7 @@
           {manualEntry && <ManualActivityModal onSave={(activity) => { doImport(activity); setManualEntry(false); }} onCancel={() => setManualEntry(false)} hidePower={isPaceMode(profile)} />}
           {pendingGraduation && <PhaseGraduationModal phase={pendingGraduation} onClose={acceptGraduation} />}
           {pendingPainCheckin && <PainCheckinModal activity={pendingPainCheckin} profile={profile} onSubmit={savePainCheckin} onSkip={() => setPendingPainCheckin(null)} />}
+          {pendingPRCelebration && <PRCelebrationModal candidates={pendingPRCelebration.candidates} activity={pendingPRCelebration.activity} onConfirm={confirmPRCelebration} onDismiss={() => setPendingPRCelebration(null)} />}
           {/* Hidden file input — triggered by Today's IMPORTER button (any view) */}
           <input
             ref={importInputRef}
