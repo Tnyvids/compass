@@ -18538,7 +18538,7 @@
           // Cas par défaut (et slot 1 de marathon/semi) : seuil classique, triés léger → lourd
           const variants = [
             { label: 'Over-under seuil', detail: `${wUp(cp)} + 3×(4' à ${Math.round(cp*0.92)}W + 2' à ${Math.round(cp*0.99)}W) R 2' à ${Math.round(cp*0.70)}W + ${wDown(cp)}`, purpose: 'Alternance sous/sur-seuil sur 18\' cumulés, clairance du lactate.' },
-            { label: 'Seuil + fin rapide', detail: `${wUp(cp)} + 3×8' à ${Math.round(cp*0.92)}W (R 90"), dernier à ${Math.round(cp*0.98)}W + ${wDown(cp)}`, purpose: '24\' au seuil avec pic final — pousser plus fort quand la fatigue arrive.' },
+            { label: 'Seuil + fin rapide', detail: `${wUp(cp)} + 3×8' à ${Math.round(cp*0.92)}W (R 2' à ${Math.round(cp*0.70)}W), dernier à ${Math.round(cp*0.98)}W + ${wDown(cp)}`, purpose: '24\' au seuil avec pic final — pousser plus fort quand la fatigue arrive.' },
             { label: 'Seuil en escalier', detail: `${wUp(cp)} + 6' + 8' + 10' à ${Math.round(cp*0.95)}W (R 2' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Progression croissante des blocs (24\' cumulés), mental et physique.' },
             { label: 'Tempo continu long', detail: `${wUp(cp)} + 28' continus à ${Math.round(cp*0.92)}W + ${wDown(cp)}`, purpose: '28\' continus au seuil, résistance mentale et musculaire.' },
             { label: 'Seuil classique', detail: `${wUp(cp)} + 3×10' à ${Math.round(cp*0.92)}-${Math.round(cp*0.97)}W (R 2' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Pilier du seuil : 30\' cumulés au LT pour pousser la CP vers le haut.' },
