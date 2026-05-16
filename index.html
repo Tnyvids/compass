@@ -18620,14 +18620,20 @@
             ];
             return pickByWeekInPhase(variants, ctx);
           }
-          // policy 'full' (5K, 10K) : VO2max classique — triés par volume VO2 croissant
+          // policy 'full' (5K, 10K) — BASE : progression de fondation, PAS de
+          // VO2max soutenu (réservé au Build, où il est déjà pleinement traité).
+          // Principe Daniels phase I : strides neuromusculaires + introduction
+          // PROGRESSIVE et DOSÉE de la VMA en fractions courtes (≤1', récup
+          // large). Cohérent avec PHASE_INFO.base ("pas d'effort supra-seuil
+          // soutenu"). Triés léger → lourd : strides → diagonales courtes →
+          // touches VO2 brèves croissantes (pont vers le Build).
           const variants = [
-            { label: 'VO2 court 30/30', detail: `${wUp(cp)} + 10×(30" à ${Math.round(cp*1.12)}W + 30" à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Billat 10× : 5\' cumulés à VO2max, introduction.' },
-            { label: 'VMA fractionné', detail: `${wUp(cp)} + 8×1' à ${Math.round(cp*1.10)}-${Math.round(cp*1.15)}W (R 1' à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: '8\' cumulés au-dessus de VO2max, format simple et efficace.' },
-            { label: 'Pyramide 1-2-3-2-1', detail: `${wUp(cp)} + 1' à ${Math.round(cp*1.10)}W + 1' à ${Math.round(cp*0.70)}W + 2' à ${Math.round(cp*1.10)}W + 2' à ${Math.round(cp*0.70)}W + 3' à ${Math.round(cp*1.10)}W + 3' à ${Math.round(cp*0.70)}W + 2' à ${Math.round(cp*1.10)}W + 2' à ${Math.round(cp*0.70)}W + 1' à ${Math.round(cp*1.10)}W + 1' à ${Math.round(cp*0.70)}W + ${wDown(cp)}`, purpose: 'Variation de durée à intensité fixe (9\' à VO2), résistance mentale.' },
-            { label: 'VO2 longs 2\'', detail: `${wUp(cp)} + 5×2' à ${Math.round(cp*1.08)}-${Math.round(cp*1.12)}W (R 90" à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Format Daniels I-pace (10\' à VO2max), optimal pour monter la VO2max.' },
-            { label: 'Diagonales 400m', detail: `${wUp(cp)} + 6×400m à ${Math.round(cp*1.10)}W (R 200m à ${Math.round(cp*0.65)}W) + ${wDown(cp)}`, purpose: 'Format piste classique 6×400m, travail VMA pure.' },
-            { label: 'Billat 30/30 série', detail: `${wUp(cp)} + 16×(30" à ${Math.round(cp*1.15)}W + 30" à ${Math.round(cp*0.70)}W) + ${wDown(cp)}`, purpose: 'Maximise le temps passé au-dessus de 90% VO2max (8\' à 115% CP).' },
+            { label: 'Footing + strides', detail: `35' à ${Math.round(cp*0.72)}-${Math.round(cp*0.78)}W + 8×100m à ${Math.round(cp*1.10)}W (R 100m marche)`, purpose: 'Strides neuromusculaires (filière alactique) sur fond aérobie — entretient la foulée vive sans stress VO2. Pilier de la base Daniels.' },
+            { label: 'Footing + strides longs', detail: `${wUp(cp)} + 6×150m à ${Math.round(cp*1.08)}W (R 150m marche) + 15' à ${Math.round(cp*0.74)}W + ${wDown(cp)}`, purpose: 'Strides un peu plus longs, recrutement fibres rapides, récup complète — neuromusculaire dominant.' },
+            { label: 'Diagonales 200m', detail: `${wUp(cp)} + 6×200m à ${Math.round(cp*1.06)}-${Math.round(cp*1.08)}W (R 200m à ${Math.round(cp*0.65)}W) + ${wDown(cp)}`, purpose: 'Touche VMA courte (200m), récup large — introduit la vitesse sans charge VO2 soutenue.' },
+            { label: 'Strides + 30/30 dosé', detail: `${wUp(cp)} + 8×(30" à ${Math.round(cp*1.08)}W + 30" à ${Math.round(cp*0.68)}W) + 10' à ${Math.round(cp*0.72)}W + ${wDown(cp)}`, purpose: 'Touche VO2 brève (4\' fractionnés) sur fond aérobie — première exposition contrôlée.' },
+            { label: 'Accélérations 1\'', detail: `${wUp(cp)} + 5×1' à ${Math.round(cp*1.00)}-${Math.round(cp*1.05)}W (R 2' à ${Math.round(cp*0.70)}W) + 10' à ${Math.round(cp*0.72)}W + ${wDown(cp)}`, purpose: 'Relances proche VMA (5\' cumulés, dosé) — fin de base, prépare la transition vers les séances VO2max du Build.' },
+            { label: 'Pré-build 200/400', detail: `${wUp(cp)} + 4×200m à ${Math.round(cp*1.08)}W + 4×400m à ${Math.round(cp*1.05)}W (R 200m à ${Math.round(cp*0.65)}W) + ${wDown(cp)}`, purpose: 'Dernière marche de la base : VMA courte plus dense (~5\' cumulés) avant d\'entrer dans le vrai VO2max du Build.' },
           ];
           return pickByWeekInPhase(variants, ctx);
         },
