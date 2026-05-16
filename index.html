@@ -10111,11 +10111,60 @@
       }
       const reps = detected.reps;
       if (reps.length === 0) {
+        // Effort continu : pas de fractions, mais on peut donner un verdict de TENUE.
+        // Utile pour les footings, sorties longues, séances tempo continues.
+        const p = activity.trackpointPowers;
+        const mean = p.reduce((a, b) => a + b, 0) / p.length;
+        const variance = p.reduce((a, b) => a + (b - mean) ** 2, 0) / p.length;
+        const std = Math.sqrt(variance);
+        const cv = mean > 0 ? std / mean : 0;
+        const ratioCp = cp ? mean / cp : null;
+        let zoneLabel = 'EFFORT CONTINU';
+        let zoneColor = 'var(--text-dim)';
+        if (ratioCp != null) {
+          if (ratioCp < 0.70) { zoneLabel = 'RÉCUPÉRATION'; zoneColor = 'var(--go)'; }
+          else if (ratioCp < 0.85) { zoneLabel = 'FOOTING / ENDURANCE'; zoneColor = 'var(--go)'; }
+          else if (ratioCp < 0.95) { zoneLabel = 'TEMPO'; zoneColor = 'var(--warn)'; }
+          else if (ratioCp < 1.05) { zoneLabel = 'SEUIL CONTINU'; zoneColor = 'var(--alert)'; }
+          else { zoneLabel = 'SUPRA-SEUIL CONTINU'; zoneColor = 'var(--danger)'; }
+        }
+        let stabilityLabel, stabilityColor;
+        if (cv < 0.10) { stabilityLabel = 'Très stable'; stabilityColor = 'var(--go)'; }
+        else if (cv < 0.16) { stabilityLabel = 'Stable'; stabilityColor = 'var(--go)'; }
+        else if (cv < 0.22) { stabilityLabel = 'Variable'; stabilityColor = 'var(--warn)'; }
+        else { stabilityLabel = 'Très variable'; stabilityColor = 'var(--alert)'; }
+        const durLabel = (() => {
+          const m = Math.floor(activity.durationSec / 60);
+          const h = Math.floor(m / 60);
+          return h > 0 ? `${h}h${String(m % 60).padStart(2, '0')}` : `${m}'`;
+        })();
         return (
-          <Card className="p-5">
-            <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--text-dim)' }}>FRACTIONS DÉTECTÉES</div>
-            <div className="text-sm italic" style={{ color: 'var(--text-faint)' }}>
-              Aucun bloc d'effort distinct détecté (seuil : {Math.round(detected.threshold)}W). Cette séance ressemble à un effort continu plutôt qu'à des fractions.
+          <Card className="p-5" accent={zoneColor}>
+            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+              <div className="font-mono text-[10px] tracking-widest" style={{ color: zoneColor }}>{zoneLabel} · {durLabel} EN UN BLOC</div>
+              {ratioCp && <div className="font-mono text-xs tabular" style={{ color: 'var(--text-dim)' }}>{Math.round(mean)}W moyen · {Math.round(ratioCp * 100)}% CP</div>}
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="rounded p-3" style={{ background: 'var(--bg-elev-2)', border: `1px solid ${zoneColor}40` }}>
+                <div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>PUISSANCE MOY</div>
+                <div className="font-display text-lg font-bold tabular mt-0.5" style={{ color: zoneColor }}>{Math.round(mean)}W</div>
+              </div>
+              <div className="rounded p-3" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--border)' }}>
+                <div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>VARIATION ± </div>
+                <div className="font-display text-lg font-bold tabular mt-0.5" style={{ color: 'var(--text)' }}>{Math.round(std)}W</div>
+              </div>
+              <div className="rounded p-3" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--border)' }}>
+                <div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>TENUE</div>
+                <div className="font-display text-sm font-bold mt-0.5" style={{ color: stabilityColor }}>{stabilityLabel}</div>
+                <div className="font-mono text-[10px] mt-0.5" style={{ color: 'var(--text-faint)' }}>CV {(cv * 100).toFixed(1)}%</div>
+              </div>
+              {ratioCp && (
+                <div className="rounded p-3" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--border)' }}>
+                  <div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>INTENSITÉ</div>
+                  <div className="font-display text-lg font-bold tabular mt-0.5" style={{ color: 'var(--accent)' }}>{Math.round(ratioCp * 100)}%</div>
+                  <div className="font-mono text-[10px] mt-0.5" style={{ color: 'var(--text-faint)' }}>de CP</div>
+                </div>
+              )}
             </div>
           </Card>
         );
@@ -17689,7 +17738,7 @@
               powerLow, powerHigh,
               mid: powerLow !== null ? (powerLow + powerHigh) / 2 : null,
               label: `${reps}×${durLabel}${powLabel ? ' à ' + powLabel : ''}`,
-              isRecovery: false,
+              isRecovery: false, isWarmup: false, isCooldown: false,
             });
           }
           return ''; // remove from main parsing
@@ -17720,7 +17769,7 @@
               reps, durSec, powerLow, powerHigh,
               mid: powerLow !== null ? (powerLow + powerHigh) / 2 : null,
               label: `${reps}×${durLabel}${powLabel ? ' à ' + powLabel : ''}`,
-              isRecovery: false,
+              isRecovery: false, isWarmup: false, isCooldown: false,
             });
             continue;
           }
@@ -17749,7 +17798,7 @@
             reps: 1, durSec, powerLow, powerHigh,
             mid: powerLow !== null ? (powerLow + powerHigh) / 2 : null,
             label: `${durLabel}${powLabel ? ' à ' + powLabel : ''}${isWarmup ? ' (éch)' : isCooldown ? ' (ret)' : ''}`,
-            isRecovery,
+            isRecovery, isWarmup, isCooldown,
           });
         }
 
@@ -17783,6 +17832,8 @@
                 mid: c.powerLow != null ? (c.powerLow + (c.powerHigh ?? c.powerLow)) / 2 : null,
                 label: `${reps > 1 ? reps + '×' : ''}${durLabel}${powLabel ? ' à ' + powLabel : ''}`,
                 isRecovery,
+                isWarmup: false,
+                isCooldown: false,
               });
             });
           } else if (b.kind === 'single' || b.blockKind) {
@@ -17804,6 +17855,8 @@
               mid: b.powerLow != null ? (b.powerLow + (b.powerHigh ?? b.powerLow)) / 2 : null,
               label: `${durLabel}${powLabel ? ' à ' + powLabel : ''}`,
               isRecovery: isRecovery || isWarmup,
+              isWarmup,
+              isCooldown: b.blockKind === 'cooldown',
             });
           }
         });
@@ -17813,7 +17866,16 @@
       // Source priority: structured blocks → text detail → fall back to bestEfforts heuristic
       const allBlocks = blocksFromStructured(linked.blocks) || parseSessionBlocks(linked.detail || '');
       // Working blocks = non-recovery, non-warmup, with power specified
-      const workBlocks = allBlocks.filter(b => !b.isRecovery && b.mid !== null);
+      let workBlocks = allBlocks.filter(b => !b.isRecovery && b.mid !== null);
+      // Fallback : sur un footing pur ou sortie longue à allure easy, TOUS les blocs
+      // sont marqués isRecovery (puissance < 75% CP). Sans fallback, la card ne
+      // s'afficherait pas du tout. On relâche le critère pour exclure uniquement
+      // les éch/ret explicites — ça permet d'avoir un verdict de TENUE sur les
+      // blocs easy planifiés (« 45' à 175W » → tenu à 178W ± 6 par exemple).
+      const isEasySession = workBlocks.length === 0;
+      if (isEasySession) {
+        workBlocks = allBlocks.filter(b => !b.isWarmup && !b.isCooldown && b.mid !== null);
+      }
 
       const plannedLabel = linked.label || 'Séance prévue';
       const plannedTypeLabel = { rest: 'Repos', easy: 'Footing easy', tempo: 'Seuil', intervals: 'Intervalles', long: 'Sortie longue', test: 'Test' }[linked.type] || linked.type;
