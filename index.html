@@ -20240,7 +20240,11 @@
       } else {
         const taperIdx = weekIdx - peakWeek;
         const taperWeeks = Math.max(1, totalWeeks - peakWeek);
-        const reduction = 0.70 - 0.20 * Math.min(1, (taperIdx - 1) / Math.max(1, taperWeeks - 1));
+        // Taper Bosquet 2007 / Mujika : réduction optimale du volume 41-60 %
+        // (intensité maintenue ailleurs). On passe de 62 % du pic (1ère sem
+        // de taper = -38 %) à 42 % (sem de course = -58 %). L'ancien 0.70→0.50
+        // (-30 à -50 %) était sous-dosé, surtout sur marathon.
+        const reduction = 0.62 - 0.20 * Math.min(1, (taperIdx - 1) / Math.max(1, taperWeeks - 1));
         target = peakKm * reduction;
       }
       if (isRecoveryWeek) target = target * 0.75;
@@ -20511,9 +20515,30 @@
           // sinon on suit la ramp linéaire de baseKm → peakKm. volumeMul applique
           // les ajustements reprise/maintien/premier-marathon par-dessus.
           const rampTarget = Math.round(computeWeeklyKmTarget({ weekIdx: w, totalWeeks, phasePlan, isRecoveryWeek, raceProfile }) * volumeMul);
-          const weeklyKmTarget = (isRecoveryWeek && Number.isFinite(prevWeekKm) && prevWeekKm > 0)
+          let weeklyKmTarget = (isRecoveryWeek && Number.isFinite(prevWeekKm) && prevWeekKm > 0)
             ? Math.round(prevWeekKm * 0.70)
             : rampTarget;
+          // Garde-fou Gabbett : la progression de volume ne doit pas dépasser
+          // ~+10 %/sem (spike effect = facteur de blessure documenté). On plafonne
+          // SAUF : semaine de récup (réduction voulue), phase taper (réduction
+          // voulue), et rebond post-deload (la semaine précédente était un
+          // deload → on autorise le retour au volume rampe, qui est lui-même
+          // borné par la rampe linéaire douce). Corrige notamment le saut
+          // S1→S2 causé par le test CP qui s'ajoutait à la rampe.
+          const prevWasDeload = weeks.length > 0 && weeks[weeks.length - 1].isRecoveryWeek;
+          if (!isRecoveryWeek && phase !== 'taper' && !prevWasDeload
+              && Number.isFinite(prevWeekKm) && prevWeekKm > 0) {
+            const gabbettCap = Math.round(prevWeekKm * 1.10);
+            if (weeklyKmTarget > gabbettCap) weeklyKmTarget = gabbettCap;
+          }
+          // Semaine de test maximal : volume réduit (-15 %). Un test CP 3'/20'
+          // est une grosse sollicitation neuromusculaire/anaérobie ; empiler le
+          // volume plein par-dessus (1) fausse le test (jambes lourdes) et
+          // (2) crée un spike de charge (le protocole ~75 min est incompressible
+          // et débordait le cap Gabbett sur les petits volumes type 10K). Une
+          // semaine test = semaine semi-allégée, comme le ferait un coach.
+          const isTestWeek = testWeeks.has(w) && !isRecoveryWeek;
+          if (isTestWeek) weeklyKmTarget = Math.round(weeklyKmTarget * 0.85);
           const easyMinPerKm = estimateEasyMinPerKm({ cp, weightKg, ppt: powerPaceTable });
           const easyBudgetKm = Math.max(0, weeklyKmTarget - placedKm);
           const easyCount = easyEntries.length;
