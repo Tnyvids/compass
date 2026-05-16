@@ -21938,18 +21938,25 @@
             const deltaW = newCp - profile.cp;
             const absPct = Math.abs(deltaW) / profile.cp;
             const isUp = deltaW > 0;
-            // Garde-fou baisse : ne JAMAIS proposer de descendre la CP si aucun
-            // effort vraiment soutenu n'a été produit récemment. Sans test/séance
-            // maximale 5-30 min, des bestEfforts bas = "pas testé ses limites",
-            // PAS "perte de forme". Un coureur qui s'entraîne dur mais sans aller
-            // à fond ne doit pas voir sa CP chuter à tort. La HAUSSE reste libre
-            // (battre un record = forcément un effort réel).
-            const hardestRecent = Math.max(0,
-              recentBests[300] || 0, recentBests[600] || 0,
-              recentBests[1200] || 0, recentBests[1800] || 0);
-            const hasHardEffort = hardestRecent > 0 && (hardestRecent / profile.cp) >= 0.85;
-            if (!isUp && !hasHardEffort) {
-              // pas d'effort soutenu récent → on ne dit rien (ni baisse ni bruit)
+            // Règle asymétrique (choix utilisateur) :
+            //  - BAISSE : proposée UNIQUEMENT si une séance "test" existe dans
+            //    la fenêtre 42j. On ne descend une donnée aussi structurante
+            //    que sur preuve formelle (un test que l'utilisateur a décidé
+            //    de faire), jamais sur déduction floue. Un coureur qui
+            //    s'entraîne dur sans aller à fond ne verra plus sa CP chuter.
+            //  - HAUSSE : libre. Si l'estimation récente dépasse la CP, c'est
+            //    qu'un effort réel l'a prouvé (record battu = donnée fiable),
+            //    qu'il soit tagué "test" ou pas — on ne rate pas un vrai progrès.
+            // Dans tous les cas : dialog de confirmation, jamais d'auto-apply.
+            const cutoff = refMs - 42 * 86400000;
+            const hasRecentTest = (updated || []).some(a =>
+              a && a.startMs >= cutoff && a.startMs <= refMs &&
+              a.linkedSession && a.linkedSession.type === 'test'
+            );
+            const allowed = isUp || hasRecentTest;
+            if (!allowed) {
+              // baisse sans séance test récente → silence (pas une perte de
+              // forme prouvée, juste un manque de test maximal)
             } else
             // Seuils : ≥ 6W absolus ET ≥ 2.5 % pour filtrer le bruit séance-à-séance.
             if (Math.abs(deltaW) >= 6 && absPct >= 0.025) {
@@ -21958,7 +21965,7 @@
                 title: isUp ? 'Puissance seuil en hausse' : 'Puissance seuil à recaler',
                 message: isUp
                   ? `Tes efforts des 6 dernières semaines indiquent une puissance seuil de ${newCp}W (profil : ${profile.cp}W). Mettre à jour pour des zones et prédictions justes ?`
-                  : `Tes efforts des 6 dernières semaines indiquent une puissance seuil de ${newCp}W, en-dessous de ton profil (${profile.cp}W). Les anciens tests ne reflètent plus ta forme actuelle — recaler pour des zones et prédictions justes ?`,
+                  : `Ton test récent indique une puissance seuil de ${newCp}W, en-dessous de ton profil (${profile.cp}W). Recaler pour des zones et prédictions justes ?`,
                 confirmLabel: isUp ? 'Mettre à jour' : 'Recaler',
               }).then(ok => {
                 if (ok) setProfile({
