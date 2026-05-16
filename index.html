@@ -19951,7 +19951,20 @@
           build += stillDeficit;
         }
       }
-      const base = Math.max(2, totalWeeks - build - peak - taper);
+      let base = Math.max(2, totalWeeks - build - peak - taper);
+      // Garde-fou final : la somme des phases DOIT valoir totalWeeks. Sur les
+      // plans très courts (4-6 sem), les minima (build 3+, base 2, peak 1,
+      // taper 1) peuvent déborder. On rabote dans l'ordre build > base >
+      // peak > taper pour rester ≤ totalWeeks, et on push en base si on est
+      // sous (cas très rare).
+      let sum = base + build + peak + taper;
+      while (sum > totalWeeks && build > 1) { build--; sum--; }
+      while (sum > totalWeeks && base > 2) { base--; sum--; }
+      while (sum > totalWeeks && peak > 1) { peak--; sum--; }
+      while (sum > totalWeeks && taper > 1) { taper--; sum--; }
+      // Fallback ultime : si encore trop, on force base à 1 (plan ≤4 sem)
+      if (sum > totalWeeks) { base = Math.max(1, base - (sum - totalWeeks)); sum = base + build + peak + taper; }
+      while (sum < totalWeeks) { base++; sum++; }
       return { base, build, peak, taper };
     }
     // Position de la semaine DANS sa phase (1-based) : permet aux templates de
