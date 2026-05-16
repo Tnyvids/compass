@@ -17287,7 +17287,9 @@
     // altimétrique. flatPace = objectif chrono déclaré de la course.
     function RaceStrategySection({ race, profile, onUpdateRace }) {
       const fileRef = useRef(null);
+      const svgRef = useRef(null);
       const [err, setErr] = useState(null);
+      const [hoverD, setHoverD] = useState(null); // distance survolée (m)
       const distKm = (() => {
         const s = String(race.distance || '').toLowerCase();
         if (s.includes('marathon')) return 42.195;
@@ -17318,12 +17320,12 @@
       }, [race.coursePts, race.objective, distKm]);
 
       const fmtP = sec => { if (!sec) return '—'; const m = Math.floor(sec/60); let s = Math.round(sec%60); let mm=m; if (s===60){s=0;mm++;} return `${mm}:${String(s).padStart(2,'0')}`; };
-      const fmtT = sec => { if (!sec) return '—'; const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=Math.round(sec%60); return h>0?`${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${m}:${String(s).padStart(2,'0')}`; };
+      const fmtT = sec => { if (!sec) return '—'; sec = Math.round(sec); const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60; return h>0?`${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${m}:${String(s).padStart(2,'0')}`; };
 
-      // Mini profil altimétrique SVG
+      // Mini profil altimétrique SVG (+ helpers pour le curseur interactif)
       const profileSvg = useMemo(() => {
         if (!race.coursePts || race.coursePts.length < 2) return null;
-        const W = 600, H = 70, pad = 4;
+        const W = 600, H = 90, pad = 4;
         const eles = race.coursePts.map(p => p.e);
         const minE = Math.min(...eles), maxE = Math.max(...eles);
         const range = Math.max(1, maxE - minE);
@@ -17332,8 +17334,49 @@
         const y = e => pad + (1 - (e - minE) / range) * (H - 2*pad);
         const path = race.coursePts.map((p,i) => `${i===0?'M':'L'} ${x(p.d).toFixed(1)} ${y(p.e).toFixed(1)}`).join(' ');
         const area = `${path} L ${x(maxD).toFixed(1)} ${H-pad} L ${pad} ${H-pad} Z`;
-        return { W, H, path, area };
+        return { W, H, pad, maxD, minE, maxE, range, path, area, x, y };
       }, [race.coursePts]);
+
+      // Infos du point survolé : km, altitude, pente locale, allure cible,
+      // temps de passage cumulé. Cherche le segment de stratégie + interpole
+      // l'altitude depuis coursePts.
+      const hoverInfo = useMemo(() => {
+        if (hoverD == null || !strategy || strategy.needObjective || !strategy.segments || !race.coursePts) return null;
+        const segs = strategy.segments;
+        let cum = 0, seg = segs[0], gradePct = 0, paceSec = 0;
+        for (const s of segs) {
+          if (hoverD <= s.distStart + s.dx) { seg = s; gradePct = s.grade * 100; paceSec = s.paceSecPerKm; break; }
+          cum += s.timeSec;
+        }
+        // si au-delà du dernier segment
+        if (hoverD > segs[segs.length-1].distStart + segs[segs.length-1].dx) {
+          seg = segs[segs.length-1]; gradePct = seg.grade*100; paceSec = seg.paceSecPerKm;
+          cum = strategy.totalTimeSec;
+        } else {
+          // temps cumulé jusqu'au début du segment + fraction parcourue dedans
+          cum = 0;
+          for (const s of segs) { if (s === seg) { cum += ((hoverD - s.distStart)/Math.max(1,s.dx)) * s.timeSec; break; } cum += s.timeSec; }
+        }
+        // altitude interpolée
+        const pts = race.coursePts;
+        let alt = pts[0].e;
+        for (let i = 1; i < pts.length; i++) {
+          if (pts[i].d >= hoverD) {
+            const t = (hoverD - pts[i-1].d) / Math.max(1, pts[i].d - pts[i-1].d);
+            alt = pts[i-1].e + t * (pts[i].e - pts[i-1].e);
+            break;
+          }
+          alt = pts[i].e;
+        }
+        return { distM: hoverD, alt: Math.round(alt), gradePct, paceSec, cumSec: cum };
+      }, [hoverD, strategy, race.coursePts]);
+
+      function svgPointToDist(clientX) {
+        if (!svgRef.current || !profileSvg) return null;
+        const rect = svgRef.current.getBoundingClientRect();
+        const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+        return ratio * profileSvg.maxD;
+      }
 
       return (
         <div className="mt-4 pt-3 border-t" style={{ borderColor: 'var(--border)' }}>
@@ -17365,10 +17408,47 @@
                 {race.courseFileName && <span style={{ color: 'var(--text-faint)' }}>{race.courseFileName}</span>}
               </div>
               {profileSvg && (
-                <svg viewBox={`0 0 ${profileSvg.W} ${profileSvg.H}`} className="w-full mb-3" style={{ display:'block' }}>
-                  <path d={profileSvg.area} fill="var(--compass)" opacity="0.10" />
-                  <path d={profileSvg.path} fill="none" stroke="var(--compass)" strokeWidth="1.5" />
-                </svg>
+                <>
+                  {/* Bandeau interactif : infos du point survolé */}
+                  {strategy && !strategy.needObjective && (
+                    <div className="rounded-lg px-3 py-2 mb-2 flex items-center gap-4 flex-wrap font-mono text-[11px] tabular" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--border)', minHeight: 38 }}>
+                      {hoverInfo ? (
+                        <>
+                          <span style={{ color: 'var(--text-dim)' }}>km <span style={{ color: 'var(--text)' }}>{(hoverInfo.distM/1000).toFixed(2)}</span></span>
+                          <span style={{ color: 'var(--text-dim)' }}>alt <span style={{ color: 'var(--text)' }}>{hoverInfo.alt}m</span></span>
+                          <span style={{ color: 'var(--text-dim)' }}>pente <span style={{ color: hoverInfo.gradePct > 1.5 ? 'var(--negative)' : hoverInfo.gradePct < -1.5 ? 'var(--go)' : 'var(--text)' }}>{hoverInfo.gradePct>=0?'+':''}{hoverInfo.gradePct.toFixed(1)}%</span></span>
+                          <span style={{ color: 'var(--text-dim)' }}>allure <span className="font-bold" style={{ color: 'var(--compass)', fontSize: 13 }}>{fmtP(hoverInfo.paceSec)}/km</span></span>
+                          <span style={{ color: 'var(--text-dim)' }}>passage <span style={{ color: 'var(--text)' }}>{fmtT(hoverInfo.cumSec)}</span></span>
+                        </>
+                      ) : (
+                        <span style={{ color: 'var(--text-faint)' }}>Survole (ou touche) le profil pour voir ton allure cible à chaque point</span>
+                      )}
+                    </div>
+                  )}
+                  <svg
+                    ref={svgRef}
+                    viewBox={`0 0 ${profileSvg.W} ${profileSvg.H}`}
+                    className="w-full mb-3"
+                    style={{ display:'block', cursor:'crosshair', touchAction:'none' }}
+                    onMouseMove={(e) => { const d = svgPointToDist(e.clientX); if (d!=null) setHoverD(d); }}
+                    onMouseLeave={() => setHoverD(null)}
+                    onTouchStart={(e) => { const t=e.touches[0]; if(t){ const d=svgPointToDist(t.clientX); if(d!=null) setHoverD(d); } }}
+                    onTouchMove={(e) => { const t=e.touches[0]; if(t){ const d=svgPointToDist(t.clientX); if(d!=null) setHoverD(d); } }}
+                  >
+                    <path d={profileSvg.area} fill="var(--compass)" opacity="0.10" />
+                    <path d={profileSvg.path} fill="none" stroke="var(--compass)" strokeWidth="1.5" />
+                    {hoverD != null && hoverInfo && (() => {
+                      const cx = profileSvg.x(hoverD);
+                      const cy = profileSvg.y(hoverInfo.alt);
+                      return (
+                        <g>
+                          <line x1={cx} y1={profileSvg.pad} x2={cx} y2={profileSvg.H - profileSvg.pad} stroke="var(--compass)" strokeWidth="1" strokeDasharray="3,3" opacity="0.7" />
+                          <circle cx={cx} cy={cy} r="3.5" fill="var(--compass)" stroke="var(--bg)" strokeWidth="1.5" />
+                        </g>
+                      );
+                    })()}
+                  </svg>
+                </>
               )}
               {strategy && strategy.needObjective && (
                 <div className="text-xs rounded-lg p-3" style={{ background: 'rgba(255,176,32,0.08)', border: '1px solid rgba(255,176,32,0.25)', color: 'var(--text-dim)' }}>
