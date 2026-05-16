@@ -2463,7 +2463,14 @@
       const top = [...estimates].sort((a, b) => b.vma - a.vma).slice(0, 3);
       if (top.length < 2) return null;
 
-      const suggestedVMA = Math.round((top.reduce((s, e) => s + e.vma, 0) / top.length) * 10) / 10;
+      // Médiane plutôt que moyenne : robuste aux outliers (sprint accidentel,
+      // GPS aberrant qui surestime la vitesse, descente). Sur 3 estimations :
+      // médiane = élément central. Sur 2 : minimum (conservateur).
+      const sortedByVma = [...top].sort((a, b) => a.vma - b.vma);
+      const robustVma = top.length === 3
+        ? sortedByVma[1].vma
+        : Math.min(sortedByVma[0].vma, sortedByVma[1].vma);
+      const suggestedVMA = Math.round(robustVma * 10) / 10;
       const delta = suggestedVMA - currentVMA;
 
       // Seuil minimal : +0.3 km/h ET +2 %
