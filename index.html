@@ -18801,7 +18801,7 @@
           }
           const variants = [
             { label: 'Longue + finish seuil', detail: `${Math.max(30, T - 20)}' à ${Math.round(cp*0.75)}W + 20' à ${tempoW}-${Math.round(cp*0.93)}W`, purpose: 'Apprend à pousser fatigué, simulation fin de semi/marathon.', explicitDurationMin: T },
-            { label: 'Longue avec fractions', detail: `${Math.max(25, T - 45)}' à ${Math.round(cp*0.75)}W + 6×3' à ${Math.round(cp*0.95)}W (R 2' à ${Math.round(cp*0.70)}W) + 15' à ${Math.round(cp*0.72)}W`, purpose: 'Combine volume et intensité, séance très qualitative.', explicitDurationMin: T },
+            { label: 'Longue avec fractions', detail: `${Math.max(25, T - 45)}' à ${Math.round(cp*0.75)}W + 6×3' à ${Math.round(cp*0.92)}W (R 2' à ${Math.round(cp*0.70)}W) + 15' à ${Math.round(cp*0.72)}W`, purpose: 'Combine volume et intensité au seuil (pas au-dessus), séance qualitative cohérente pour marathon/semi.', explicitDurationMin: T },
             { label: 'Progressive longue', detail: `${Math.round(T/3)}' à ${Math.round(cp*0.72)}W + ${Math.round(T/3)}' à ${Math.round(cp*0.80)}W + ${T - 2*Math.round(T/3)}' à ${Math.round(cp*0.90)}W`, purpose: "Montée graduelle d'intensité sur effort long, classique des plans marathon.", explicitDurationMin: T },
             { label: 'Longue tempo medley', detail: `${Math.max(20, T - 51)}' à ${Math.round(cp*0.75)}W + 3×10' à ${tempoW}W (R 2' trot à ${Math.round(cp*0.70)}W) + 15' à ${Math.round(cp*0.72)}W`, purpose: 'Seuil sur fond de fatigue, excellent transfert course.', explicitDurationMin: T },
             isLongRace
