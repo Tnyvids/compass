@@ -336,8 +336,8 @@
 
     /* ==========================================================================
        PROFONDEUR DOUCE — thème visuel scopé à l'écran "Aujourd'hui".
-       Verre dépoli SUBTIL/optimisé : flou léger 8px, voile blanc 4 %,
-       bordure douce, ombres en couches, coins 18px, halo de fond discret.
+       Verre dépoli PERCEPTIBLE : flou 13px, voile blanc dégradé 8→2 %,
+       bordure 13 %, ombres en couches, coins 18px, halo de fond marqué.
        Scopé à .theme-soft → n'affecte AUCUN autre écran. Strictement additif :
        ne remplace ni ne supprime les classes/tokens existants. La spécificité
        (.theme-soft .card-x) > (.card-x) → gagne sans !important.
@@ -350,9 +350,12 @@
       pointer-events: none;
       z-index: -1;
       background:
-        radial-gradient(1100px 560px at 50% -12%, rgba(74,158,255,0.06), transparent 60%),
-        radial-gradient(820px 480px at 100% 4%, rgba(143,232,106,0.035), transparent 55%),
-        linear-gradient(180deg, rgba(34,28,44,0.30), rgba(10,10,12,0) 42%);
+        radial-gradient(1200px 680px at 50% -12%, rgba(56,148,255,0.46), transparent 60%),
+        radial-gradient(900px 560px at 100% 2%, rgba(74,158,255,0.30), transparent 55%),
+        radial-gradient(880px 600px at 0% 100%, rgba(40,120,255,0.30), transparent 58%),
+        radial-gradient(680px 520px at 92% 96%, rgba(120,200,255,0.16), transparent 60%),
+        linear-gradient(180deg, rgba(10,22,46,0.78), rgba(6,8,14,0) 46%),
+        radial-gradient(1400px 1000px at 50% 50%, transparent 52%, rgba(0,0,0,0.55) 100%);
     }
     .theme-soft > * { position: relative; z-index: 1; }
 
@@ -363,22 +366,99 @@
     .theme-soft .card-highlighted-caution,
     .theme-soft .card-highlighted-critical,
     .theme-soft .card-highlighted-signal {
-      background: rgba(255,255,255,0.04);
-      border: 1px solid rgba(255,255,255,0.075);
+      background: linear-gradient(155deg, rgba(120,185,255,0.20), rgba(255,255,255,0.055) 44%, rgba(56,148,255,0.09));
+      border: 1px solid rgba(110,175,255,0.30);
       border-radius: 18px;
-      -webkit-backdrop-filter: blur(8px) saturate(120%);
-      backdrop-filter: blur(8px) saturate(120%);
+      -webkit-backdrop-filter: blur(15px) saturate(175%);
+      backdrop-filter: blur(15px) saturate(175%);
       box-shadow:
-        inset 0 1px 0 rgba(255,255,255,0.05),
-        0 1px 2px rgba(0,0,0,0.40),
-        0 8px 24px rgba(0,0,0,0.30);
+        inset 0 1px 0 rgba(180,215,255,0.20),
+        inset 0 -1px 0 rgba(0,0,0,0.26),
+        0 2px 6px rgba(0,0,0,0.52),
+        0 18px 44px rgba(0,0,0,0.50),
+        0 0 0 1px rgba(74,158,255,0.10);
+      transition: transform 0.24s cubic-bezier(0.22,1,0.36,1), border-color 0.24s ease, box-shadow 0.24s ease, background 0.24s ease;
+    }
+    /* Bloc "PROCHAINE COURSE" (bouton à fond inline) — intégré au verre dépoli. */
+    .theme-soft .theme-glass-hero {
+      background: linear-gradient(155deg, rgba(120,185,255,0.20), rgba(255,255,255,0.055) 44%, rgba(56,148,255,0.09)) !important;
+      border-color: rgba(110,175,255,0.30) !important;
+      border-radius: 18px;
+      -webkit-backdrop-filter: blur(15px) saturate(175%);
+      backdrop-filter: blur(15px) saturate(175%);
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.15),
+        inset 0 -1px 0 rgba(0,0,0,0.22),
+        0 2px 6px rgba(0,0,0,0.50),
+        0 18px 44px rgba(0,0,0,0.48);
     }
     /* Mise en avant : la barre dure devient une lueur douce teintée. */
-    .theme-soft .card-highlighted          { border-left: 1px solid rgba(255,255,255,0.075); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 1px 2px rgba(0,0,0,0.40), 0 8px 24px rgba(0,0,0,0.30), 0 0 0 1px rgba(74,158,255,0.20), 0 10px 30px rgba(74,158,255,0.10); }
-    .theme-soft .card-highlighted-positive { border-left: 1px solid rgba(255,255,255,0.075); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 1px 2px rgba(0,0,0,0.40), 0 8px 24px rgba(0,0,0,0.30), 0 0 0 1px rgba(143,232,106,0.20), 0 10px 30px rgba(143,232,106,0.10); }
-    .theme-soft .card-highlighted-caution  { border-left: 1px solid rgba(255,255,255,0.075); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 1px 2px rgba(0,0,0,0.40), 0 8px 24px rgba(0,0,0,0.30), 0 0 0 1px rgba(255,176,32,0.20), 0 10px 30px rgba(255,176,32,0.10); }
-    .theme-soft .card-highlighted-critical { border-left: 1px solid rgba(255,255,255,0.075); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 1px 2px rgba(0,0,0,0.40), 0 8px 24px rgba(0,0,0,0.30), 0 0 0 1px rgba(255,91,91,0.22), 0 10px 30px rgba(255,91,91,0.12); }
-    .theme-soft .card-highlighted-signal   { border-left: 1px solid rgba(255,255,255,0.075); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 1px 2px rgba(0,0,0,0.40), 0 8px 24px rgba(0,0,0,0.30), 0 0 0 1px rgba(212,255,0,0.20), 0 10px 30px rgba(212,255,0,0.10); }
+    .theme-soft .card-highlighted          { border-left: 1px solid rgba(74,158,255,0.42);  box-shadow: inset 0 1px 0 rgba(255,255,255,0.15), 0 2px 6px rgba(0,0,0,0.50), 0 18px 44px rgba(0,0,0,0.48), 0 0 0 1px rgba(74,158,255,0.50), 0 14px 40px rgba(74,158,255,0.30); }
+    .theme-soft .card-highlighted-positive { border-left: 1px solid rgba(143,232,106,0.42); box-shadow: inset 0 1px 0 rgba(255,255,255,0.15), 0 2px 6px rgba(0,0,0,0.50), 0 18px 44px rgba(0,0,0,0.48), 0 0 0 1px rgba(143,232,106,0.50), 0 14px 40px rgba(143,232,106,0.30); }
+    .theme-soft .card-highlighted-caution  { border-left: 1px solid rgba(255,176,32,0.42);  box-shadow: inset 0 1px 0 rgba(255,255,255,0.15), 0 2px 6px rgba(0,0,0,0.50), 0 18px 44px rgba(0,0,0,0.48), 0 0 0 1px rgba(255,176,32,0.50), 0 14px 40px rgba(255,176,32,0.30); }
+    .theme-soft .card-highlighted-critical { border-left: 1px solid rgba(255,91,91,0.44);   box-shadow: inset 0 1px 0 rgba(255,255,255,0.15), 0 2px 6px rgba(0,0,0,0.50), 0 18px 44px rgba(0,0,0,0.48), 0 0 0 1px rgba(255,91,91,0.52), 0 14px 40px rgba(255,91,91,0.32); }
+    .theme-soft .card-highlighted-signal   { border-left: 1px solid rgba(212,255,0,0.42);   box-shadow: inset 0 1px 0 rgba(255,255,255,0.15), 0 2px 6px rgba(0,0,0,0.50), 0 18px 44px rgba(0,0,0,0.48), 0 0 0 1px rgba(212,255,0,0.50), 0 14px 40px rgba(212,255,0,0.30); }
+
+    /* ----- Micro-interactions (scopées Aujourd'hui) ----------------------
+       Survol : la carte se soulève légèrement, le verre s'éclaircit, la
+       lueur s'intensifie. Le bloc course/hero réagit pareil. Boutons :
+       petit relief au survol, enfoncement au clic. Tout en douceur. */
+    .theme-soft .card-flat:hover,
+    .theme-soft .card-elevated:hover {
+      transform: translateY(-2px);
+      border-color: rgba(115,180,255,0.40);
+      background: linear-gradient(155deg, rgba(126,192,255,0.22), rgba(255,255,255,0.062) 44%, rgba(66,152,255,0.10));
+      box-shadow:
+        inset 0 1px 0 rgba(185,218,255,0.22),
+        inset 0 -1px 0 rgba(0,0,0,0.26),
+        0 3px 8px rgba(0,0,0,0.52),
+        0 22px 50px rgba(0,0,0,0.50),
+        0 0 0 1px rgba(74,158,255,0.26),
+        0 10px 30px rgba(56,148,255,0.20);
+    }
+    .theme-soft .card-highlighted:hover          { transform: translateY(-2px); box-shadow: inset 0 1px 0 rgba(185,218,255,0.22), 0 3px 8px rgba(0,0,0,0.52), 0 22px 50px rgba(0,0,0,0.50), 0 0 0 1px rgba(74,158,255,0.62),  0 12px 38px rgba(74,158,255,0.38); }
+    .theme-soft .card-highlighted-positive:hover { transform: translateY(-2px); box-shadow: inset 0 1px 0 rgba(185,218,255,0.22), 0 3px 8px rgba(0,0,0,0.52), 0 22px 50px rgba(0,0,0,0.50), 0 0 0 1px rgba(143,232,106,0.60), 0 12px 38px rgba(143,232,106,0.36); }
+    .theme-soft .card-highlighted-caution:hover  { transform: translateY(-2px); box-shadow: inset 0 1px 0 rgba(185,218,255,0.22), 0 3px 8px rgba(0,0,0,0.52), 0 22px 50px rgba(0,0,0,0.50), 0 0 0 1px rgba(255,176,32,0.60),  0 12px 38px rgba(255,176,32,0.36); }
+    .theme-soft .card-highlighted-critical:hover { transform: translateY(-2px); box-shadow: inset 0 1px 0 rgba(185,218,255,0.22), 0 3px 8px rgba(0,0,0,0.52), 0 22px 50px rgba(0,0,0,0.50), 0 0 0 1px rgba(255,91,91,0.62),   0 12px 38px rgba(255,91,91,0.38); }
+    .theme-soft .card-highlighted-signal:hover   { transform: translateY(-2px); box-shadow: inset 0 1px 0 rgba(185,218,255,0.22), 0 3px 8px rgba(0,0,0,0.52), 0 22px 50px rgba(0,0,0,0.50), 0 0 0 1px rgba(212,255,0,0.60),   0 12px 38px rgba(212,255,0,0.36); }
+
+    .theme-soft .theme-glass-hero { transition: transform 0.24s cubic-bezier(0.22,1,0.36,1), border-color 0.24s ease, box-shadow 0.24s ease; }
+    .theme-soft .theme-glass-hero:hover {
+      transform: translateY(-2px);
+      box-shadow:
+        inset 0 1px 0 rgba(185,218,255,0.22),
+        0 3px 8px rgba(0,0,0,0.52),
+        0 22px 50px rgba(0,0,0,0.50),
+        0 0 0 1px rgba(74,158,255,0.45),
+        0 12px 38px rgba(56,148,255,0.28);
+    }
+
+    /* Boutons & éléments cliquables : relief discret au survol. */
+    .theme-soft .btn { transition: transform 0.15s ease, background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease; }
+    .theme-soft .btn.lift:hover { transform: translateY(-1px); filter: brightness(1.09); box-shadow: 0 5px 16px rgba(0,0,0,0.38); }
+    .theme-soft .btn:not(.lift):hover { filter: brightness(1.10); }
+    .theme-soft .btn:active { transform: scale(0.98); filter: brightness(0.98); }
+
+    @media (prefers-reduced-motion: reduce) {
+      .theme-soft .card-flat,
+      .theme-soft .card-elevated,
+      .theme-soft .card-highlighted,
+      .theme-soft .card-highlighted-positive,
+      .theme-soft .card-highlighted-caution,
+      .theme-soft .card-highlighted-critical,
+      .theme-soft .card-highlighted-signal,
+      .theme-soft .theme-glass-hero,
+      .theme-soft .btn { transition: none; }
+      .theme-soft .card-flat:hover,
+      .theme-soft .card-elevated:hover,
+      .theme-soft .card-highlighted:hover,
+      .theme-soft .card-highlighted-positive:hover,
+      .theme-soft .card-highlighted-caution:hover,
+      .theme-soft .card-highlighted-critical:hover,
+      .theme-soft .card-highlighted-signal:hover,
+      .theme-soft .theme-glass-hero:hover,
+      .theme-soft .btn.lift:hover { transform: none; }
+    }
   </style>
 </head>
 <body>
@@ -4210,7 +4290,7 @@
     // ========================================================================
     // TODAY VIEW — Readiness + planned session + quick actions
     // ========================================================================
-    function TodayView({ profile, checkins, todayCheckin, activities, strengthSessions = [], races, plannedSession, planOverrides, onCheckinStart, onCheckinView, onImport, onImportActivity, onStrengthStart, onAddRace, onNav, onOpenPlanDay, onViewActivity, coachVerdict }) {
+    function TodayView({ profile, checkins, todayCheckin, activities, strengthSessions = [], races, plannedSession, planOverrides, onCheckinStart, onCheckinView, onImport, onImportActivity, onSetRoute, onStrengthStart, onAddRace, onNav, onOpenPlanDay, onViewActivity, coachVerdict }) {
       const now = new Date();
       const dayLabel = DAYS_FR_LONG[now.getDay()];
       const dateLabel = `${String(now.getDate()).padStart(2, '0')} ${MONTHS_FR[now.getMonth()]}`;
@@ -4288,7 +4368,7 @@
           {plannedSession && plannedSession.type !== 'rest' ? (
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-3 mb-3">
               <div className="lg:col-span-3 lg:order-2">
-                <PlannedSessionCard session={nextPlannedInfo?.session} sessionDate={nextPlannedInfo?.date} daysAhead={nextPlannedInfo?.daysAhead} advice={advice} profile={profile} onStrengthStart={onStrengthStart} activities={activities} checkins={checkins} showWeather onOpenInPlan={onOpenPlanDay} onImportActivity={onImportActivity} onViewActivity={onViewActivity} />
+                <PlannedSessionCard session={nextPlannedInfo?.session} sessionDate={nextPlannedInfo?.date} daysAhead={nextPlannedInfo?.daysAhead} advice={advice} profile={profile} onStrengthStart={onStrengthStart} activities={activities} checkins={checkins} showWeather onOpenInPlan={onOpenPlanDay} onImportActivity={onImportActivity} onSetRoute={onSetRoute} onViewActivity={onViewActivity} />
               </div>
               <div className="lg:col-span-2 lg:order-1">
                 {!todayCheckin ? <ReadinessEmpty onStart={onCheckinStart} /> : <ReadinessFilled checkin={todayCheckin} advice={advice} onView={onCheckinView} onRedo={onCheckinStart} />}
@@ -4296,7 +4376,7 @@
             </div>
           ) : (
             <div className="mb-3">
-              <PlannedSessionCard session={nextPlannedInfo?.session} sessionDate={nextPlannedInfo?.date} daysAhead={nextPlannedInfo?.daysAhead} advice={advice} profile={profile} onStrengthStart={onStrengthStart} activities={activities} checkins={checkins} showWeather onOpenInPlan={onOpenPlanDay} onImportActivity={onImportActivity} onViewActivity={onViewActivity} />
+              <PlannedSessionCard session={nextPlannedInfo?.session} sessionDate={nextPlannedInfo?.date} daysAhead={nextPlannedInfo?.daysAhead} advice={advice} profile={profile} onStrengthStart={onStrengthStart} activities={activities} checkins={checkins} showWeather onOpenInPlan={onOpenPlanDay} onImportActivity={onImportActivity} onSetRoute={onSetRoute} onViewActivity={onViewActivity} />
             </div>
           )}
 
@@ -4797,7 +4877,7 @@
       else phaseLabel = 'BASE';
 
       return (
-        <button onClick={() => onNav && onNav('plan')} className="btn lift w-full text-left mb-4 relative overflow-hidden rounded-2xl p-5" style={{ background: 'var(--bg-elev)', border: `1px solid ${statusColor}40` }}>
+        <button onClick={() => onNav && onNav('plan')} className="btn lift theme-glass-hero w-full text-left mb-4 relative overflow-hidden rounded-2xl p-5" style={{ background: 'var(--bg-elev)', border: `1px solid ${statusColor}40` }}>
           <div className="absolute inset-0 pointer-events-none opacity-[0.07]" style={{ background: `radial-gradient(circle at top right, ${statusColor}, transparent 60%)` }} />
           <div className="relative flex items-center justify-between gap-4 flex-wrap">
             <div className="flex items-center gap-5 min-w-0">
@@ -5025,7 +5105,240 @@
       );
     }
 
-    function PlannedSessionCard({ session, sessionDate, daysAhead, advice, profile, onStrengthStart, activities, checkins, showWeather = false, onOpenInPlan = null, onImportActivity = null, onViewActivity = null }) {
+    // ========================================================================
+    // SESSION ROUTE — lie un tracé GPX à une séance et calcule le POINT DE
+    // DEMI-TOUR d'un aller-retour : on déroule les blocs de la séance (chacun
+    // a sa propre allure : un échauffement est plus lent qu'un fractionné)
+    // le long du tracé, allure ajustée au dénivelé (Minetti, comme les
+    // courses). Le demi-tour n'est donc PAS à mi-parcours : il est placé pour
+    // qu'en repartant en sens inverse on revienne pile au départ quand la
+    // séance se termine — pour ne pas être à la bourre à la maison.
+    // ========================================================================
+    function SessionRouteSection({ session, profile, onSetRoute }) {
+      const fileRef = useRef(null);
+      const [err, setErr] = useState(null);
+      const [open, setOpen] = useState(false);
+      const route = session.route || null;
+
+      const onFile = async (file) => {
+        setErr(null);
+        try {
+          const text = await file.text();
+          const p = parseCourseGPX(text);
+          onSetRoute(session, { pts: p.points, dist: p.totalDist, gain: p.gain, loss: p.loss, fileName: file.name });
+        } catch (e) { setErr(e.message || 'Échec de lecture du GPX'); }
+      };
+
+      // Aplatit les blocs (groupes dépliés via reps) en une suite de segments
+      // { label, durSec, paceSec(plat) }. paceSec : depuis l'allure du bloc si
+      // saisie, sinon dérivée de la puissance (RE inverse : speed = P / (poids
+      // × 1.04)), sinon repli prudent (75 % CP), sinon footing du profil.
+      const segs = useMemo(() => {
+        const KIND = { warmup: 'Échauffement', work: 'Effort', recovery: 'Récup', cooldown: 'Retour au calme' };
+        const paceOf = (b) => {
+          if (b.paceSecLow != null || b.paceSecHigh != null) {
+            const lo = b.paceSecLow != null ? b.paceSecLow : b.paceSecHigh;
+            const hi = b.paceSecHigh != null ? b.paceSecHigh : b.paceSecLow;
+            return (lo + hi) / 2;
+          }
+          let pwr = b.powerLow != null ? (b.powerLow + (b.powerHigh != null ? b.powerHigh : b.powerLow)) / 2 : null;
+          if (pwr == null && profile.cp) pwr = profile.cp * 0.75;
+          if (pwr != null && profile.weightKg) {
+            const speedMs = pwr / (profile.weightKg * 1.04);
+            if (speedMs > 0) return 1000 / speedMs;
+          }
+          if (profile.easyPaceMinPerKm) return profile.easyPaceMinPerKm * 60;
+          return null;
+        };
+        const out = [];
+        const push = (b) => {
+          if (!b || !b.durMin) return;
+          const ps = paceOf(b);
+          if (!ps) return;
+          out.push({ label: KIND[b.blockKind] || 'Bloc', durSec: b.durMin * 60, paceSec: ps });
+        };
+        (session.blocks || []).forEach(b => {
+          if (b.kind === 'group' && Array.isArray(b.children)) {
+            const reps = b.reps || 1;
+            for (let r = 0; r < reps; r++) b.children.forEach(push);
+          } else { push(b); }
+        });
+        return out;
+      }, [session.blocks, profile.cp, profile.weightKg, profile.easyPaceMinPerKm]);
+
+      const totalSec = useMemo(() => segs.reduce((s, x) => s + x.durSec, 0), [segs]);
+
+      // Altitude interpolée à la distance x (m) sur le tracé.
+      const eleAt = useMemo(() => {
+        if (!route || !route.pts || route.pts.length < 2) return null;
+        const pts = route.pts;
+        return (x) => {
+          if (x <= pts[0].d) return pts[0].e;
+          if (x >= pts[pts.length - 1].d) return pts[pts.length - 1].e;
+          let lo = 0, hi = pts.length - 1;
+          while (hi - lo > 1) { const m = (lo + hi) >> 1; if (pts[m].d <= x) lo = m; else hi = m; }
+          const t = (x - pts[lo].d) / Math.max(1, pts[hi].d - pts[lo].d);
+          return pts[lo].e + t * (pts[hi].e - pts[lo].e);
+        };
+      }, [route]);
+
+      // Cœur du calcul : pour un demi-tour à la distance T, on simule toute la
+      // séance (chaque bloc à son allure, ajustée au dénivelé local dans le
+      // sens de marche) et on renvoie la position finale (signée, 0 = maison).
+      // On cherche T tel que la position finale ≈ 0 (recherche dichotomique).
+      const result = useMemo(() => {
+        if (!route || !eleAt || !segs.length || totalSec <= 0) return null;
+        const RLEN = route.pts[route.pts.length - 1].d;
+        const sim = (T) => {
+          let pos = 0, dir = 1, elapsed = 0, turnSec = null, turnLabel = null;
+          for (const sg of segs) {
+            let rem = sg.durSec;
+            while (rem > 0) {
+              const dt = Math.min(2, rem);
+              const probe = 5;
+              const aheadD = Math.max(0, Math.min(RLEN, pos + dir * probe));
+              const grade = (eleAt(aheadD) - eleAt(pos)) / (probe * (aheadD === pos ? 1 : 1));
+              const pace = sg.paceSec * (minettiCost(grade) / CR_FLAT);
+              const speed = pace > 0 ? 1000 / pace : 0;
+              let np = pos + dir * speed * dt;
+              if (dir === 1 && np >= T) {
+                if (turnSec == null) { turnSec = elapsed + dt * (T - pos) / Math.max(1e-6, np - pos); turnLabel = sg.label; }
+                np = T; dir = -1;
+              }
+              pos = np; elapsed += dt; rem -= dt;
+            }
+          }
+          return { finalPos: pos, turnSec, turnLabel };
+        };
+        // Recherche dichotomique de T (la position finale croît avec T).
+        let loT = 20, hiT = RLEN, best = null;
+        const fLo = sim(loT).finalPos, fHi = sim(hiT).finalPos;
+        let tooShort = false, earlyBySec = 0;
+        if (fHi < 0) {
+          // Même en allant au bout du tracé, on rentre trop tôt : parcours trop
+          // court pour la durée de la séance.
+          tooShort = true;
+          best = sim(hiT);
+        } else {
+          for (let i = 0; i < 44; i++) {
+            const mid = (loT + hiT) / 2;
+            const r = sim(mid);
+            if (r.finalPos > 0) hiT = mid; else loT = mid;
+            best = r; best.T = mid;
+          }
+          best.T = (loT + hiT) / 2;
+        }
+        if (tooShort) {
+          // estimation grossière du temps "en trop" si on faisait l'A/R complet
+          const r = sim(RLEN);
+          earlyBySec = Math.max(0, -r.finalPos) / 1; // m → approx, informatif
+        }
+        const T = tooShort ? RLEN : best.T;
+        const fin = sim(T);
+        return {
+          RLEN, T, tooShort,
+          turnSec: fin.turnSec, turnLabel: fin.turnLabel,
+          totalSec, totalKm: (2 * T) / 1000,
+        };
+      }, [route, eleAt, segs, totalSec]);
+
+      // Mini profil altimétrique de l'aller, avec repère au demi-tour.
+      const svg = useMemo(() => {
+        if (!route || !route.pts || route.pts.length < 2) return null;
+        const W = 600, H = 70, pad = 4;
+        const eles = route.pts.map(p => p.e);
+        const minE = Math.min(...eles), maxE = Math.max(...eles);
+        const range = Math.max(1, maxE - minE);
+        const maxD = route.pts[route.pts.length - 1].d;
+        const x = d => pad + (d / maxD) * (W - 2 * pad);
+        const y = e => pad + (1 - (e - minE) / range) * (H - 2 * pad);
+        const path = route.pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(p.d).toFixed(1)} ${y(p.e).toFixed(1)}`).join(' ');
+        const area = `${path} L ${x(maxD).toFixed(1)} ${H - pad} L ${pad} ${H - pad} Z`;
+        return { W, H, path, area, x, maxD };
+      }, [route]);
+
+      const fmtT = sec => { if (sec == null) return '—'; sec = Math.round(sec); const m = Math.floor(sec / 60), s = sec % 60; return `${m}:${String(s).padStart(2, '0')}`; };
+
+      const hint = route
+        ? (result && !result.tooShort ? `demi-tour ${(result.T / 1000).toFixed(2)} km` : (result && result.tooShort ? 'tracé trop court' : 'tracé chargé'))
+        : null;
+
+      return (
+        <div className="relative mt-1 mb-3" onClick={(e) => e.stopPropagation()}>
+          <button onClick={() => setOpen(v => !v)} className="w-full flex items-center justify-between font-mono text-[10px] tracking-widest py-1" style={{ color: 'var(--text-faint)' }}>
+            <span className="flex items-center gap-1.5">
+              <IconRoute size={11} style={{ color: 'var(--compass)', flexShrink: 0 }} />
+              PARCOURS · DEMI-TOUR
+              {hint && <span style={{ color: 'var(--compass)' }}>· {hint}</span>}
+            </span>
+            <IconChevronDown size={10} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s' }} />
+          </button>
+          {open && (
+          <div className="rounded-lg p-3 mt-1" style={{ background: 'var(--bg-elev)', border: '1px solid rgba(74,158,255,0.3)' }}>
+          <div className="flex items-center justify-end mb-2">
+            <input ref={fileRef} type="file" accept=".gpx" style={{ display: 'none' }} onChange={(e) => e.target.files[0] && onFile(e.target.files[0])} />
+            {!route ? (
+              <button onClick={() => fileRef.current?.click()} className="btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'rgba(74,158,255,0.12)', border: '1px solid rgba(74,158,255,0.45)', color: 'var(--compass)' }}>
+                <IconUpload size={12} /> IMPORTER LE TRACÉ
+              </button>
+            ) : (
+              <button onClick={() => onSetRoute(session, null)} className="btn opacity-50 hover:opacity-100 px-2 py-1 rounded font-mono text-[10px] tracking-widest" style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-dim)' }}>
+                RETIRER
+              </button>
+            )}
+          </div>
+          {err && <div className="text-xs mb-1" style={{ color: 'var(--danger)' }}>✗ {err}</div>}
+          {!route && (
+            <div className="text-xs leading-relaxed" style={{ color: 'var(--text-faint)' }}>
+              Importe le GPX du parcours que tu as en tête. Compass déroule les blocs de la séance le long du tracé (échauffement plus lent, fractionné plus rapide, dénivelé pris en compte) et te dit <span style={{ color: 'var(--text-dim)' }}>à quel endroit faire demi-tour</span> pour revenir pile au départ à la fin.
+            </div>
+          )}
+          {route && !segs.length && (
+            <div className="text-xs leading-relaxed" style={{ color: 'var(--caution)' }}>
+              Cette séance n'a pas encore de blocs détaillés (échauffement, efforts…). Ajoute-les dans <span style={{ fontWeight: 600 }}>Plan</span> pour un demi-tour fidèle à la structure de la séance.
+            </div>
+          )}
+          {route && segs.length > 0 && result && (
+            <>
+              <div className="flex items-center gap-3 flex-wrap mb-2 font-mono text-[10px]" style={{ color: 'var(--text-dim)' }}>
+                <span>tracé {(route.dist / 1000).toFixed(2)} km</span>
+                <span style={{ color: 'var(--positive)' }}>D+ {route.gain} m</span>
+                <span style={{ color: 'var(--negative)' }}>D− {route.loss} m</span>
+                {route.fileName && <span className="truncate" style={{ color: 'var(--text-faint)', maxWidth: 140 }}>{route.fileName}</span>}
+              </div>
+              {result.tooShort ? (
+                <div className="rounded-md px-3 py-2 text-xs leading-relaxed" style={{ background: 'rgba(255,176,32,0.10)', border: '1px solid rgba(255,176,32,0.30)', color: 'var(--text)' }}>
+                  Ce tracé ({(result.RLEN / 1000).toFixed(2)} km) est <span style={{ fontWeight: 600 }}>trop court</span> pour cette séance de {Math.round(totalSec / 60)} min : même en allant jusqu'au bout puis en revenant, tu serais rentré avant la fin. Allonge le parcours ou ajoute une boucle.
+                </div>
+              ) : (
+                <div className="rounded-md px-3 py-2.5" style={{ background: 'rgba(74,158,255,0.10)', border: '1px solid rgba(74,158,255,0.30)' }}>
+                  <div className="flex items-baseline gap-2 flex-wrap">
+                    <span className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>DEMI-TOUR AU</span>
+                    <span className="font-display font-bold tabular" style={{ fontSize: 22, color: 'var(--compass)' }}>{(result.T / 1000).toFixed(2)} km</span>
+                  </div>
+                  <div className="text-xs mt-1 leading-relaxed" style={{ color: 'var(--text)' }}>
+                    Tu l'atteins après <span className="tabular" style={{ fontWeight: 600 }}>{fmtT(result.turnSec)}</span> de séance{result.turnLabel ? <> (pendant : <span style={{ fontWeight: 600 }}>{result.turnLabel.toLowerCase()}</span>)</> : null}. Tu repars en sens inverse et tu reviens pile au départ à la fin de la séance — <span className="tabular" style={{ fontWeight: 600 }}>{Math.round(totalSec / 60)} min</span>, ≈ <span className="tabular">{result.totalKm.toFixed(1)} km</span> au total.
+                  </div>
+                </div>
+              )}
+              {svg && (
+                <svg viewBox={`0 0 ${svg.W} ${svg.H}`} className="w-full mt-2" style={{ display: 'block' }}>
+                  <path d={svg.area} fill="var(--compass)" opacity="0.10" />
+                  <path d={svg.path} fill="none" stroke="var(--compass)" strokeWidth="1.5" />
+                  {!result.tooShort && (
+                    <line x1={svg.x(result.T).toFixed(1)} y1="0" x2={svg.x(result.T).toFixed(1)} y2={svg.H} stroke="var(--accent)" strokeWidth="1.5" strokeDasharray="3 3" />
+                  )}
+                </svg>
+              )}
+            </>
+          )}
+          </div>
+          )}
+        </div>
+      );
+    }
+
+    function PlannedSessionCard({ session, sessionDate, daysAhead, advice, profile, onStrengthStart, activities, checkins, showWeather = false, onOpenInPlan = null, onImportActivity = null, onSetRoute = null, onViewActivity = null }) {
       const [showZones, setShowZones] = useState(false);
       const [showAllInsights, setShowAllInsights] = useState(false);
       const [showDetail, setShowDetail] = useState(false);
@@ -5179,6 +5492,11 @@
                 weightKg={profile.weightKg}
               />
             </div>
+          )}
+
+          {/* Parcours de la séance — demi-tour aller-retour (block-aware) */}
+          {session.type !== 'rest' && session.weekStartKey && onSetRoute && (
+            <SessionRouteSection session={session} profile={profile} onSetRoute={onSetRoute} />
           )}
 
           {/* Smart insights — only show first by default to keep the card scannable */}
@@ -22411,6 +22729,22 @@
         if (activity.dateUncertain) { setPendingDateActivity(activity); return; }
         doImport(activity, forcedLink);
       }
+      // Attache (ou retire, route=null) un tracé GPX à une séance planifiée.
+      // Si le jour n'est encore qu'un template (pas d'override), on le
+      // matérialise en override en repartant de l'objet séance courant
+      // (sans les champs calculés ajoutés par getPlannedSession).
+      function handleSetSessionRoute(session, route) {
+        if (!session || !session.weekStartKey || !session.dayKey) return;
+        const wsKey = session.weekStartKey, dayKey = session.dayKey;
+        const week = { ...(planOverrides[wsKey] || {}) };
+        let base = week[dayKey];
+        if (!base) {
+          const { weekIdx, totalWeeks, isOverride, weekStartKey, dayKey: _dk, ...rest } = session;
+          base = rest;
+        }
+        week[dayKey] = route ? { ...base, route } : (() => { const { route: _r, ...noRoute } = base; return noRoute; })();
+        setPlanOverrides({ ...planOverrides, [wsKey]: week });
+      }
       function doImport(activity, forcedLink = null) {
         if (activities.find(a => a.id === activity.id)) {
           toast.push('Cette activité semble déjà importée (même date de début).', { kind: 'warn' });
@@ -22942,6 +23276,7 @@
                 onCheckinView={() => setCheckinView(todayCheckin)}
                 onImport={() => importInputRef.current?.click()}
                 onImportActivity={handleImportActivity}
+                onSetRoute={handleSetSessionRoute}
                 onStrengthStart={handleStrengthStart}
                 onAddRace={() => setShowAddRaceModal(true)}
                 onNav={handleNav}
