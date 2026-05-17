@@ -333,6 +333,52 @@
     .card-highlighted-caution { background: var(--bg-elev); border: 1px solid var(--border); border-left: 3px solid var(--caution); border-radius: 1rem; }
     .card-highlighted-critical { background: var(--bg-elev); border: 1px solid var(--border); border-left: 3px solid var(--critical); border-radius: 1rem; }
     .card-highlighted-signal { background: var(--bg-elev); border: 1px solid var(--border); border-left: 3px solid var(--signal); border-radius: 1rem; }
+
+    /* ==========================================================================
+       PROFONDEUR DOUCE — thème visuel scopé à l'écran "Aujourd'hui".
+       Verre dépoli SUBTIL/optimisé : flou léger 8px, voile blanc 4 %,
+       bordure douce, ombres en couches, coins 18px, halo de fond discret.
+       Scopé à .theme-soft → n'affecte AUCUN autre écran. Strictement additif :
+       ne remplace ni ne supprime les classes/tokens existants. La spécificité
+       (.theme-soft .card-x) > (.card-x) → gagne sans !important.
+       ========================================================================== */
+    .theme-soft { position: relative; z-index: 0; }
+    .theme-soft::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: -1;
+      background:
+        radial-gradient(1100px 560px at 50% -12%, rgba(74,158,255,0.06), transparent 60%),
+        radial-gradient(820px 480px at 100% 4%, rgba(143,232,106,0.035), transparent 55%),
+        linear-gradient(180deg, rgba(34,28,44,0.30), rgba(10,10,12,0) 42%);
+    }
+    .theme-soft > * { position: relative; z-index: 1; }
+
+    .theme-soft .card-flat,
+    .theme-soft .card-elevated,
+    .theme-soft .card-highlighted,
+    .theme-soft .card-highlighted-positive,
+    .theme-soft .card-highlighted-caution,
+    .theme-soft .card-highlighted-critical,
+    .theme-soft .card-highlighted-signal {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.075);
+      border-radius: 18px;
+      -webkit-backdrop-filter: blur(8px) saturate(120%);
+      backdrop-filter: blur(8px) saturate(120%);
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.05),
+        0 1px 2px rgba(0,0,0,0.40),
+        0 8px 24px rgba(0,0,0,0.30);
+    }
+    /* Mise en avant : la barre dure devient une lueur douce teintée. */
+    .theme-soft .card-highlighted          { border-left: 1px solid rgba(255,255,255,0.075); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 1px 2px rgba(0,0,0,0.40), 0 8px 24px rgba(0,0,0,0.30), 0 0 0 1px rgba(74,158,255,0.20), 0 10px 30px rgba(74,158,255,0.10); }
+    .theme-soft .card-highlighted-positive { border-left: 1px solid rgba(255,255,255,0.075); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 1px 2px rgba(0,0,0,0.40), 0 8px 24px rgba(0,0,0,0.30), 0 0 0 1px rgba(143,232,106,0.20), 0 10px 30px rgba(143,232,106,0.10); }
+    .theme-soft .card-highlighted-caution  { border-left: 1px solid rgba(255,255,255,0.075); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 1px 2px rgba(0,0,0,0.40), 0 8px 24px rgba(0,0,0,0.30), 0 0 0 1px rgba(255,176,32,0.20), 0 10px 30px rgba(255,176,32,0.10); }
+    .theme-soft .card-highlighted-critical { border-left: 1px solid rgba(255,255,255,0.075); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 1px 2px rgba(0,0,0,0.40), 0 8px 24px rgba(0,0,0,0.30), 0 0 0 1px rgba(255,91,91,0.22), 0 10px 30px rgba(255,91,91,0.12); }
+    .theme-soft .card-highlighted-signal   { border-left: 1px solid rgba(255,255,255,0.075); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 1px 2px rgba(0,0,0,0.40), 0 8px 24px rgba(0,0,0,0.30), 0 0 0 1px rgba(212,255,0,0.20), 0 10px 30px rgba(212,255,0,0.10); }
   </style>
 </head>
 <body>
@@ -4215,7 +4261,7 @@
       const tsbColor = { positive: 'var(--positive)', caution: 'var(--caution)', negative: 'var(--negative)', neutral: 'var(--text)' }[tsbTone];
 
       return (
-        <div className="max-w-[1400px] mx-auto px-4 md:px-8 py-5 md:py-8 fade-in pb-nav">
+        <div className="theme-soft max-w-[1400px] mx-auto px-4 md:px-8 py-5 md:py-8 fade-in pb-nav">
           {/* Header — minimal, just date */}
           <div className="flex items-end justify-between mb-4 md:mb-5 gap-3">
             <div className="flex-1 min-w-0">
