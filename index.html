@@ -3067,7 +3067,7 @@
       return (
         <ToastContext.Provider value={{ push, dismiss }}>
           {children}
-          <div className="fixed z-[60] flex flex-col gap-2 pointer-events-none" style={{ bottom: 'calc(80px + env(safe-area-inset-bottom))', right: 16, left: 16, maxWidth: 480, marginLeft: 'auto' }}>
+          <div className="fixed flex flex-col gap-2 pointer-events-none" style={{ zIndex: 600, bottom: 'calc(80px + env(safe-area-inset-bottom))', right: 16, left: 16, maxWidth: 480, marginLeft: 'auto' }}>
             {toasts.map(t => {
               const colorMap = { info: 'var(--compass)', success: 'var(--go)', warn: 'var(--warn)' };
               const c = colorMap[t.kind] || 'var(--compass)';
@@ -4164,7 +4164,7 @@
     // ========================================================================
     // TODAY VIEW — Readiness + planned session + quick actions
     // ========================================================================
-    function TodayView({ profile, checkins, todayCheckin, activities, strengthSessions = [], races, plannedSession, planOverrides, onCheckinStart, onCheckinView, onImport, onStrengthStart, onAddRace, onNav, onOpenPlanDay, onViewActivity, coachVerdict }) {
+    function TodayView({ profile, checkins, todayCheckin, activities, strengthSessions = [], races, plannedSession, planOverrides, onCheckinStart, onCheckinView, onImport, onImportActivity, onStrengthStart, onAddRace, onNav, onOpenPlanDay, onViewActivity, coachVerdict }) {
       const now = new Date();
       const dayLabel = DAYS_FR_LONG[now.getDay()];
       const dateLabel = `${String(now.getDate()).padStart(2, '0')} ${MONTHS_FR[now.getMonth()]}`;
@@ -4242,7 +4242,7 @@
           {plannedSession && plannedSession.type !== 'rest' ? (
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-3 mb-3">
               <div className="lg:col-span-3 lg:order-2">
-                <PlannedSessionCard session={nextPlannedInfo?.session} sessionDate={nextPlannedInfo?.date} daysAhead={nextPlannedInfo?.daysAhead} advice={advice} profile={profile} onStrengthStart={onStrengthStart} activities={activities} checkins={checkins} showWeather onOpenInPlan={onOpenPlanDay} />
+                <PlannedSessionCard session={nextPlannedInfo?.session} sessionDate={nextPlannedInfo?.date} daysAhead={nextPlannedInfo?.daysAhead} advice={advice} profile={profile} onStrengthStart={onStrengthStart} activities={activities} checkins={checkins} showWeather onOpenInPlan={onOpenPlanDay} onImportActivity={onImportActivity} onViewActivity={onViewActivity} />
               </div>
               <div className="lg:col-span-2 lg:order-1">
                 {!todayCheckin ? <ReadinessEmpty onStart={onCheckinStart} /> : <ReadinessFilled checkin={todayCheckin} advice={advice} onView={onCheckinView} onRedo={onCheckinStart} />}
@@ -4250,7 +4250,7 @@
             </div>
           ) : (
             <div className="mb-3">
-              <PlannedSessionCard session={nextPlannedInfo?.session} sessionDate={nextPlannedInfo?.date} daysAhead={nextPlannedInfo?.daysAhead} advice={advice} profile={profile} onStrengthStart={onStrengthStart} activities={activities} checkins={checkins} showWeather onOpenInPlan={onOpenPlanDay} />
+              <PlannedSessionCard session={nextPlannedInfo?.session} sessionDate={nextPlannedInfo?.date} daysAhead={nextPlannedInfo?.daysAhead} advice={advice} profile={profile} onStrengthStart={onStrengthStart} activities={activities} checkins={checkins} showWeather onOpenInPlan={onOpenPlanDay} onImportActivity={onImportActivity} onViewActivity={onViewActivity} />
             </div>
           )}
 
@@ -4471,8 +4471,8 @@
 
           {/* QUICK ACTIONS — discrete pill row, low visual weight, real actions (no Plan redirect) */}
           <div className="flex flex-wrap gap-2 mb-6">
-            <button onClick={onImport} className="btn flex items-center gap-1.5 px-3 py-2 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)', color: 'var(--text-dim)' }}>
-              <IconUpload size={12} /> IMPORTER
+            <button onClick={onImport} className="btn lift flex items-center gap-1.5 px-4 py-2.5 rounded-lg font-mono text-[11px] tracking-widest" style={{ background: 'rgba(74,158,255,0.12)', border: '1px solid rgba(74,158,255,0.45)', color: 'var(--compass)' }}>
+              <IconUpload size={13} /> IMPORTER UNE SÉANCE
             </button>
             {profile.showStrength !== false && (
               <button onClick={() => onNav('renfo')} className="btn flex items-center gap-1.5 px-3 py-2 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)', color: 'var(--text-dim)' }}>
@@ -4979,7 +4979,7 @@
       );
     }
 
-    function PlannedSessionCard({ session, sessionDate, daysAhead, advice, profile, onStrengthStart, activities, checkins, showWeather = false, onOpenInPlan = null }) {
+    function PlannedSessionCard({ session, sessionDate, daysAhead, advice, profile, onStrengthStart, activities, checkins, showWeather = false, onOpenInPlan = null, onImportActivity = null, onViewActivity = null }) {
       const [showZones, setShowZones] = useState(false);
       const [showAllInsights, setShowAllInsights] = useState(false);
       const [showDetail, setShowDetail] = useState(false);
@@ -5065,6 +5065,17 @@
         return out;
       }, [session, profile.cp, activities, checkins]);
 
+      // Activité déjà importée et rattachée à CETTE séance planifiée ?
+      // (même semaine + même jour de plan que le forcedLink posé à l'import)
+      const linkedAct = useMemo(() => {
+        if (!session || !session.weekStartKey) return null;
+        return (activities || []).find(a =>
+          a.linkedSession &&
+          a.linkedSession.weekStartKey === session.weekStartKey &&
+          a.linkedSession.dayKey === session.dayKey
+        ) || null;
+      }, [activities, session]);
+
       return (
         <Card className="p-7 md:p-8 h-full min-h-[320px] flex flex-col relative overflow-hidden" accent={typeColor}>
           {/* Subtle background gradient to draw the eye */}
@@ -5095,6 +5106,32 @@
               {showDetail && (
                 <div className="text-sm mt-2 leading-relaxed" style={{ color: 'var(--text-dim)' }}>{session.detail}</div>
               )}
+            </div>
+          )}
+
+          {/* Import direct depuis Aujourd'hui — tu as couru cette séance ?
+              Importe le fichier ici, il est rattaché automatiquement à ce
+              jour du plan (même logique que le bouton du Plan). */}
+          {session.type !== 'rest' && session.weekStartKey && onImportActivity && (
+            <div className="relative rounded-lg p-3 mb-4 flex items-center justify-between gap-3 flex-wrap" style={{ background: 'var(--bg-elev)', border: `1px solid ${linkedAct ? 'rgba(143,232,106,0.3)' : 'rgba(74,158,255,0.3)'}` }} onClick={stop}>
+              <div className="flex items-center gap-2 min-w-0">
+                <IconUpload size={13} style={{ color: linkedAct ? 'var(--go)' : 'var(--compass)', flexShrink: 0 }} />
+                <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>
+                  {linkedAct ? 'SÉANCE IMPORTÉE' : 'TU AS COURU CETTE SÉANCE ?'}
+                </div>
+              </div>
+              <ImportFromPlanButton
+                wsKey={session.weekStartKey}
+                dayKey={session.dayKey}
+                dayLabel={dateBadge.toLowerCase()}
+                sessionType={session.type}
+                sessionLabel={session.label}
+                sessionDetail={session.detail}
+                alreadyImported={!!linkedAct}
+                onImport={(activity, forcedLink) => onImportActivity(activity, forcedLink)}
+                onView={() => linkedAct && onViewActivity && onViewActivity(linkedAct)}
+                weightKg={profile.weightKg}
+              />
             </div>
           )}
 
@@ -17503,10 +17540,6 @@
               )}
               {strategy && !strategy.needObjective && (
                 <>
-                  <div className="rounded-lg p-3 mb-2 flex items-baseline gap-3 flex-wrap" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--border)' }}>
-                    <div className="font-display text-2xl font-bold tabular" style={{ color: 'var(--compass)' }}>{fmtT(strategy.totalTimeSec)}</div>
-                    <div className="font-mono text-[10px]" style={{ color: 'var(--text-dim)' }}>temps estimé · allure moy {fmtP(strategy.totalTimeSec / (race.courseDist/1000))}/km</div>
-                  </div>
                   {powerPlan && (
                     <div className="rounded-lg p-3 mb-2" style={{ background: 'rgba(74,158,255,0.06)', border: '1px solid rgba(74,158,255,0.25)' }}>
                       <div className="flex items-baseline gap-3 flex-wrap mb-1">
@@ -17518,7 +17551,7 @@
                         {powerPlan.verdict}
                       </div>
                       <div className="text-[10px] mb-1.5" style={{ color: 'var(--text-faint)' }}>
-                        Pour savoir si ton objectif est atteignable, regarde le <span style={{ color: 'var(--text-dim)' }}>temps prédit</span> (Today / Analytics) — c'est LA référence, calculée sur ta forme complète. Ici, on te donne seulement la puissance à tenir pour réaliser l'objectif que TU as fixé.
+                        Pour savoir si ton objectif est atteignable, compare-le au <span style={{ color: 'var(--text-dim)' }}>TEMPS PRÉDIT</span> affiché plus haut dans cette course — c'est ton potentiel réel, calculé sur ta forme. Ici, on te donne seulement la puissance à tenir pour réaliser l'objectif que TU as fixé.
                       </div>
                       <div className="text-[10px] leading-relaxed" style={{ color: 'var(--text-faint)' }}>
                         Le jour J : cours à <span style={{ color: 'var(--compass)' }}>{powerPlan.targetW}W constants</span> sur ton Stryd. Le capteur gère le dénivelé tout seul — tu ralentis en côte, tu accélères en descente, mais la puissance (donc l'effort) reste identique. Les allures ci-dessous ne sont que l'illustration de ce que ça donnera km par km.
@@ -22855,6 +22888,7 @@
                 onCheckinStart={() => setCheckinFlow(true)}
                 onCheckinView={() => setCheckinView(todayCheckin)}
                 onImport={() => importInputRef.current?.click()}
+                onImportActivity={handleImportActivity}
                 onStrengthStart={handleStrengthStart}
                 onAddRace={() => setShowAddRaceModal(true)}
                 onNav={handleNav}
