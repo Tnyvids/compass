@@ -18056,6 +18056,7 @@
       const [expanded, setExpanded] = useState(null); // race id
       const [editingObjective, setEditingObjective] = useState(null); // race id whose objective is being edited
       const [objH, setObjH] = useState(''); const [objM, setObjM] = useState(''); const [objS, setObjS] = useState('');
+      const [raceCalView, setRaceCalView] = useState('actuel'); // calendrier course : actuel | enrichie | cartes | hybride (prototypes à comparer)
 
       // Best efforts + W' fit (used for V3 prediction)
       const cpWp = useMemo(() => {
@@ -18445,8 +18446,18 @@
             </div>
           )}
 
-          {/* Visual chronological timeline */}
+          {/* Sélecteur de vue calendrier course — prototypes à comparer */}
           {upcoming.length > 0 && (
+            <div className="flex items-center gap-1 mb-3 flex-wrap">
+              <span className="t-meta mr-1" style={{ color: 'rgba(198,221,255,0.85)' }}>VUE</span>
+              {[['actuel','Actuel'],['enrichie','Frise +'],['cartes','Cartes'],['hybride','Hybride']].map(([k, lab]) => (
+                <button key={k} onClick={() => setRaceCalView(k)} className="btn font-mono text-[10px] tracking-widest px-3 py-1.5 rounded-full" style={{ background: raceCalView === k ? 'rgba(74,158,255,0.18)' : 'var(--bg-elev)', border: `1px solid ${raceCalView === k ? 'var(--compass)' : 'var(--border)'}`, color: raceCalView === k ? 'var(--compass)' : 'var(--text-dim)' }}>{lab}</button>
+              ))}
+            </div>
+          )}
+
+          {/* Visualisation calendrier course (4 variantes) */}
+          {upcoming.length > 0 && raceCalView === 'actuel' && (
             <div className="relative mb-6 mt-2 h-20">
               <div className="absolute left-0 right-0 top-1/2 h-0.5" style={{ background: 'var(--border)', transform: 'translateY(-50%)' }}></div>
               <div className="absolute left-0 top-1/2 w-3 h-3 rounded-full -translate-y-1/2" style={{ background: 'var(--compass)', boxShadow: '0 0 12px var(--compass)' }}></div>
@@ -18470,6 +18481,99 @@
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {upcoming.length > 0 && raceCalView === 'enrichie' && (
+            <div className="relative mb-6 mt-3 px-4 md:px-8" style={{ height: 156, paddingTop: 8 }}>
+              {/* Piste épaisse en dégradé (avec marges internes pour ne pas coller aux bords) */}
+              <div className="absolute" style={{ left: 16, right: 16, top: '50%', height: 8, transform: 'translateY(-50%)', borderRadius: 999, background: 'linear-gradient(90deg, rgba(74,158,255,0.55), rgba(143,232,106,0.45) 35%, rgba(255,176,32,0.45) 75%, rgba(212,255,0,0.55))', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.10), 0 0 18px rgba(56,148,255,0.18)' }} />
+              {/* Marqueur aujourd'hui (calé sur le début de piste, pas sur le bord du conteneur) */}
+              <div className="absolute" style={{ left: 16, top: '50%', transform: 'translate(-50%,-50%)' }}>
+                <div className="rounded-full" style={{ width: 14, height: 14, background: 'var(--compass)', boxShadow: '0 0 0 3px rgba(74,158,255,0.25), 0 0 16px var(--compass)' }} />
+              </div>
+              <div className="absolute font-mono text-[9px] tracking-widest" style={{ left: 16, top: 'calc(50% + 12px)', transform: 'translateX(-50%)', color: 'var(--compass)' }}>AUJ.</div>
+              {upcoming.map((r, idx) => {
+                const daysToRace = Math.round((new Date(r.date) - now) / 86400000);
+                const rawPct = (daysToRace / timelineMaxDays) * 100;
+                const pct = Math.max(6, Math.min(94, rawPct)); // inset sur les bords
+                // Aligne le cartouche : à gauche du pin si on est à gauche, à
+                // droite si on est à droite, centré au milieu. Évite tout
+                // débordement même près des bords.
+                const cartouche = Math.max(8, Math.min(92, rawPct));
+                const proj = projections[r.id];
+                const c = proj ? proj.phaseColor : (r.priority === 'A' ? 'var(--accent)' : r.priority === 'B' ? 'var(--warn)' : 'var(--text-dim)');
+                const targetSec = parsePRSec((r.objective || '').replace(/sub-?/i, '').trim());
+                const above = idx % 2 === 0;
+                return (
+                  <div key={r.id} className="absolute" style={{ left: `calc(16px + (100% - 32px) * ${pct} / 100)`, top: '50%', transform: 'translate(-50%,-50%)' }}>
+                    <button onClick={() => setExpanded(expanded === r.id ? null : r.id)} className="block">
+                      <div className="rounded-full" style={{ width: 18, height: 18, background: c, boxShadow: `0 0 0 3px rgba(10,12,18,0.7), 0 0 18px ${c}`, border: '2px solid rgba(255,255,255,0.85)' }} />
+                    </button>
+                    <div className="absolute rounded-lg px-2.5 py-1.5 text-left" style={{ left: '50%', transform: `translateX(-${cartouche}%)`, [above ? 'bottom' : 'top']: 26, background: 'rgba(10,18,38,0.88)', border: `1px solid ${c}`, boxShadow: `0 4px 18px rgba(0,0,0,0.45), 0 0 16px ${c}33`, minWidth: 110, maxWidth: 200, backdropFilter: 'blur(6px)' }}>
+                      <div className="font-mono text-[9px] tracking-widest" style={{ color: c }}>{r.priority === 'A' ? 'A · ' : r.priority === 'B' ? 'B · ' : 'C · '}J−{daysToRace}</div>
+                      <div className="font-display text-[12px] font-bold leading-tight truncate" style={{ color: 'var(--text)' }}>{r.name}</div>
+                      <div className="font-mono text-[9px] tabular" style={{ color: 'rgba(200,222,255,0.85)' }}>{r.distance}{targetSec ? <> · obj <span style={{ color: c }}>{fmtTime(targetSec)}</span></> : null}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {upcoming.length > 0 && raceCalView === 'hybride' && (
+            <div className="mb-6 mt-2">
+              {/* Ruban de phases compact */}
+              <div className="relative" style={{ height: 56 }}>
+                <div className="absolute left-0 right-0" style={{ top: 22, height: 10, borderRadius: 999, background: 'linear-gradient(90deg, var(--positive) 0%, var(--positive) 35%, var(--compass) 35%, var(--compass) 70%, var(--alert,#FF8040) 70%, var(--alert,#FF8040) 90%, var(--accent) 90%, var(--accent) 100%)', opacity: 0.78, boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.08)' }} />
+                {/* Repères phases */}
+                <div className="absolute left-0 right-0 flex justify-between font-mono text-[8px] tracking-widest" style={{ top: 0, color: 'rgba(198,221,255,0.7)' }}>
+                  <span style={{ color: 'var(--positive)' }}>BASE</span>
+                  <span style={{ color: 'var(--compass)' }}>BUILD</span>
+                  <span style={{ color: 'var(--alert,#FF8040)' }}>PIC</span>
+                  <span style={{ color: 'var(--accent)' }}>AFFÛTAGE</span>
+                </div>
+                {/* AUJ. */}
+                <div className="absolute" style={{ left: 0, top: 22, transform: 'translate(-50%,-25%)' }}>
+                  <div className="rounded-full" style={{ width: 12, height: 12, background: 'var(--compass)', boxShadow: '0 0 12px var(--compass)' }} />
+                </div>
+                {/* Marqueurs course */}
+                {upcoming.map((r) => {
+                  const daysToRace = Math.round((new Date(r.date) - now) / 86400000);
+                  const pct = Math.min(98, (daysToRace / timelineMaxDays) * 100);
+                  const proj = projections[r.id];
+                  const c = proj ? proj.phaseColor : (r.priority === 'A' ? 'var(--accent)' : r.priority === 'B' ? 'var(--warn)' : 'var(--text-dim)');
+                  return (
+                    <button key={r.id} onClick={() => setExpanded(expanded === r.id ? null : r.id)} className="absolute" style={{ left: `${pct}%`, top: 18, transform: 'translateX(-50%)' }} title={`${r.name} · J−${daysToRace}`}>
+                      <div className="rounded-sm" style={{ width: 3, height: 18, background: c, boxShadow: `0 0 10px ${c}` }} />
+                    </button>
+                  );
+                })}
+                {/* AUJ. label */}
+                <div className="absolute font-mono text-[9px] tracking-widest" style={{ left: 0, top: 40, color: 'var(--compass)' }}>AUJ.</div>
+              </div>
+              {/* Mini-aperçu courses (compactes) au-dessus des cartes détaillées */}
+              <div className="flex flex-wrap gap-2 mt-3">
+                {upcoming.map((r) => {
+                  const daysToRace = Math.round((new Date(r.date) - now) / 86400000);
+                  const proj = projections[r.id];
+                  const c = proj ? proj.phaseColor : (r.priority === 'A' ? 'var(--accent)' : r.priority === 'B' ? 'var(--warn)' : 'var(--text-dim)');
+                  const dt = new Date(r.date);
+                  return (
+                    <button key={r.id} onClick={() => setExpanded(expanded === r.id ? null : r.id)} className="btn lift flex items-center gap-2 rounded-full px-3 py-1.5" style={{ background: 'rgba(10,18,38,0.7)', border: `1px solid ${c}66`, boxShadow: `0 0 14px ${c}22` }}>
+                      <span className="font-display font-bold tabular text-sm" style={{ color: c }}>{dt.getDate()}/{dt.getMonth()+1}</span>
+                      <span className="font-display text-xs font-bold truncate" style={{ color: 'var(--text)', maxWidth: 140 }}>{r.name}</span>
+                      <span className="font-mono text-[10px] tabular" style={{ color: c }}>J−{daysToRace}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {upcoming.length > 0 && raceCalView === 'cartes' && (
+            <div className="font-mono text-[10px] tracking-widest mb-3 mt-1" style={{ color: 'rgba(198,221,255,0.7)' }}>
+              CALENDRIER DÉTAILLÉ CI-DESSOUS · {upcoming.length} COURSE{upcoming.length > 1 ? 'S' : ''} À VENIR
             </div>
           )}
 
@@ -18600,7 +18704,7 @@
                         {distKm >= 40 && profile.hasDoneMarathon === false && !/trail/i.test(r.distance || '') && (
                           <div className="mt-4 rounded-lg p-4" style={{ background: 'rgba(74,158,255,0.05)', border: '1px solid rgba(74,158,255,0.25)' }}>
                             <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--compass)' }}>PREMIER MARATHON · À SAVOIR</div>
-                            <div className="text-sm leading-relaxed space-y-2" style={{ color: 'var(--text-dim)' }}>
+                            <div className="text-sm leading-relaxed space-y-2" style={{ color: 'rgba(210,228,255,0.88)' }}>
                               <div><span style={{ color: 'var(--text)' }}>Le mur (km 30-35) :</span> tes réserves de glycogène s'épuisent vers la 2h30-3h d'effort. C'est la barrière classique. Pour la repousser : sortie longue ≥ 30 km en prép, ravitaillements toutes les 30-40 min en course, allure conservatrice les 25 premiers km.</div>
                               <div><span style={{ color: 'var(--text)' }}>Allure constante :</span> ne pars JAMAIS plus vite que ton allure marathon prévue. Le marathon se gagne dans la 2e moitié, jamais la 1ère. Vise les 5 premiers km à +5-10 s/km plus lent que ta cible.</div>
                               <div><span style={{ color: 'var(--text)' }}>Ravitaillements :</span> bois aux ravitaillements même si tu n'as pas soif (toutes les 5 km en moyenne). Gels énergétiques à partir du km 15, un toutes les 30-40 min. Teste tout en prép — JAMAIS de nouveau gel le jour J.</div>
@@ -18616,7 +18720,7 @@
                         {/trail/i.test(r.distance || '') && (
                           <div className="mt-4 rounded-lg p-4" style={{ background: 'rgba(143, 232, 106, 0.05)', border: '1px solid rgba(143, 232, 106, 0.3)' }}>
                             <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'var(--positive)' }}>COURSE TRAIL · À SAVOIR</div>
-                            <div className="text-sm leading-relaxed space-y-2" style={{ color: 'var(--text-dim)' }}>
+                            <div className="text-sm leading-relaxed space-y-2" style={{ color: 'rgba(210,228,255,0.88)' }}>
                               <div><span style={{ color: 'var(--text)' }}>Allure ≠ effort :</span> sur trail, oublie ton allure plat. Vise une FC stable autour de 75-82 % FCmax, et accepte de marcher dans les montées raides (économie énergétique &gt; ego). Les meilleurs marchent souvent les pentes &gt; 12 %.</div>
                               <div><span style={{ color: 'var(--text)' }}>Ravitaillement régulier :</span> en trail tu brûles 50-80 kcal/km de plus que sur route à effort équivalent (terrain irrégulier, freinage en descente). Vise 200-250 kcal/h dès la 1ère heure : gels, barres, ou solide. Bois 400-600 ml/h selon température.</div>
                               <div><span style={{ color: 'var(--text)' }}>Bâtons (poles) :</span> utiles dès qu'il y a &gt; 800 m D+ ou des pentes &gt; 10 %. Économie cardiaque ~7 % à effort équivalent. À pratiquer en prép, pas le jour J.</div>
@@ -18626,59 +18730,71 @@
                             </div>
                           </div>
                         )}
-                        {/* Stats grid */}
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+                        {/* HERO STAT — Temps prédit jour J vs Objectif (le chiffre qui compte le plus) */}
+                        {proj.pred && distKm ? (
+                          <div className="rounded-xl p-4 md:p-5 mt-4" style={{ background: 'linear-gradient(155deg, rgba(120,185,255,0.18), rgba(255,255,255,0.05) 50%, rgba(56,148,255,0.10))', border: '1px solid rgba(110,175,255,0.32)', boxShadow: 'inset 0 1px 0 rgba(185,218,255,0.18), 0 2px 6px rgba(0,0,0,0.36)' }}>
+                            <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'rgba(198,221,255,0.95)' }}>TEMPS PRÉDIT JOUR J</div>
+                              <button onClick={() => startEditObjective(r)} className="font-mono text-[10px] tracking-widest flex items-center gap-1" style={{ color: 'var(--compass)' }} title="Modifier l'objectif chrono">
+                                <IconPencil size={10} /> {r.objective ? 'MODIFIER OBJECTIF' : 'DÉFINIR OBJECTIF'}
+                              </button>
+                            </div>
+                            <div className="flex items-baseline gap-3 flex-wrap">
+                              <span className="font-display font-extrabold tabular leading-none" style={{ fontSize: 40, color: proj.phaseColor }}>{fmtTime(proj.pred.timeSec)}</span>
+                              {targetSec ? (
+                                <>
+                                  <IconArrowRight size={16} style={{ color: 'rgba(200,222,255,0.7)' }} />
+                                  <span className="font-display font-bold tabular leading-none" style={{ fontSize: 26, color: 'var(--text)' }}>{fmtTime(targetSec)}</span>
+                                  <span className="font-mono text-sm tabular" style={{ color: onTrack ? 'var(--positive)' : 'var(--caution)' }}>
+                                    ({gap > 0 ? '+' : gap < 0 ? '−' : ''}{fmtTime(Math.abs(gap))})
+                                  </span>
+                                </>
+                              ) : (
+                                <span className="font-mono text-xs italic" style={{ color: 'rgba(200,222,255,0.78)' }}>(pas d'objectif défini)</span>
+                              )}
+                            </div>
+                            {targetSec && (() => {
+                              const window = Math.max(15, targetSec * 0.10); // fenêtre ±10% de l'objectif (min 15s)
+                              const frac = onTrack ? 1 : Math.max(0.06, Math.min(1, 1 - Math.abs(gap) / window));
+                              return (
+                                <>
+                                  <div className="mt-3 rounded-full overflow-hidden" style={{ height: 6, background: 'rgba(255,255,255,0.10)' }}>
+                                    <div style={{ height: '100%', width: `${Math.round(frac * 100)}%`, background: onTrack ? 'var(--positive)' : 'var(--caution)', borderRadius: 999, transition: 'width 0.4s cubic-bezier(0.22,1,0.36,1)' }} />
+                                  </div>
+                                  <div className="flex items-center justify-between mt-2 font-mono text-[10px] tracking-widest gap-2 flex-wrap">
+                                    <span style={{ color: 'rgba(200,222,255,0.85)' }}>allure {fmtPace(proj.pred.timeSec, distKm)} · cible {fmtPace(targetSec, distKm)}</span>
+                                    <span className="px-2 py-0.5 rounded-full" style={{ background: onTrack ? 'rgba(143,232,106,0.15)' : 'rgba(255,176,32,0.15)', color: onTrack ? 'var(--positive)' : 'var(--caution)', border: `1px solid ${onTrack ? 'rgba(143,232,106,0.5)' : 'rgba(255,176,32,0.5)'}` }}>
+                                      {onTrack ? '✓ ON TRACK' : '⚠ À AJUSTER'}
+                                    </span>
+                                  </div>
+                                </>
+                              );
+                            })()}
+                          </div>
+                        ) : null}
+
+                        {/* STATS SECONDAIRES — pastilles inline */}
+                        <div className="flex items-center gap-2 mt-3 flex-wrap">
                           {isPaceModeRT ? (
-                            <div className="rounded-lg p-3" style={{ background: 'var(--bg-elev)' }}>
-                              <div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>VMA · JOUR J</div>
-                              <div className="font-display text-xl font-bold tabular" style={{ color: 'var(--compass)' }}>{profile.vma}<span className="font-mono text-[10px] ml-0.5">km/h</span></div>
-                              <div className="font-mono text-[10px]" style={{ color: 'var(--text-dim)' }}>fixe sans test</div>
+                            <div className="rounded-full px-3 py-1 font-mono text-[10px] tracking-widest flex items-center gap-1.5" style={{ background: 'rgba(74,158,255,0.12)', border: '1px solid rgba(74,158,255,0.40)' }}>
+                              <span style={{ color: 'rgba(198,221,255,0.92)' }}>VMA J</span>
+                              <span className="tabular font-bold" style={{ color: 'var(--text)' }}>{profile.vma}<span style={{ color: 'rgba(200,222,255,0.7)' }}> km/h</span></span>
                             </div>
                           ) : (
-                            <div className="rounded-lg p-3" style={{ background: 'var(--bg-elev)' }}>
-                              <div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>PUISSANCE SEUIL <span style={{ opacity: 0.5 }}>CP</span> · JOUR J</div>
-                              <div className="font-display text-xl font-bold tabular" style={{ color: 'var(--compass)' }}>{proj.projCp}<span className="font-mono text-[10px] ml-0.5">W</span></div>
-                              <div className="font-mono text-[10px]" style={{ color: 'var(--text-dim)' }}>actuelle {profile.cp}W</div>
+                            <div className="rounded-full px-3 py-1 font-mono text-[10px] tracking-widest flex items-center gap-1.5" style={{ background: 'rgba(74,158,255,0.12)', border: '1px solid rgba(74,158,255,0.40)' }}>
+                              <span style={{ color: 'rgba(198,221,255,0.92)' }}>CP J</span>
+                              <span className="tabular font-bold" style={{ color: 'var(--text)' }}>{proj.projCp}<span style={{ color: 'rgba(200,222,255,0.7)' }}>W</span></span>
+                              <span style={{ color: 'rgba(200,222,255,0.7)' }}>auj. {profile.cp}W</span>
                             </div>
                           )}
-                          <div className="rounded-lg p-3" style={{ background: 'var(--bg-elev)' }}>
-                            <div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>FRAÎCHEUR <span style={{ opacity: 0.5 }}>TSB</span> · JOUR J</div>
-                            <div className="font-display text-xl font-bold tabular" style={{ color: proj.tsb >= 5 ? 'var(--go)' : proj.tsb <= -10 ? 'var(--warn)' : 'var(--text)' }}>
-                              {proj.tsb >= 0 ? '+' : ''}{proj.tsb.toFixed(0)}
-                            </div>
-                            <div className="font-mono text-[10px]" style={{ color: 'var(--text-dim)' }}>
-                              {proj.tsb >= 15 ? 'très frais' : proj.tsb >= 5 ? 'frais' : proj.tsb >= -5 ? 'neutre' : proj.tsb >= -15 ? 'chargé' : 'fatigué'}
-                            </div>
+                          <div className="rounded-full px-3 py-1 font-mono text-[10px] tracking-widest flex items-center gap-1.5" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(198,221,255,0.20)' }}>
+                            <span style={{ color: 'rgba(198,221,255,0.92)' }}>TSB J</span>
+                            <span className="tabular font-bold" style={{ color: proj.tsb >= 5 ? 'var(--positive)' : proj.tsb <= -10 ? 'var(--caution)' : 'var(--text)' }}>{proj.tsb >= 0 ? '+' : ''}{proj.tsb.toFixed(0)}</span>
+                            <span style={{ color: 'rgba(200,222,255,0.7)' }}>{proj.tsb >= 15 ? 'très frais' : proj.tsb >= 5 ? 'frais' : proj.tsb >= -5 ? 'neutre' : proj.tsb >= -15 ? 'chargé' : 'fatigué'}</span>
                           </div>
-                          {proj.pred && distKm && (
-                            <>
-                              <div className="rounded-lg p-3" style={{ background: 'var(--bg-elev)' }}>
-                                <div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>TEMPS PRÉDIT</div>
-                                <div className="font-display text-xl font-bold tabular" style={{ color: proj.phaseColor }}>{fmtTime(proj.pred.timeSec)}</div>
-                                <div className="font-mono text-[10px]" style={{ color: 'var(--text-dim)' }}>{fmtPace(proj.pred.timeSec, distKm)}</div>
-                              </div>
-                              <div className="rounded-lg p-3" style={{ background: 'var(--bg-elev)' }}>
-                                <div className="font-mono text-[9px] tracking-widest flex items-center justify-between gap-1" style={{ color: 'var(--text-faint)' }}>
-                                  <span>OBJECTIF</span>
-                                  <button onClick={() => startEditObjective(r)} className="flex items-center gap-0.5 hover:opacity-80" style={{ color: 'var(--compass)' }} title="Modifier l'objectif chrono">
-                                    <IconPencil size={9} /> MODIFIER
-                                  </button>
-                                </div>
-                                {targetSec ? (
-                                  <>
-                                    <div className="font-display text-xl font-bold tabular" style={{ color: 'var(--text)' }}>{fmtTime(targetSec)}</div>
-                                    <div className="font-mono text-[10px]" style={{ color: onTrack ? 'var(--go)' : 'var(--warn)' }}>
-                                      {onTrack ? `✓ marge ${fmtTime(Math.abs(gap))}` : `manque ${Math.round(gap)}s`}
-                                    </div>
-                                  </>
-                                ) : r.objective ? (
-                                  <div className="font-display text-base font-bold leading-tight mt-0.5" style={{ color: 'var(--text)' }}>{r.objective}</div>
-                                ) : (
-                                  <button onClick={() => startEditObjective(r)} className="font-mono text-xs italic mt-0.5" style={{ color: 'var(--compass)' }}>+ définir</button>
-                                )}
-                              </div>
-                            </>
-                          )}
+                          <div className="rounded-full px-3 py-1 font-mono text-[10px] tracking-widest font-bold" style={{ background: proj.phaseColor + '18', border: `1px solid ${proj.phaseColor}66`, color: proj.phaseColor }}>
+                            {proj.phase}
+                          </div>
                         </div>
 
                         {/* Inline objective editor — opens from the "MODIFIER" link in the OBJECTIF box
@@ -18721,22 +18837,22 @@
                         {/* Races without a prediction (Trail / Autre / unknown distance) don't get the
                             OBJECTIF stat box — give them an objective + edit entry point here instead. */}
                         {!(proj.pred && distKm) && editingObjective !== r.id && (
-                          <div className="rounded-lg p-3 mt-3 flex items-center justify-between gap-3 flex-wrap" style={{ background: 'var(--bg-elev)' }}>
+                          <div className="rounded-lg p-3 mt-3 flex items-center justify-between gap-3 flex-wrap" style={{ background: 'linear-gradient(155deg, rgba(120,185,255,0.14), rgba(56,148,255,0.06))', border: '1px solid rgba(110,175,255,0.30)' }}>
                             <div className="flex items-center gap-2 min-w-0">
                               <IconTarget size={13} style={{ color: 'var(--accent)', flexShrink: 0 }} />
-                              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>OBJECTIF CHRONO</div>
-                              <div className="font-display font-bold" style={{ color: r.objective ? 'var(--text)' : 'var(--text-faint)' }}>{r.objective ? (targetSec ? fmtTime(targetSec) : r.objective) : '—'}</div>
+                              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'rgba(198,221,255,0.92)' }}>OBJECTIF CHRONO</div>
+                              <div className="font-display font-bold" style={{ color: r.objective ? 'var(--text)' : 'rgba(200,222,255,0.7)' }}>{r.objective ? (targetSec ? fmtTime(targetSec) : r.objective) : '—'}</div>
                             </div>
-                            <button onClick={() => startEditObjective(r)} className="btn flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg)', color: 'var(--compass)', border: '1px solid var(--border)' }}>
+                            <button onClick={() => startEditObjective(r)} className="btn flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'rgba(74,158,255,0.14)', color: 'var(--compass)', border: '1px solid rgba(74,158,255,0.45)' }}>
                               <IconPencil size={11} /> {r.objective ? 'MODIFIER' : 'DÉFINIR'}
                             </button>
                           </div>
                         )}
 
                         {/* Phase description */}
-                        <div className="rounded-lg p-3 mt-3" style={{ background: proj.phaseColor + '08', border: `1px solid ${proj.phaseColor}30` }}>
-                          <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: proj.phaseColor }}>{proj.phase} · {proj.totalDays} JOURS</div>
-                          <div className="text-sm leading-relaxed" style={{ color: 'var(--text-dim)' }}>{proj.phaseDesc}</div>
+                        <div className="rounded-lg p-3 mt-3" style={{ background: proj.phaseColor + '12', border: `1px solid ${proj.phaseColor}50` }}>
+                          <div className="font-mono text-[10px] tracking-widest mb-1 font-bold" style={{ color: proj.phaseColor }}>{proj.phase} · {proj.totalDays} JOURS</div>
+                          <div className="text-sm leading-relaxed" style={{ color: 'rgba(210,228,255,0.88)' }}>{proj.phaseDesc}</div>
                         </div>
 
                         {/* Hints */}
@@ -18746,9 +18862,9 @@
                               const HIcon = h.type === 'warn' ? IconAlert : IconInfo;
                               const c = h.type === 'warn' ? 'var(--warn)' : 'var(--compass)';
                               return (
-                              <div key={i} className="rounded-lg p-2.5 text-xs leading-relaxed flex items-start gap-2" style={{ background: 'var(--bg-elev)', border: `1px solid ${c}30` }}>
+                              <div key={i} className="rounded-lg p-2.5 text-xs leading-relaxed flex items-start gap-2" style={{ background: `${c}10`, border: `1px solid ${c}45` }}>
                                 <HIcon size={12} style={{ color: c, flexShrink: 0, marginTop: 2 }} />
-                                <span style={{ color: 'var(--text-dim)' }}>{h.text}</span>
+                                <span style={{ color: 'rgba(210,228,255,0.90)' }}>{h.text}</span>
                               </div>
                               );
                             })}
@@ -18760,7 +18876,7 @@
 
                         {/* Plan summary + Remove */}
                         <div className="flex items-center justify-between mt-4 pt-3 border-t flex-wrap gap-2" style={{ borderColor: 'var(--border)' }}>
-                          <div className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
+                          <div className="font-mono text-[11px]" style={{ color: 'rgba(200,222,255,0.78)' }}>
                             {proj.enVeille
                               ? 'Pas encore en préparation pour cette course'
                               : (<>
