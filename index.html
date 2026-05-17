@@ -17351,18 +17351,23 @@
       // Puissance cible course (la donnée clé pour courir au Stryd : à
       // puissance constante, le capteur gère le dénivelé tout seul).
       // On compare ce que l'OBJECTIF demande vs ce que la CP permet en race.
-      // Distance de référence pour l'allure : le TRACÉ RÉEL importé s'il est
-      // dispo (le coureur veut finir CETTE course à son objectif, peu importe
-      // que le GPS mesure 9.90 et la course officielle 10 km), sinon la
-      // distance officielle. Évite le "temps estimé 42:07 vs objectif 42:30".
-      const paceDistKm = (race.courseDist && race.courseDist > 500)
-        ? race.courseDist / 1000
-        : distKm;
+      //
+      // Distance de référence pour l'allure : la DISTANCE OFFICIELLE de la
+      // course. L'objectif chrono est un objectif "pour un vrai 10 km" (42:30
+      // sur 10 km), pas "finir CE tracé en 42:30". On dérive donc l'allure
+      // plate sur la distance officielle, puis on l'applique au tracé réel.
+      // Si le GPS mesure 9,90 km, le temps estimé sera un peu SOUS l'objectif
+      // — c'est voulu (parcours court = on arrive avant à effort égal).
+      // Fallback sur le tracé réel uniquement pour les courses sans distance
+      // structurée (trail/autre) où il n'y a pas de distance officielle.
+      const refDistKm = (distKm && distKm > 0)
+        ? distKm
+        : (race.courseDist && race.courseDist > 500 ? race.courseDist / 1000 : null);
 
       const powerPlan = useMemo(() => {
         const objSec = parseObjectiveSec(race.objective);
-        if (!objSec || !paceDistKm || !profile.weightKg || !profile.cp) return null;
-        const flatPaceSec = objSec / paceDistKm;
+        if (!objSec || !refDistKm || !profile.weightKg || !profile.cp) return null;
+        const flatPaceSec = objSec / refDistKm;
         const speedMs = 1000 / flatPaceSec;
         // Puissance que l'objectif implique (RE inverse, cohérent avec le reste)
         const targetW = Math.round(speedMs * profile.weightKg * 1.04);
@@ -17391,16 +17396,18 @@
         else if (delta <= 9) { verdict = `objectif AMBITIEUX — demande ${pctCp} % de ta CP, au-dessus du ${targetPctOfRace} % normal. Jouable si affûté/en progrès.`; vColor = 'var(--caution)'; }
         else { verdict = `objectif TRÈS AMBITIEUX — ${pctCp} % de ta CP, bien au-delà du soutenable sur un ${race.distance}.`; vColor = 'var(--negative)'; }
         return { targetW, pctCp, verdict, vColor, rpMul };
-      }, [race.objective, race.distance, paceDistKm, profile.weightKg, profile.cp]);
+      }, [race.objective, race.distance, refDistKm, profile.weightKg, profile.cp]);
 
       const strategy = useMemo(() => {
         if (!race.coursePts || !race.coursePts.length) return null;
         const objSec = parseObjectiveSec(race.objective);
-        if (!objSec || !paceDistKm) return { needObjective: true };
-        // flatPace calé sur le tracé réel → le total estimé = objectif PILE.
-        const flatPace = objSec / paceDistKm;
+        if (!objSec || !refDistKm) return { needObjective: true };
+        // flatPace = objectif sur la distance OFFICIELLE (un 10K en 42:30),
+        // appliqué ensuite au tracé réel via Minetti. Si le parcours fait
+        // 9,90 km, le total estimé tombera un peu sous l'objectif — voulu.
+        const flatPace = objSec / refDistKm;
         return buildRaceStrategy(race.coursePts, flatPace);
-      }, [race.coursePts, race.objective, paceDistKm]);
+      }, [race.coursePts, race.objective, refDistKm]);
 
       const fmtP = sec => { if (!sec) return '—'; const m = Math.floor(sec/60); let s = Math.round(sec%60); let mm=m; if (s===60){s=0;mm++;} return `${mm}:${String(s).padStart(2,'0')}`; };
       const fmtT = sec => { if (!sec) return '—'; sec = Math.round(sec); const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60; return h>0?`${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${m}:${String(s).padStart(2,'0')}`; };
