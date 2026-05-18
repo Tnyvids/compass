@@ -5598,8 +5598,8 @@
       else phaseLabel = 'BASE';
 
       return (
-        <button onClick={() => onNav && onNav('plan')} className="btn lift theme-glass-hero w-full text-left mb-4 relative overflow-hidden rounded-2xl p-5" style={{ background: 'var(--bg-elev)', border: '1px solid transparent', boxShadow: `0 0 0 1px ${statusColor}40 inset` }}>
-          <div className="absolute inset-0 pointer-events-none opacity-[0.07]" style={{ background: `radial-gradient(circle at top right, ${statusColor}, transparent 60%)`, transform: 'translateZ(0)', willChange: 'opacity' }} />
+        <button onClick={() => onNav && onNav('plan', { raceId: race.id })} className="btn lift theme-glass-hero w-full text-left mb-5 relative overflow-hidden rounded-2xl p-5 md:p-6" style={{ background: `linear-gradient(150deg, ${statusColor}14, var(--bg-elev) 52%)`, border: `1.5px solid ${statusColor}`, boxShadow: `0 0 0 1px ${statusColor}30, 0 10px 34px -10px ${statusColor}66` }}>
+          <div className="absolute inset-0 pointer-events-none opacity-[0.10]" style={{ background: `radial-gradient(circle at top right, ${statusColor}, transparent 58%)`, transform: 'translateZ(0)', willChange: 'opacity' }} />
           <div className="relative flex items-center justify-between gap-4 flex-wrap">
             <div className="flex items-center gap-5 min-w-0">
               <div className="flex-shrink-0">
@@ -5609,8 +5609,8 @@
                 </div>
               </div>
               <div className="min-w-0">
-                <div className="font-mono text-[10px] tracking-widest" style={{ color: 'rgba(224,225,228,0.92)' }}>PROCHAINE COURSE</div>
-                <div className="font-display text-xl font-bold truncate">{race.name}</div>
+                <div className="font-mono text-[11px] tracking-widest font-bold mb-0.5 flex items-center gap-1.5" style={{ color: 'var(--accent)' }}><IconTarget size={12} /> PROCHAINE COURSE</div>
+                <div className="font-display text-2xl font-extrabold truncate leading-tight">{race.name}</div>
                 <div className="font-mono text-xs" style={{ color: 'rgba(230,231,234,0.85)' }}>{race.distance} · {fmtDate(raceDate, true)}</div>
               </div>
             </div>
@@ -7607,9 +7607,19 @@
       const [editingInlineDay, setEditingInlineDay] = useState(null);  // {wsKey, dayKey} when inline-editing
       const [weekOffset, setWeekOffset] = useState(0);
       const [generatorOpen, setGeneratorOpen] = useState(false);
+      const [raceJumpId, setRaceJumpId] = useState(null);
       // Jump to a specific planned day when navigated from elsewhere (e.g. Aujourd'hui → week strip)
       useEffect(() => {
         if (!planJumpTarget) return;
+        // Cas "Prochaine course" : pas de date, on cible une course du calendrier.
+        if (planJumpTarget.raceId) {
+          // On affiche le calendrier ; le scroll précis (carte de la course
+          // alignée en haut) est fait par RaceTimeline une fois dépliée.
+          setShowRaceTimeline(true);
+          setRaceJumpId(planJumpTarget.raceId);
+          if (onConsumePlanJump) onConsumePlanJump();
+          return;
+        }
         const target = new Date(planJumpTarget.dateMs);
         const targetWeekStart = getWeekStart(target);
         const baseWS = getWeekStart(new Date());
@@ -8080,7 +8090,7 @@
             </button>
             {showRaceTimeline && (
               <div className="mt-3">
-                <RaceTimeline races={races} profile={profile} activities={activities} planOverrides={planOverrides} onAddRace={onAddRace} onRemoveRace={onRemoveRace} onUpdateRace={onUpdateRace} />
+                <RaceTimeline races={races} profile={profile} activities={activities} planOverrides={planOverrides} onAddRace={onAddRace} onRemoveRace={onRemoveRace} onUpdateRace={onUpdateRace} expandRaceId={raceJumpId} onConsumeExpand={() => setRaceJumpId(null)} />
               </div>
             )}
           </div>
@@ -19088,9 +19098,6 @@
                       <div className="text-[11px] mb-1.5 font-bold" style={{ color: powerPlan.vColor }}>
                         {powerPlan.verdict}
                       </div>
-                      <div className="text-[10px] mb-1.5" style={{ color: 'var(--text-faint)' }}>
-                        Pour savoir si ton objectif est atteignable, compare-le au <span style={{ color: 'var(--text-dim)' }}>TEMPS PRÉDIT</span> affiché plus haut dans cette course — c'est ton potentiel réel, calculé sur ta forme. Ici, on te donne seulement la puissance à tenir pour réaliser l'objectif que TU as fixé.
-                      </div>
                       <div className="text-[10px] leading-relaxed" style={{ color: 'var(--text-faint)' }}>
                         Le jour J : cours à <span style={{ color: 'var(--compass)' }}>{powerPlan.targetW}W constants</span> sur ton Stryd. Le capteur gère le dénivelé tout seul — tu ralentis en côte, tu accélères en descente, mais la puissance (donc l'effort) reste identique. Les allures ci-dessous ne sont que l'illustration de ce que ça donnera km par km.
                       </div>
@@ -19129,10 +19136,44 @@
       );
     }
 
-    function RaceTimeline({ races, profile, activities, planOverrides, onAddRace, onRemoveRace, onUpdateRace }) {
+    // Stratégie parcours repliable : utile mais volumineux → fermé par défaut
+    // pour ne pas noyer la fiche course (demande Tony).
+    function CollapsibleStrategy({ race, profile, onUpdateRace }) {
+      const [open, setOpen] = useState(false);
+      const hasGpx = !!(race && race.coursePts && race.coursePts.length);
+      return (
+        <div className="mt-3 rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+          <button onClick={() => setOpen(o => !o)} className="w-full flex items-center justify-between px-3 py-2.5" style={{ background: 'var(--bg-elev)' }}>
+            <span className="font-mono text-[10px] tracking-widest flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
+              <IconRoute size={12} /> STRATÉGIE PARCOURS · ALLURE SELON LE DÉNIVELÉ{hasGpx ? '' : ' · GPX requis'}
+            </span>
+            <span className="font-mono text-[10px] tracking-widest flex items-center gap-1 flex-shrink-0" style={{ color: 'var(--text-faint)' }}>
+              {open ? 'MASQUER' : 'AFFICHER'} <IconChevronDown size={10} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s' }} />
+            </span>
+          </button>
+          {open && <div className="p-3 border-t" style={{ borderColor: 'var(--border)' }}><RaceStrategySection race={race} profile={profile} onUpdateRace={onUpdateRace} /></div>}
+        </div>
+      );
+    }
+
+    function RaceTimeline({ races, profile, activities, planOverrides, onAddRace, onRemoveRace, onUpdateRace, expandRaceId = null, onConsumeExpand = null }) {
       const [adding, setAdding] = useState(false);
       const [form, setForm] = useState({ name: '', distance: '10k', date: '', objective: '', priority: 'A' });
       const [expanded, setExpanded] = useState(null); // race id
+      // Déclenché depuis "Prochaine course" (Aujourd'hui) : déplie la course
+      // ciblée et y fait défiler.
+      useEffect(() => {
+        if (!expandRaceId) return;
+        setExpanded(expandRaceId);
+        setTimeout(() => {
+          const el = document.querySelector(`[data-race-id="${expandRaceId}"]`);
+          if (el) {
+            el.style.scrollMarginTop = '16px'; // petit air sous le haut de page
+            el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }, 140);
+        if (onConsumeExpand) onConsumeExpand();
+      }, [expandRaceId]);
       const [editingObjective, setEditingObjective] = useState(null); // race id whose objective is being edited
       const [objH, setObjH] = useState(''); const [objM, setObjM] = useState(''); const [objS, setObjS] = useState('');
 
@@ -19262,9 +19303,23 @@
           const totalDays = Math.round((raceMs - todayMs) / dayMs);
           if (totalDays < 0) continue;
 
+          // Bloc de prépa propre à CETTE course : il démarre le lendemain de
+          // la course précédente (toutes courses confondues), pas aujourd'hui.
+          // Ex : course le 21/06 puis 09/09 → la prépa du 09/09 ne compte
+          // qu'à partir du 22/06. Sans course précédente : début du plan.
+          const prevRaceMs = (races || [])
+            .map(x => new Date(x.date).getTime())
+            .filter(t => Number.isFinite(t) && t < raceMs)
+            .reduce((m, t) => Math.max(m, t), -Infinity);
+          const blockStartMs = prevRaceMs > -Infinity
+            ? prevRaceMs + dayMs
+            : (profile.planStartDate ? new Date(profile.planStartDate + 'T00:00:00').getTime() : todayMs);
+          const remainStartMs = Math.max(todayMs, blockStartMs);
+
           // Project CTL/ATL day-by-day
           let ctl = fitnessNow.ctl, atl = fitnessNow.atl;
-          let totalPlannedTss = 0, daysWithSession = 0, longRunCount = 0;
+          let totalPlannedTss = 0, daysWithSession = 0, longRunCount = 0, totalPlannedKm = 0;
+          const kmPace = (profile.easyPaceMinPerKm && profile.easyPaceMinPerKm > 0) ? profile.easyPaceMinPerKm : 6.0;
           for (let d = 1; d <= totalDays; d++) {
             const date = new Date(todayMs + d * dayMs);
             const wsDate = getWeekStart(date);
@@ -19282,9 +19337,15 @@
                 : (estimatedDur > 0 ? estimatedDur : (hasExplicitKm ? deriveDurationFromKm(planned.type, baseCp, profile.weightKg, planned.plannedKm, powerPaceTable, profile) : 0));
               if (dur > 0) {
                 tss = estimateSessionTSS(planned.type, baseCp, dur);
-                daysWithSession++;
-                totalPlannedTss += tss;
-                if (planned.type === 'long' || dur >= 90) longRunCount++;
+                // CTL/ATL accumulent toujours (la forme se reporte), mais les
+                // compteurs "prépa de cette course" ne comptent qu'à partir
+                // du lendemain de la course précédente.
+                if (date.getTime() >= remainStartMs) {
+                  daysWithSession++;
+                  totalPlannedTss += tss;
+                  totalPlannedKm += hasExplicitKm ? planned.plannedKm : (dur / kmPace);
+                  if (planned.type === 'long' || dur >= 90) longRunCount++;
+                }
               }
             }
             ctl = ctl + ctlAlpha * (tss - ctl);
@@ -19292,6 +19353,31 @@
           }
           const projCp = Math.max(cpFloor, Math.min(cpCeil, baseCp + (ctl - fitnessNow.ctl) * K));
           const tsb = ctl - atl;
+
+          // Total du bloc de prépa de CETTE course (du lendemain de la course
+          // précédente — ou début du plan — jusqu'à la course), pas seulement
+          // le reste à venir → gratifiant : on voit tout le chemin de CE bloc.
+          let planTotalSessions = 0, planTotalKm = 0;
+          {
+            const startMs = blockStartMs < raceMs ? blockStartMs : todayMs;
+            const spanDays = Math.round((raceMs - startMs) / dayMs);
+            for (let d = 0; d <= spanDays; d++) {
+              const date = new Date(startMs + d * dayMs);
+              const wsKey = toLocalDateKey(getWeekStart(date));
+              const dayKey = dayKeys[(date.getDay() + 6) % 7];
+              const pl = (planOverrides || {})[wsKey] && planOverrides[wsKey][dayKey];
+              if (!pl || pl.type === 'rest') continue;
+              const hasMin = Number.isFinite(pl.plannedMin) && pl.plannedMin > 0;
+              const hasKm = Number.isFinite(pl.plannedKm) && pl.plannedKm > 0;
+              const estDur = estimateSessionDuration(pl.detail, pl.type);
+              const dur2 = hasMin ? pl.plannedMin : (estDur > 0 ? estDur : (hasKm ? deriveDurationFromKm(pl.type, baseCp, profile.weightKg, pl.plannedKm, powerPaceTable, profile) : 0));
+              if (dur2 > 0) { planTotalSessions++; planTotalKm += hasKm ? pl.plannedKm : (dur2 / kmPace); }
+            }
+          }
+          // Moyenne hebdo calculée sur TOUTE la prépa (pas seulement le reste).
+          const planBlockStartMs = blockStartMs < raceMs ? blockStartMs : todayMs;
+          const planWeeks = Math.max(1, Math.round((raceMs - planBlockStartMs) / dayMs / 7));
+          const planWeeklyKm = Math.round(planTotalKm / planWeeks);
 
           // Predict race time
           const distKm = (() => {
@@ -19331,7 +19417,12 @@
           else if (totalDays <= 28) { phase = 'PIC'; phaseColor = 'var(--alert)'; phaseDesc = 'Phase de pic — séances spécifiques course à allure cible.'; }
           else if (totalDays <= 56) { phase = 'BUILD'; phaseColor = 'var(--compass)'; phaseDesc = 'Phase de build — montée progressive du volume et de l\'intensité.'; }
           else { phase = 'BASE'; phaseColor = 'var(--go)'; phaseDesc = 'Phase de base aérobie — construis ton fond avant les séances spécifiques.'; }
-          const enVeille = phase === 'EN VEILLE';
+          // "En veille" = course lointaine ET aucune préparation réelle dans le
+          // plan. Si des séances sont déjà planifiées pour cette course (cas
+          // d'une 2e course avec son propre bloc de plan), ce n'est PAS en
+          // veille : on affiche le récap prépa au lieu de "pas encore préparé".
+          const hasPlannedPrep = daysWithSession > 0 || planTotalSessions > 0;
+          const enVeille = phase === 'EN VEILLE' && !hasPlannedPrep;
 
           // Hints / what's missing — skipped for "en veille" races (they'd just be noise so far out).
           const hints = [];
@@ -19362,8 +19453,18 @@
             hints.push({ type: 'info', text: `TSB jour J projeté à +${tsb.toFixed(0)} — très frais mais peut-être trop. Vise +10 à +20 pour optimum.` });
           }
 
+          // Durée du bloc de prépa (fenêtre des compteurs séances/km) + moyenne
+          // hebdo → contexte concret pour le coureur.
+          const remainDays = Math.max(1, Math.round((raceMs - remainStartMs) / dayMs));
+          const remainWeeks = Math.max(1, Math.round(remainDays / 7));
+          const remainWeeklyKm = Math.round(totalPlannedKm / remainWeeks);
+
           out[r.id] = {
             totalDays,
+            remainWeeks,
+            remainWeeklyKm,
+            planWeeks,
+            planWeeklyKm,
             projCp: Math.round(projCp),
             ctl, atl, tsb,
             pred,
@@ -19371,6 +19472,10 @@
             hints,
             distKm,
             totalPlannedTss: Math.round(totalPlannedTss),
+            totalPlannedKm: Math.round(totalPlannedKm),
+            planTotalSessions,
+            planTotalKm: Math.round(planTotalKm),
+            prepStarted: blockStartMs <= todayMs,
             daysWithSession,
             longRunCount,
           };
@@ -19526,14 +19631,14 @@
 
           {/* Frise saison — piste épaisse en dégradé + pins course avec cartouches flottants discrets */}
           {upcoming.length > 0 && (
-            <div className="relative mb-6 mt-3 px-4 md:px-8" style={{ height: 156, paddingTop: 8 }}>
+            <div className="relative mb-6 mt-3 px-4 md:px-8" style={{ height: 188, paddingTop: 12 }}>
               {/* Piste épaisse en dégradé (marges internes pour ne pas coller aux bords) */}
               <div className="absolute" style={{ left: 16, right: 16, top: '50%', height: 8, transform: 'translateY(-50%)', borderRadius: 999, background: 'linear-gradient(90deg, rgba(74,158,255,0.55), rgba(143,232,106,0.45) 35%, rgba(255,176,32,0.45) 75%, rgba(212,255,0,0.55))', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.10), 0 0 18px rgba(212,255,0,0.18)' }} />
               {/* Marqueur aujourd'hui */}
               <div className="absolute" style={{ left: 16, top: '50%', transform: 'translate(-50%,-50%)' }}>
                 <div className="rounded-full" style={{ width: 14, height: 14, background: 'var(--compass)', boxShadow: '0 0 0 3px rgba(74,158,255,0.25), 0 0 16px var(--compass)' }} />
               </div>
-              <div className="absolute font-mono text-[9px] tracking-widest" style={{ left: 16, top: 'calc(50% + 12px)', transform: 'translateX(-50%)', color: 'var(--compass)' }}>AUJ.</div>
+              <div className="absolute font-mono text-[10px] tracking-widest" style={{ left: 16, top: 'calc(50% + 14px)', transform: 'translateX(-50%)', color: 'var(--compass)' }}>AUJ.</div>
               {upcoming.map((r, idx) => {
                 const daysToRace = Math.round((new Date(r.date) - now) / 86400000);
                 const rawPct = (daysToRace / timelineMaxDays) * 100;
@@ -19551,12 +19656,12 @@
                     {/* Petit trait connecteur du pin au cartouche */}
                     <div className="absolute" style={{ left: '50%', [above ? 'bottom' : 'top']: 10, width: 1, height: 12, background: c, opacity: 0.55, transform: 'translateX(-50%)' }} />
                     {/* Cartouche minimal : pas de boîte lourde, juste texte aéré */}
-                    <div className="absolute text-left" style={{ left: '50%', transform: `translateX(-${cartouche}%)`, [above ? 'bottom' : 'top']: 26, maxWidth: 180, whiteSpace: 'nowrap' }}>
-                      <div className="font-display text-[12px] font-bold leading-tight truncate flex items-center gap-1.5" style={{ color: 'var(--text)' }}>
+                    <div className="absolute text-left" style={{ left: '50%', transform: `translateX(-${cartouche}%)`, [above ? 'bottom' : 'top']: 30, maxWidth: 210, whiteSpace: 'nowrap' }}>
+                      <div className="font-display text-[14px] font-bold leading-snug truncate flex items-center gap-1.5" style={{ color: 'var(--text)' }}>
                         <span className="inline-block rounded-full flex-shrink-0" style={{ width: 5, height: 5, background: c, boxShadow: `0 0 5px ${c}` }} />
                         <span className="truncate">{r.name}</span>
                       </div>
-                      <div className="font-mono text-[10px] tabular tracking-wide mt-0.5">
+                      <div className="font-mono text-[11px] tabular tracking-wide mt-1 leading-snug">
                         <span style={{ color: c, fontWeight: 600 }}>J−{daysToRace}</span>
                         <span style={{ color: 'rgba(230,231,234,0.62)' }}>{' · '}{r.distance}</span>
                         {targetSec && <span>{' · '}<span style={{ color: c }}>{fmtTime(targetSec)}</span></span>}
@@ -19645,7 +19750,7 @@
                 const gap = proj && proj.pred && targetSec ? proj.pred.timeSec - targetSec : null;
 
                 return (
-                  <Card key={r.id} className="overflow-hidden" accent={isExpanded ? proj?.phaseColor : null}>
+                  <Card key={r.id} data-race-id={r.id} className="overflow-hidden" accent={isExpanded ? proj?.phaseColor : null}>
                     <button onClick={() => setExpanded(isExpanded ? null : r.id)} className="w-full text-left p-4 flex items-center gap-4 hover:bg-white/5 transition">
                       {/* J-N counter */}
                       <div className="text-center w-16 flex-shrink-0">
@@ -19662,7 +19767,6 @@
                         <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                           <div className="font-display text-base font-bold truncate">{r.name}</div>
                           <Tag color={r.priority === 'A' ? 'var(--accent)' : r.priority === 'B' ? 'var(--warn)' : 'var(--text-dim)'}>{r.priority}</Tag>
-                          {proj?.phase && <span className="font-mono text-[9px] tracking-widest px-1.5 py-0.5 rounded" style={{ color: proj.phaseColor, background: proj.phaseColor + '15' }}>{proj.phase}</span>}
                         </div>
                         <div className="font-mono text-[11px]" style={{ color: 'rgba(230,231,234,0.85)' }}>
                           {r.distance}{r.objective ? ` · objectif ${r.objective}` : ''} · {fmtDate(r.date, true)}
@@ -19676,8 +19780,8 @@
                             {fmtTime(proj.pred.timeSec)}
                           </div>
                           {gap !== null && (
-                            <div className="font-mono text-[10px]" style={{ color: onTrack ? 'var(--go)' : 'var(--warn)' }}>
-                              {onTrack ? `✓ −${fmtTime(Math.abs(gap))} sous l'objectif` : `+${Math.round(gap)}s vs objectif`}
+                            <div className="font-mono text-[10px] font-bold" style={{ color: onTrack ? 'var(--accent)' : 'var(--warn)' }}>
+                              {onTrack ? `objectif battu de ${fmtTime(Math.abs(gap))}` : `${Math.round(gap)}s à gagner`}
                             </div>
                           )}
                         </div>
@@ -19750,14 +19854,23 @@
                               return (
                                 <>
                                   <div className="mt-3 rounded-full overflow-hidden" style={{ height: 6, background: 'rgba(255,255,255,0.10)' }}>
-                                    <div style={{ height: '100%', width: `${Math.round(frac * 100)}%`, background: onTrack ? 'var(--positive)' : 'var(--caution)', borderRadius: 999, transition: 'width 0.4s cubic-bezier(0.22,1,0.36,1)' }} />
+                                    <div style={{ height: '100%', width: `${Math.round(frac * 100)}%`, background: onTrack ? 'var(--accent)' : 'var(--caution)', borderRadius: 999, boxShadow: onTrack ? '0 0 10px rgba(212,255,0,0.55)' : 'none', transition: 'width 0.4s cubic-bezier(0.22,1,0.36,1)' }} />
                                   </div>
                                   <div className="flex items-center justify-between mt-2 font-mono text-[10px] tracking-widest gap-2 flex-wrap">
                                     <span style={{ color: 'rgba(228,229,232,0.85)' }}>allure {fmtPace(proj.pred.timeSec, distKm)} · cible {fmtPace(targetSec, distKm)}</span>
-                                    <span className="px-2 py-0.5 rounded-full inline-flex items-center gap-1" style={{ background: onTrack ? 'rgba(143,232,106,0.15)' : 'rgba(255,176,32,0.15)', color: onTrack ? 'var(--positive)' : 'var(--caution)', border: `1px solid ${onTrack ? 'rgba(143,232,106,0.5)' : 'rgba(255,176,32,0.5)'}` }}>
-                                      {onTrack ? <IconCheck size={11} /> : <IconAlert size={11} />}{onTrack ? 'ON TRACK' : 'À AJUSTER'}
-                                    </span>
+                                    {onTrack
+                                      ? <span className="px-2.5 py-1 rounded-full inline-flex items-center gap-1.5 font-bold" style={{ background: 'var(--accent)', color: 'var(--accent-text)', boxShadow: '0 0 12px rgba(212,255,0,0.45)' }}><IconTrophy size={12} /> OBJECTIF À PORTÉE</span>
+                                      : <span className="px-2 py-0.5 rounded-full inline-flex items-center gap-1" style={{ background: 'rgba(255,176,32,0.15)', color: 'var(--caution)', border: '1px solid rgba(255,176,32,0.5)' }}><IconAlert size={11} /> EN CHEMIN</span>}
                                   </div>
+                                  {!isPaceModeRT && profile.weightKg && (() => {
+                                    const predW = Math.round(((distKm * 1000) / proj.pred.timeSec) * profile.weightKg * 1.04);
+                                    const cibleW = Math.round(((distKm * 1000) / targetSec) * profile.weightKg * 1.04);
+                                    return (
+                                      <div className="mt-1 font-mono text-[10px] tracking-widest" style={{ color: 'rgba(228,229,232,0.7)' }}>
+                                        puissance à tenir ≈ {predW} W · cible {cibleW} W
+                                      </div>
+                                    );
+                                  })()}
                                 </>
                               );
                             })()}
@@ -19766,26 +19879,13 @@
 
                         {/* STATS SECONDAIRES — pastilles inline */}
                         <div className="flex items-center gap-2 mt-3 flex-wrap">
-                          {isPaceModeRT ? (
-                            <div className="rounded-full px-3 py-1 font-mono text-[10px] tracking-widest flex items-center gap-1.5" style={{ background: 'rgba(74,158,255,0.12)', border: '1px solid rgba(74,158,255,0.40)' }}>
-                              <span style={{ color: 'rgba(224,225,228,0.92)' }}>VMA J</span>
-                              <span className="tabular font-bold" style={{ color: 'var(--text)' }}>{profile.vma}<span style={{ color: 'rgba(228,229,232,0.7)' }}> km/h</span></span>
+                          <Tooltip content="La fraîcheur, c'est à quel point tu seras reposé le jour de la course. Élevée = bien affûté, jambes fraîches. Basse = encore fatigué par l'entraînement. L'idéal le jour J : frais à très frais.">
+                            <div className="rounded-full px-3 py-1 font-mono text-[10px] tracking-widest flex items-center gap-1.5" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(224,225,228,0.20)', cursor: 'help' }}>
+                              <span style={{ color: 'rgba(224,225,228,0.92)' }}>FRAÎCHEUR JOUR J <span style={{ color: 'rgba(228,229,232,0.55)' }}>(TSB)</span></span>
+                              <span className="font-bold" style={{ color: proj.tsb >= 5 ? 'var(--positive)' : proj.tsb <= -10 ? 'var(--caution)' : 'var(--text)' }}>{proj.tsb >= 15 ? 'très frais' : proj.tsb >= 5 ? 'frais' : proj.tsb >= -5 ? 'neutre' : proj.tsb >= -15 ? 'chargé' : 'fatigué'}</span>
+                              <span className="tabular" style={{ color: 'rgba(228,229,232,0.55)' }}>{proj.tsb >= 0 ? '+' : ''}{proj.tsb.toFixed(0)}</span>
                             </div>
-                          ) : (
-                            <div className="rounded-full px-3 py-1 font-mono text-[10px] tracking-widest flex items-center gap-1.5" style={{ background: 'rgba(74,158,255,0.12)', border: '1px solid rgba(74,158,255,0.40)' }}>
-                              <span style={{ color: 'rgba(224,225,228,0.92)' }}>CP J</span>
-                              <span className="tabular font-bold" style={{ color: 'var(--text)' }}>{proj.projCp}<span style={{ color: 'rgba(228,229,232,0.7)' }}>W</span></span>
-                              <span style={{ color: 'rgba(228,229,232,0.7)' }}>auj. {profile.cp}W</span>
-                            </div>
-                          )}
-                          <div className="rounded-full px-3 py-1 font-mono text-[10px] tracking-widest flex items-center gap-1.5" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(224,225,228,0.20)' }}>
-                            <span style={{ color: 'rgba(224,225,228,0.92)' }}>TSB J</span>
-                            <span className="tabular font-bold" style={{ color: proj.tsb >= 5 ? 'var(--positive)' : proj.tsb <= -10 ? 'var(--caution)' : 'var(--text)' }}>{proj.tsb >= 0 ? '+' : ''}{proj.tsb.toFixed(0)}</span>
-                            <span style={{ color: 'rgba(228,229,232,0.7)' }}>{proj.tsb >= 15 ? 'très frais' : proj.tsb >= 5 ? 'frais' : proj.tsb >= -5 ? 'neutre' : proj.tsb >= -15 ? 'chargé' : 'fatigué'}</span>
-                          </div>
-                          <div className="rounded-full px-3 py-1 font-mono text-[10px] tracking-widest font-bold" style={{ background: proj.phaseColor + '18', border: `1px solid ${proj.phaseColor}66`, color: proj.phaseColor }}>
-                            {proj.phase}
-                          </div>
+                          </Tooltip>
                         </div>
 
                         {/* Inline objective editor — opens from the "MODIFIER" link in the OBJECTIF box
@@ -19840,11 +19940,6 @@
                           </div>
                         )}
 
-                        {/* Phase description */}
-                        <div className="rounded-lg p-3 mt-3" style={{ background: proj.phaseColor + '12', border: `1px solid ${proj.phaseColor}50` }}>
-                          <div className="font-mono text-[10px] tracking-widest mb-1 font-bold" style={{ color: proj.phaseColor }}>{proj.phase} · {proj.totalDays} JOURS</div>
-                          <div className="text-sm leading-relaxed" style={{ color: 'rgba(230,231,234,0.88)' }}>{proj.phaseDesc}</div>
-                        </div>
 
                         {/* Hints */}
                         {proj.hints.length > 0 && (
@@ -19863,17 +19958,21 @@
                         )}
 
                         {/* Stratégie de course calibrée au dénivelé */}
-                        <RaceStrategySection race={r} profile={profile} onUpdateRace={onUpdateRace} />
+                        <CollapsibleStrategy race={r} profile={profile} onUpdateRace={onUpdateRace} />
 
                         {/* Plan summary + Remove */}
                         <div className="flex items-center justify-between mt-4 pt-3 border-t flex-wrap gap-2" style={{ borderColor: 'var(--border)' }}>
                           <div className="font-mono text-[11px]" style={{ color: 'rgba(228,229,232,0.78)' }}>
                             {proj.enVeille
                               ? 'Pas encore en préparation pour cette course'
-                              : (<>
-                                  {proj.daysWithSession > 0 ? `${proj.daysWithSession} séances · charge ${proj.totalPlannedTss} planifiée` : 'Aucune séance planifiée d\'ici la course'}
-                                  {proj.longRunCount > 0 && ` · ${proj.longRunCount} sortie${proj.longRunCount > 1 ? 's' : ''} longue${proj.longRunCount > 1 ? 's' : ''}`}
-                                </>)}
+                              : proj.daysWithSession > 0
+                                ? (<>
+                                    {proj.daysWithSession} séances · ≈ {proj.totalPlannedKm} km sur {proj.remainWeeks} semaines {proj.prepStarted ? "d'ici la course" : 'prévues pour cette prépa'}
+                                    {proj.planTotalSessions > proj.daysWithSession
+                                      ? <span style={{ color: 'var(--accent)', fontWeight: 700 }}> · programme complet : {proj.planTotalSessions} séances · ≈ {proj.planTotalKm} km sur {proj.planWeeks} semaines (~{proj.planWeeklyKm} km/sem)</span>
+                                      : <span style={{ color: 'rgba(228,229,232,0.7)' }}> (~{proj.planWeeklyKm} km/sem en moyenne)</span>}
+                                  </>)
+                                : 'Aucune séance planifiée d\'ici la course'}
                           </div>
                           <button onClick={() => onRemoveRace(r.id)} className="btn flex items-center gap-1 px-2.5 py-1 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'rgba(255, 91, 91, 0.08)', color: 'var(--danger)' }}>
                             <IconTrash size={11} /> SUPPRIMER
@@ -23712,6 +23811,10 @@
       const handleNav = (target, opts) => {
         if (target === 'plan' && opts && opts.date) {
           setPlanJumpTarget({ dateMs: opts.date.getTime(), ts: Date.now(), openDay: opts.openDay !== false, expandRow: !!opts.expandRow });
+        } else if (target === 'plan' && opts && opts.raceId) {
+          // Depuis "Prochaine course" : ouvrir le Plan + déplier cette course
+          // dans le Calendrier courses (en bas) et y faire défiler.
+          setPlanJumpTarget({ raceId: opts.raceId, ts: Date.now() });
         }
         setView(target);
       };
