@@ -5102,6 +5102,7 @@
           {/* Race countdown hero — keeps the goal alive every morning */}
           <RaceCountdownHero profile={profile} races={races} activities={activities} onNav={onNav} />
 
+          <div className="t-meta mb-2 mt-1" style={{ color: 'var(--text-faint)' }}>À FAIRE AUJOURD'HUI</div>
           {/* HERO ZONE (L4 passe 2) — UNE décision : la séance, pleine largeur.
               Le readiness n'est plus une colonne rivale 40 % : c'est un bandeau
               compact AU-DESSUS — un prompt s'il n'est pas fait, un statut d'une
@@ -5240,36 +5241,29 @@
             );
           })()}
 
-          {/* WEEK STRIP — horizontal mini-timeline of the 7 days */}
-          <div className="mb-3">
-            <WeekStripCard profile={profile} planOverrides={planOverrides} activities={activities} onNav={onNav} />
-          </div>
-
-          {/* WEEKLY SUMMARY — récap de la semaine écoulée (dimanche soir / lundi). */}
-          <WeeklySummaryCard profile={profile} activities={activities} planOverrides={planOverrides} />
-
-          {/* 90-DAY VOLUME HEATMAP — court terme, complète la mini-timeline ci-dessus */}
-          {activities.length > 0 && (
-            <div className="mb-3">
-              <YearHeatmapCard activities={activities} profile={profile} defaultRange="365d" onViewActivity={onViewActivity} />
+          {/* SUIVI — grille responsive (desktop ≥ lg) : semaine pleine largeur,
+              puis récap hebdo / risque blessure côte à côte, historique en
+              pleine largeur. Mobile : tout empilé (1 colonne). Hiérarchie
+              claire via l'eyebrow de section. */}
+          <div className="t-meta mb-2 mt-2" style={{ color: 'var(--text-faint)' }}>TA SEMAINE &amp; TON SUIVI</div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-6 items-start">
+            {/* WEEK STRIP — mini-timeline 7 jours, pleine largeur */}
+            <div className="lg:col-span-2">
+              <WeekStripCard profile={profile} planOverrides={planOverrides} activities={activities} onNav={onNav} />
             </div>
-          )}
 
-          {/* INJURY RISK INDEX — compact en zone safe, full-card si ≥ modéré.
-              Visible dès qu'on a un référentiel d'intensité (CP en power OU
-              VMA en pace) et au moins une zone surveillée. Avant on exigeait
-              CP, donc pace-mode users avec antécédent blessure n'avaient
-              jamais l'indicateur. */}
-          {(profile.cp || profile.vma) && activities.length > 0 && Array.isArray(profile.injuryZones) && profile.injuryZones.length > 0 && (
-            <KneeRiskCard
-              profile={profile}
-              activities={activities}
-              checkins={checkins}
-              strengthSessions={strengthSessions}
-              onNav={onNav}
-              onStrengthStart={onStrengthStart}
-            />
-          )}
+            {/* WEEKLY SUMMARY — récap semaine écoulée (dim. soir / lundi). 1 colonne. */}
+            <div className="lg:col-span-2">
+              <WeeklySummaryCard profile={profile} activities={activities} planOverrides={planOverrides} />
+            </div>
+
+            {/* 90/365-DAY VOLUME HEATMAP — large, pleine largeur. */}
+            {activities.length > 0 && (
+              <div className="lg:col-span-2">
+                <YearHeatmapCard activities={activities} profile={profile} defaultRange="365d" onViewActivity={onViewActivity} />
+              </div>
+            )}
+          </div>
 
           {/* QUICK ACTIONS (L4) — CTA primary clair (Importer) + actions
               secondaires en ghost. Cibles 44px, tokens, focus visible. */}
@@ -5690,11 +5684,12 @@
               const isRest = !d.planned || d.planned.type === 'rest';
 
               // Status-driven visual treatment — 5 states with distinct color coding
-              let bg, borderColor, dayColor, iconColor, labelColor, label, IconNode, glow = '';
+              let bg, borderColor, dayColor, iconColor, labelColor, label, IconNode, glow = '', borderWidth = '1px';
               if (d.isPast && d.hasActivity) {
                 // DONE — green confirmation, but type label keeps its identity color so user sees what was done
                 bg = 'linear-gradient(160deg, rgba(143,232,106,0.18), rgba(143,232,106,0.04))';
-                borderColor = 'rgba(143,232,106,0.45)';
+                borderColor = !isRest ? type.color : 'rgba(143,232,106,0.45)';
+                if (!isRest) borderWidth = '1.5px';
                 dayColor = 'var(--positive)';
                 iconColor = 'var(--positive)';
                 labelColor = !isRest ? type.color : 'var(--positive)';
@@ -5713,18 +5708,20 @@
                   : <TypeIcon size={18} style={{ color: type.color }} />;
                 glow = '0 0 0 1px var(--compass), 0 4px 18px rgba(74,158,255,0.22)';
               } else if (d.isPast && !d.hasActivity && !isRest) {
-                // SKIPPED — verre bleu très discret, pas de noir
+                // SKIPPED — séance non faite : on garde le cadre couleur séance
                 bg = 'linear-gradient(160deg, rgba(255,255,255,0.10), rgba(212,255,0,0.04))';
-                borderColor = 'rgba(255,255,255,0.22)';
+                borderColor = type.color;
+                borderWidth = '1.5px';
                 dayColor = 'rgba(228,229,232,0.72)';
                 iconColor = 'rgba(228,229,232,0.65)';
                 labelColor = 'rgba(228,229,232,0.72)';
                 label = (shortLabels[d.planned.type] || '').toUpperCase();
                 IconNode = <TypeIcon size={16} style={{ color: 'rgba(228,229,232,0.65)' }} />;
               } else if (!isRest) {
-                // FUTURE SCHEDULED — type color tint
+                // FUTURE SCHEDULED — cadre franc à la couleur de la séance
                 bg = `${type.color}10`;
-                borderColor = `${type.color}40`;
+                borderColor = type.color;
+                borderWidth = '1.5px';
                 dayColor = 'var(--text)';
                 iconColor = type.color;
                 labelColor = type.color;
@@ -5748,7 +5745,7 @@
                   className="rounded-lg p-2 md:p-2.5 flex flex-col items-center text-center transition hover:scale-105 relative overflow-hidden"
                   style={{
                     background: bg,
-                    border: `1px solid ${borderColor}`,
+                    border: `${borderWidth} solid ${borderColor}`,
                     minHeight: 115,
                     boxShadow: glow,
                   }}
@@ -6269,10 +6266,6 @@
             </div>
           )}
 
-          {/* Parcours de la séance — demi-tour aller-retour (block-aware) */}
-          {session.type !== 'rest' && session.weekStartKey && onSetRoute && (
-            <SessionRouteSection session={session} profile={profile} onSetRoute={onSetRoute} />
-          )}
 
           {/* Smart insights — only show first by default to keep the card scannable */}
           {insights.length > 0 && (
@@ -13911,12 +13904,15 @@
       const isAllGood = compact && (verdict.status === 'stable_good' || verdict.status === 'peaking');
       if (isAllGood) {
         return (
-          <button onClick={onMore} className="btn w-full text-left flex items-center gap-3 px-4 py-3 mb-3 rounded-xl" style={{ background: `linear-gradient(155deg, rgba(255,255,255,0.16), rgba(255,255,255,0.04) 50%, rgba(212,255,0,0.08))`, border: `1px solid ${verdict.color}55`, boxShadow: `inset 0 1px 0 rgba(216,217,220,0.14), 0 6px 22px ${verdict.color}1A` }}>
-            <VIcon size={16} style={{ color: verdict.color, flexShrink: 0 }} />
-            <div className="flex-1 min-w-0 text-sm" style={{ color: 'rgba(230,231,234,0.92)' }}>
-              <span className="font-bold" style={{ color: verdict.color }}>{verdict.title}.</span> <span className="opacity-90">{verdict.summary.split('.')[0]}.</span>
+          <button onClick={onMore} className="btn w-full text-left flex items-center gap-4 px-5 py-4 mb-3 rounded-xl" style={{ background: `linear-gradient(155deg, rgba(255,255,255,0.16), rgba(255,255,255,0.04) 50%, rgba(212,255,0,0.08))`, border: `1px solid ${verdict.color}55`, boxShadow: `inset 0 1px 0 rgba(216,217,220,0.14), 0 6px 22px ${verdict.color}1A` }}>
+            <VIcon size={22} style={{ color: verdict.color, flexShrink: 0 }} />
+            <div className="flex-1 min-w-0">
+              <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: verdict.color }}>BILAN COACH · ÉTAT DE FORME</div>
+              <div className="text-[15px] leading-snug" style={{ color: 'rgba(230,231,234,0.92)' }}>
+                <span className="font-bold text-base" style={{ color: verdict.color }}>{verdict.title}.</span> <span className="opacity-90">{verdict.summary.split('.')[0]}.</span>
+              </div>
             </div>
-            <IconChevronRight size={12} style={{ color: 'rgba(224,225,228,0.78)', flexShrink: 0 }} />
+            <IconChevronRight size={14} style={{ color: 'rgba(224,225,228,0.78)', flexShrink: 0 }} />
           </button>
         );
       }
