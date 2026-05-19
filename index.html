@@ -7600,13 +7600,15 @@
       );
     }
 
-    function PlanView({ profile, races, checkins, activities, strengthSessions, strengthStart, planOverrides, planJumpTarget, onConsumePlanJump, sessionTemplates, onSaveTemplate, onApplyTemplate, onImportActivity, onViewActivity, onSavePlanWeek, onGeneratePlan, onDeletePlan, onAddRace, onRemoveRace, onUpdateRace, onSaveProfile, onStrengthStart, onResetStrengthStart, onClearStrengthHistory }) {
+    function PlanView({ profile, races, checkins, activities, strengthSessions, strengthStart, planOverrides, planJumpTarget, onConsumePlanJump, sessionTemplates, onSaveTemplate, onApplyTemplate, onImportActivity, onViewActivity, onSavePlanWeek, onGeneratePlan, onDeletePlan, onDeleteOnePlan, onRegisterManualPlan, onAddRace, onRemoveRace, onUpdateRace, onSaveProfile, onStrengthStart, onResetStrengthStart, onClearStrengthHistory }) {
       const dialog = useDialog();
       const toast = useToast();
       const [editingWeek, setEditingWeek] = useState(null);  // legacy modal mode (kept as fallback)
       const [editingInlineDay, setEditingInlineDay] = useState(null);  // {wsKey, dayKey} when inline-editing
       const [weekOffset, setWeekOffset] = useState(0);
       const [generatorOpen, setGeneratorOpen] = useState(false);
+      const [managePlansOpen, setManagePlansOpen] = useState(false);
+      const [mpForm, setMpForm] = useState({ editId: '', raceId: '', name: '', dist: '10K', raceDate: '', start: '', weeks: 12 });
       const [raceJumpId, setRaceJumpId] = useState(null);
       // Jump to a specific planned day when navigated from elsewhere (e.g. Aujourd'hui → week strip)
       useEffect(() => {
@@ -7796,17 +7798,8 @@
                   }}>
                     Exporter
                   </Button>
-                  <Button variant="secondary" icon={IconTrash} onClick={async () => {
-                    const sourceLabel = profile.planSource === 'COMPASS Generator' ? ' généré par Compass' : '';
-                    const ok = await dialog.confirm({
-                      title: `Supprimer le plan${sourceLabel} ?`,
-                      message: 'Toutes les séances planifiées sur la durée du plan seront effacées. Tes activités passées et la bibliothèque ne sont pas touchées.',
-                      danger: true,
-                      confirmLabel: 'Supprimer',
-                    });
-                    if (ok && onDeletePlan) onDeletePlan();
-                  }}>
-                    Supprimer le plan
+                  <Button variant="secondary" icon={IconTrash} onClick={() => setManagePlansOpen(true)}>
+                    Gérer les programmes
                   </Button>
                 </>
               )}
@@ -8155,6 +8148,191 @@
 
           {editingWeek && <WeekEditorModal key={editingWeek} wsKey={editingWeek} initial={editingWeekInitial} planOverrides={planOverrides} sessionTemplates={sessionTemplates} onSaveTemplate={onSaveTemplate} onApplyTemplate={onApplyTemplate} activities={activities} onImportActivity={onImportActivity} onViewActivity={onViewActivity} onSave={(week) => { onSavePlanWeek(editingWeek, week); setEditingWeek(null); }} onDelete={() => { onSavePlanWeek(editingWeek, buildDeletedWeek()); setEditingWeek(null); }} onClose={() => setEditingWeek(null)} weekContext={{ cp: profile.cp, weightKg: profile.weightKg, ppt: buildPowerPaceTable(activities || []) }} />}
           {generatorOpen && <PlanGeneratorModal profile={profile} races={races} activities={activities} sessionTemplates={sessionTemplates} onGenerate={(overrides, meta) => { onGeneratePlan(overrides, meta); setGeneratorOpen(false); }} onCancel={() => setGeneratorOpen(false)} />}
+          {managePlansOpen && (() => {
+            // Liste des programmes générés. Fallback : si aucun registre mais un
+            // plan legacy existe (créé avant cette fonctionnalité), on l'expose
+            // pour pouvoir quand même le supprimer.
+            let plansList = Array.isArray(profile.plans) ? [...profile.plans] : [];
+            if (plansList.length === 0 && profile.planStartDate) {
+              plansList = [{ id: 'legacy', name: profile.planSource === 'COMPASS Generator' ? 'Programme Compass (actuel)' : 'Programme actuel', startDate: profile.planStartDate, totalWeeks: profile.planTotalWeeks || 12, raceDate: null }];
+            }
+            plansList.sort((a, b) => new Date(a.startDate) - new Date(b.startDate));
+            const endOf = (p) => p.raceDate ? p.raceDate : toLocalDateKey(new Date(new Date(p.startDate).getTime() + ((p.totalWeeks || 1) - 1) * 7 * 86400000));
+            // Totaux réels (km + durée) sur la fenêtre du programme, lus dans
+            // les overrides — reflète aussi les modifs faites à la main.
+            const dKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
+            const statsOf = (p) => {
+              let km = 0, min = 0;
+              const start = new Date(p.startDate);
+              for (let i = 0; i < (p.totalWeeks || 0); i++) {
+                const wk = (planOverrides || {})[toLocalDateKey(new Date(start.getTime() + i * 7 * 86400000))];
+                if (!wk) continue;
+                dKeys.forEach(dk => {
+                  const day = wk[dk];
+                  if (!day || day.type === 'rest') return;
+                  if (Number.isFinite(day.plannedKm)) km += day.plannedKm;
+                  if (Number.isFinite(day.plannedMin)) min += day.plannedMin;
+                });
+              }
+              const wks = p.totalWeeks || 0;
+              return { km: Math.round(km), h: Math.round(min / 60), avg: wks > 0 ? Math.round(km / wks) : 0 };
+            };
+            return (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 md:pl-[15rem]" onClick={() => setManagePlansOpen(false)}>
+                <div className="absolute inset-0 bg-black/85 backdrop-blur-md" />
+                <div className="relative w-full max-w-lg max-h-[88vh] overflow-y-auto rounded-2xl scale-in" onClick={(e) => e.stopPropagation()} style={{ background: 'linear-gradient(160deg, rgba(20,20,22,0.97), rgba(12,12,13,0.97))', border: '1px solid rgba(255,255,255,0.22)' }}>
+                  <div className="sticky top-0 flex items-center justify-between px-5 py-4" style={{ background: 'rgba(18,18,20,0.92)', borderBottom: '1px solid rgba(255,255,255,0.18)' }}>
+                    <div>
+                      <div className="font-mono text-[10px] tracking-widest mb-0.5" style={{ color: 'var(--accent)' }}>PROGRAMMES</div>
+                      <div className="font-display text-xl font-bold" style={{ color: 'var(--text)' }}>Gérer les programmes</div>
+                    </div>
+                    <button onClick={() => setManagePlansOpen(false)} className="btn w-9 h-9 rounded-full flex items-center justify-center" style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(224,225,228,0.20)' }}><IconX size={16} /></button>
+                  </div>
+                  <div className="p-5 space-y-3">
+                    {/* Déclarer un programme manuel (rattaché à une course, ou libre) */}
+                    <div className="rounded-xl p-3.5" style={{ background: 'rgba(74,158,255,0.08)', border: '1px solid rgba(74,158,255,0.30)' }}>
+                      <div className="flex items-center justify-between mb-2.5">
+                        <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--compass)' }}>{mpForm.editId ? 'MODIFIER LE PROGRAMME' : 'DÉCLARER UN PROGRAMME (FAIT MAIN)'}</div>
+                        {mpForm.editId && (
+                          <button onClick={() => setMpForm({ editId: '', raceId: '', name: '', dist: '10K', raceDate: '', start: '', weeks: 12 })} className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>ANNULER</button>
+                        )}
+                      </div>
+                      <div className="space-y-2">
+                        <select className="input" value={mpForm.raceId} onChange={(e) => setMpForm({ ...mpForm, raceId: e.target.value })}>
+                          <option value="">— Aucune course (bloc libre) —</option>
+                          <option value="new">+ Nouvelle course…</option>
+                          {(races || []).slice().sort((a, b) => new Date(a.date) - new Date(b.date)).map(r => (
+                            <option key={r.id} value={String(r.id)}>{r.name} · {r.distance} · {fmtDate(r.date, true)}</option>
+                          ))}
+                        </select>
+                        {mpForm.raceId === 'new' && (
+                          <div className="grid grid-cols-2 gap-2">
+                            <input type="text" className="input col-span-2" placeholder="Nom de la course" value={mpForm.name} onChange={(e) => setMpForm({ ...mpForm, name: e.target.value })} />
+                            <input type="date" className="input" value={mpForm.raceDate} onChange={(e) => setMpForm({ ...mpForm, raceDate: e.target.value })} />
+                            <select className="input" value={mpForm.dist} onChange={(e) => setMpForm({ ...mpForm, dist: e.target.value })}>
+                              <option value="5K">5 km</option><option value="10K">10 km</option><option value="15K">15 km</option><option value="Semi">Semi-marathon</option><option value="Marathon">Marathon</option>
+                            </select>
+                          </div>
+                        )}
+                        {mpForm.raceId === '' && (
+                          <input type="text" className="input" placeholder="Nom du programme (ex : Prépa générale)" value={mpForm.name} onChange={(e) => setMpForm({ ...mpForm, name: e.target.value })} />
+                        )}
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>DÉBUT</div>
+                            <input type="date" className="input" value={mpForm.start} onChange={(e) => setMpForm({ ...mpForm, start: e.target.value })} />
+                          </div>
+                          {mpForm.raceId === '' && (
+                            <div>
+                              <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'var(--text-faint)' }}>NB SEMAINES</div>
+                              <input type="number" min="1" max="40" className="input" value={mpForm.weeks} onChange={(e) => setMpForm({ ...mpForm, weeks: e.target.value })} />
+                            </div>
+                          )}
+                        </div>
+                        <Button variant="primary" size="sm" icon={IconPlus} onClick={() => {
+                          if (!mpForm.start) { toast.push('Indique une date de début.', { kind: 'warn' }); return; }
+                          const startWs = getWeekStart(new Date(mpForm.start));
+                          let raceDate = null, distance = null, name = (mpForm.name || '').trim();
+                          if (mpForm.raceId === 'new') {
+                            if (!name || !mpForm.raceDate) { toast.push('Nom + date de la course requis.', { kind: 'warn' }); return; }
+                            raceDate = mpForm.raceDate; distance = mpForm.dist;
+                            onAddRace && onAddRace({ id: Date.now(), name, distance, date: raceDate, objective: '', priority: 'A' });
+                          } else if (mpForm.raceId) {
+                            const r = (races || []).find(x => String(x.id) === String(mpForm.raceId));
+                            if (!r) { toast.push('Course introuvable.', { kind: 'warn' }); return; }
+                            raceDate = r.date; distance = r.distance; if (!name) name = r.name;
+                          } else {
+                            if (!name) { toast.push('Donne un nom au programme.', { kind: 'warn' }); return; }
+                          }
+                          let totalWeeks;
+                          if (raceDate) {
+                            const raceWs = getWeekStart(new Date(raceDate));
+                            totalWeeks = Math.round((raceWs.getTime() - startWs.getTime()) / (7 * 86400000)) + 1;
+                            if (totalWeeks < 1) { toast.push('Le début doit précéder la course.', { kind: 'warn' }); return; }
+                          } else {
+                            totalWeeks = Math.max(1, Math.min(40, parseInt(mpForm.weeks) || 1));
+                          }
+                          onRegisterManualPlan && onRegisterManualPlan({
+                            ...(mpForm.editId ? { id: mpForm.editId } : {}),
+                            name, raceDate, distance,
+                            startDate: toLocalDateKey(startWs),
+                            totalWeeks,
+                          });
+                          setMpForm({ editId: '', raceId: '', name: '', dist: '10K', raceDate: '', start: '', weeks: 12 });
+                        }}>
+                          {mpForm.editId ? 'Mettre à jour le programme' : 'Enregistrer ce programme'}
+                        </Button>
+                        <div className="text-[11px] leading-snug" style={{ color: 'var(--text-faint)' }}>
+                          Enregistre seulement le repère du programme (nom, fenêtre, course) pour le suivi et la détection des courses intermédiaires — tes séances saisies à la main ne sont pas modifiées.
+                        </div>
+                      </div>
+                    </div>
+                    {plansList.length === 0 ? (
+                      <div className="text-sm text-center py-6" style={{ color: 'var(--text-dim)' }}>Aucun programme enregistré pour l'instant. Génère-en un, ou déclare-le ci-dessus.</div>
+                    ) : plansList.map((p) => (
+                      <div key={p.id} className="rounded-xl p-3.5 flex items-center justify-between gap-3" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--border)' }}>
+                        <div className="min-w-0">
+                          <div className="font-display font-bold text-sm truncate" style={{ color: 'var(--text)' }}>{p.name}</div>
+                          <div className="font-mono text-[11px] tabular mt-0.5" style={{ color: 'var(--text-dim)' }}>
+                            {fmtDate(p.startDate, true)} → {fmtDate(endOf(p), true)}
+                          </div>
+                          {(() => {
+                            const s = statsOf(p);
+                            return (
+                              <div className="flex items-center gap-3 mt-1.5 font-mono text-[11px] tabular">
+                                <span style={{ color: 'var(--compass)' }}>{p.totalWeeks || '?'}<span style={{ color: 'var(--text-faint)', marginLeft: 2 }}>sem</span></span>
+                                <span style={{ color: 'var(--text)' }}>{s.km}<span style={{ color: 'var(--text-faint)', marginLeft: 2 }}>km</span></span>
+                                <span style={{ color: 'var(--text)' }}>{s.h}<span style={{ color: 'var(--text-faint)', marginLeft: 2 }}>h</span></span>
+                                <span style={{ color: 'var(--text)' }}>{s.avg}<span style={{ color: 'var(--text-faint)', marginLeft: 2 }}>km/sem</span></span>
+                              </div>
+                            );
+                          })()}
+                        </div>
+                        <div className="flex flex-col gap-1.5 flex-shrink-0">
+                          {p.source === 'manual' && (
+                            <button
+                              onClick={() => {
+                                const mr = (races || []).find(r => r && r.date === p.raceDate && String(r.distance || '') === String(p.distance || ''));
+                                setMpForm({
+                                  editId: p.id,
+                                  raceId: mr ? String(mr.id) : '',
+                                  name: p.name || '',
+                                  dist: p.distance || '10K',
+                                  raceDate: '',
+                                  start: p.startDate || '',
+                                  weeks: p.totalWeeks || 12,
+                                });
+                              }}
+                              className="btn flex items-center gap-1.5 px-3 py-2 rounded-lg font-mono text-[10px] tracking-widest"
+                              style={{ background: 'rgba(74,158,255,0.10)', color: 'var(--compass)', border: '1px solid rgba(74,158,255,0.30)' }}
+                            >
+                              <IconPencil size={12} /> MODIFIER
+                            </button>
+                          )}
+                          <button
+                            onClick={async () => {
+                              const ok = await dialog.confirm({
+                                title: `Supprimer « ${p.name} » ?`,
+                                message: 'Les séances planifiées sur la durée de ce programme seront effacées. Les autres programmes et tes activités passées ne sont pas touchés.',
+                                danger: true, confirmLabel: 'Supprimer',
+                              });
+                              if (!ok) return;
+                              if (p.id === 'legacy') { onDeletePlan && onDeletePlan(); }
+                              else { onDeleteOnePlan && onDeleteOnePlan(p.id); }
+                            }}
+                            className="btn flex items-center gap-1.5 px-3 py-2 rounded-lg font-mono text-[10px] tracking-widest"
+                            style={{ background: 'rgba(255,91,91,0.08)', color: 'var(--danger)', border: '1px solid rgba(255,91,91,0.30)' }}
+                          >
+                            <IconTrash size={12} /> SUPPRIMER
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
           {editingInlineDay && (() => {
             const dayLabels = { lun: 'Lundi', mar: 'Mardi', mer: 'Mercredi', jeu: 'Jeudi', ven: 'Vendredi', sam: 'Samedi', dim: 'Dimanche' };
             const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
@@ -22601,7 +22779,7 @@
       return Math.max(40, target);
     }
 
-    function buildPlan({ raceDate, totalWeeks, cp, weightKg, sessionsPerWeek, strengthPerWeek = 0, raceDistance, powerPaceTable, races, sex = null, experienceLevel = null, trainingMode = 'perf', hasDoneMarathon = false, profileDiscipline = null }) {
+    function buildPlan({ raceDate, totalWeeks, cp, weightKg, sessionsPerWeek, strengthPerWeek = 0, raceDistance, powerPaceTable, races, sex = null, experienceLevel = null, trainingMode = 'perf', hasDoneMarathon = false, profileDiscipline = null, leadRecoveryWeeks = 0 }) {
       // Si l'utilisateur a déclaré sa discipline trail mais que la course
       // sélectionnée n'a pas de mot-clé trail (ex « 25K » seul), on bascule
       // explicitement vers trail_short pour profiter du plan trail.
@@ -22699,10 +22877,15 @@
         // l'ancien code passait de W8 récup à W15 course = 7 sem charge). On exclut le
         // taper (qui est lui-même une récup) et les 2 dernières semaines (J-2 avant course
         // c'est trop tard pour deload).
-        const isRecoveryWeek = (w % 4 === 0) && phase !== 'taper' && (totalWeeks - w) >= 2 && w !== totalWeeks;
+        // Semaines de REPRISE en tête de plan (course intermédiaire faite juste
+        // avant) : forcées soft, tout easy, volume rampé doucement.
+        const isLeadReprise = w <= leadRecoveryWeeks;
+        const isRecoveryWeek = isLeadReprise || ((w % 4 === 0) && phase !== 'taper' && (totalWeeks - w) >= 2 && w !== totalWeeks);
         const isRaceWeek = w === totalWeeks;
 
-        const pat = isRecoveryWeek ? reducedWeeklyPattern(sessionsPerWeek) : weeklyPattern(sessionsPerWeek, raceProfile, phase);
+        const pat = isLeadReprise
+          ? repriseWeeklyPattern(sessionsPerWeek)
+          : (isRecoveryWeek ? reducedWeeklyPattern(sessionsPerWeek) : weeklyPattern(sessionsPerWeek, raceProfile, phase));
         // Test CP : remplace le mardi (séance intensité) si cette semaine est
         // marquée comme test week (précalculé en amont). Pas en récup.
         if (testWeeks.has(w) && !isRecoveryWeek && pat.mar) {
@@ -22832,9 +23015,19 @@
           // sinon on suit la ramp linéaire de baseKm → peakKm. volumeMul applique
           // les ajustements reprise/maintien/premier-marathon par-dessus.
           const rampTarget = Math.round(computeWeeklyKmTarget({ weekIdx: w, totalWeeks, phasePlan, isRecoveryWeek, raceProfile }) * volumeMul);
-          let weeklyKmTarget = (isRecoveryWeek && Number.isFinite(prevWeekKm) && prevWeekKm > 0)
-            ? Math.round(prevWeekKm * 0.70)
-            : rampTarget;
+          // Semaines de reprise : volume rampé en douceur (≈45 % → 60 % → 75 %
+          // → 85 % de la cible de base) — on remonte progressivement après la
+          // course intermédiaire au lieu d'attaquer plein volume.
+          const REPRISE_FRAC = [0.45, 0.60, 0.75, 0.85];
+          let weeklyKmTarget;
+          if (isLeadReprise) {
+            const f = REPRISE_FRAC[Math.min(w - 1, REPRISE_FRAC.length - 1)];
+            weeklyKmTarget = Math.max(1, Math.round(rampTarget * f));
+          } else {
+            weeklyKmTarget = (isRecoveryWeek && Number.isFinite(prevWeekKm) && prevWeekKm > 0)
+              ? Math.round(prevWeekKm * 0.70)
+              : rampTarget;
+          }
           // Garde-fou Gabbett : la progression de volume ne doit pas dépasser
           // ~+10 %/sem (spike effect = facteur de blessure documenté). On plafonne
           // SAUF : semaine de récup (réduction voulue), phase taper (réduction
@@ -23040,6 +23233,17 @@
       return { mar: 'easy', mer: 'easy', jeu: 'tempo', ven: 'easy', sam: 'easy', dim: 'long' };
     }
 
+    // Semaines de REPRISE post-course (course intermédiaire faite avant la
+    // course cible) : tout en footing easy, aucune qualité, pas de sortie
+    // longue structurée — vraie reprise progressive, plus douce qu'un deload.
+    // Le volume est en plus rampé doucement (voir leadRecoveryWeeks dans buildPlan).
+    function repriseWeeklyPattern(n) {
+      if (n <= 3) return { mar: 'easy', jeu: 'easy', dim: 'easy' };
+      if (n === 4) return { mar: 'easy', jeu: 'easy', sam: 'easy', dim: 'easy' };
+      if (n === 5) return { mar: 'easy', mer: 'easy', jeu: 'easy', sam: 'easy', dim: 'easy' };
+      return { mar: 'easy', mer: 'easy', jeu: 'easy', ven: 'easy', sam: 'easy', dim: 'easy' };
+    }
+
     // ========================================================================
     // PLAN GENERATOR MODAL — UI for generating a new plan
     // ========================================================================
@@ -23068,6 +23272,7 @@
       const [selectedRaceId, setSelectedRaceId] = useState(futureRaces[0]?.id || null);
       const [customDate, setCustomDate] = useState('');
       const [customDistance, setCustomDistance] = useState('10K');
+      const [customName, setCustomName] = useState('');
       const [sessionsPerWeek, setSessionsPerWeek] = useState(4);
       const [strengthPerWeek, setStrengthPerWeek] = useState((profile && profile.showStrength === false) ? 0 : 2);
       const [preview, setPreview] = useState(null);
@@ -23101,6 +23306,43 @@
         const weeks = Math.round((raceWeekStart.getTime() - currentWeekStart.getTime()) / (7 * 86400000)) + 1;
         return Math.max(0, weeks);
       }, [targetDate]);
+
+      // Détecte une course planifiée AVANT la course cible : on démarre alors le
+      // plan APRÈS elle, avec N semaines de reprise (barème Standard selon la
+      // distance de cette course intermédiaire).
+      const recoveryWeeksForDistance = (dist) => {
+        const s = String(dist || '').toLowerCase();
+        if (/marathon/.test(s) && !/semi|half/.test(s)) return 3;
+        if (/semi|half|21|30\s*k|30k/.test(s)) return 2;
+        if (/15\s*k|15k/.test(s)) return 1;
+        return 1; // 10K / 5K / autres
+      };
+      const planWindow = useMemo(() => {
+        if (!targetDate) return { totalWeeks: 0, leadWeeks: 0, priorRace: null };
+        const now = new Date(); now.setHours(0, 0, 0, 0);
+        const raceWeekStart = getWeekStart(new Date(targetDate));
+        const currentWeekStart = getWeekStart(now);
+        // Courses à venir, non terminées, strictement avant la cible (par semaine).
+        const priors = (races || []).filter(r => {
+          if (!r || !r.date || r.completedAt) return false;
+          if (mode === 'race' && r.id === selectedRaceId) return false;
+          const rws = getWeekStart(new Date(r.date));
+          return rws.getTime() >= currentWeekStart.getTime() && rws.getTime() < raceWeekStart.getTime();
+        }).sort((a, b) => new Date(a.date) - new Date(b.date));
+        const priorRace = priors.length ? priors[priors.length - 1] : null;
+        let startWeek = currentWeekStart;
+        if (priorRace) {
+          // On démarre la semaine APRÈS la semaine de la course intermédiaire.
+          startWeek = new Date(getWeekStart(new Date(priorRace.date)).getTime() + 7 * 86400000);
+        }
+        const effTotal = Math.max(0, Math.round((raceWeekStart.getTime() - startWeek.getTime()) / (7 * 86400000)) + 1);
+        let leadWeeks = 0;
+        if (priorRace) {
+          // Garde au moins ~4 semaines d'entraînement réel après la reprise.
+          leadWeeks = Math.max(0, Math.min(recoveryWeeksForDistance(priorRace.distance), effTotal - 4));
+        }
+        return { totalWeeks: effTotal, leadWeeks, priorRace };
+      }, [targetDate, races, mode, selectedRaceId]);
 
       useEffect(() => { const h = (e) => { if (e.key === 'Escape') onCancel(); }; window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h); }, [onCancel]);
 
@@ -23137,17 +23379,27 @@
           return;
         }
         if (!targetDate) { toast.push('Sélectionne une date cible.', { kind: 'warn' }); return; }
-        if (totalWeeks < 4) { toast.push('Course trop proche : minimum 4 semaines pour un plan complet.', { kind: 'warn' }); return; }
-        if (totalWeeks > 40) { toast.push('Course trop loin : maximum 40 semaines. Réduit la plage ou attends.', { kind: 'warn' }); return; }
+        const effWeeks = planWindow.totalWeeks;
+        if (effWeeks < 4) {
+          toast.push(planWindow.priorRace
+            ? `Trop peu de temps après ${planWindow.priorRace.name || 'la course intermédiaire'} pour un plan complet (minimum 4 semaines).`
+            : 'Course trop proche : minimum 4 semaines pour un plan complet.', { kind: 'warn' });
+          return;
+        }
+        if (effWeeks > 40) { toast.push('Course trop loin : maximum 40 semaines. Réduit la plage ou attends.', { kind: 'warn' }); return; }
         const plan = buildPlan({
-          raceDate: targetDate, totalWeeks, cp: effectiveCp, weightKg: profile.weightKg || 70,
+          raceDate: targetDate, totalWeeks: effWeeks, cp: effectiveCp, weightKg: profile.weightKg || 70,
           sessionsPerWeek, strengthPerWeek, raceDistance: targetDistance,
           powerPaceTable: effectivePpt, races,
           sex: profile.sex, experienceLevel: profile.experienceLevel,
           trainingMode: profile.trainingMode || 'perf',
           hasDoneMarathon: profile.hasDoneMarathon === true,
           profileDiscipline: profile.discipline || 'road',
+          leadRecoveryWeeks: planWindow.leadWeeks,
         });
+        if (plan) plan.repriseInfo = planWindow.priorRace
+          ? { priorRace: planWindow.priorRace, leadWeeks: planWindow.leadWeeks }
+          : null;
         // Pace mode : on ré-écrit le détail texte en allure (calé sur la VMA) ET
         // on remplace powerLow/powerHigh → paceSecLow/paceSecHigh sur les blocs.
         // Les watts internes étaient juste un échafaudage (scaffold CP) ; l'allure
@@ -23171,7 +23423,17 @@
           const wsKey = toLocalDateKey(w.weekStart);
           overrides[wsKey] = w.days;
         });
-        onGenerate(overrides, { startDate: toLocalDateKey(preview.weeks[0].weekStart), totalWeeks });
+        // Cible du plan : permet d'auto-créer une course si elle n'existe pas
+        // encore (mode date perso) → détectable comme course intermédiaire par
+        // les plans générés ensuite.
+        const customNameTrim = (customName || '').trim();
+        const targetRaceMeta = targetDate ? {
+          date: targetDate,
+          distance: targetDistance,
+          name: mode === 'race' ? (selectedRace?.name || null) : (customNameTrim || null),
+          existingId: (mode === 'race' && selectedRaceId != null) ? selectedRaceId : null,
+        } : null;
+        onGenerate(overrides, { startDate: toLocalDateKey(preview.weeks[0].weekStart), totalWeeks: preview.weeks.length, targetRace: targetRaceMeta });
       }
 
       // Aperçu EN DIRECT de l'incidence du nb de séances (et du renfo) : on
@@ -23179,17 +23441,19 @@
       // km, pic charge (TSS) et séances qualité/sem. Recalculé à chaque
       // changement de curseur — pas besoin de régénérer pour voir l'effet.
       const liveImpact = useMemo(() => {
-        if (!effectiveCp || !targetDate || totalWeeks < 4 || totalWeeks > 40) return null;
+        const eff = planWindow.totalWeeks;
+        if (!effectiveCp || !targetDate || eff < 4 || eff > 40) return null;
         let plan;
         try {
           plan = buildPlan({
-            raceDate: targetDate, totalWeeks, cp: effectiveCp, weightKg: profile.weightKg || 70,
+            raceDate: targetDate, totalWeeks: eff, cp: effectiveCp, weightKg: profile.weightKg || 70,
             sessionsPerWeek, strengthPerWeek, raceDistance: targetDistance,
             powerPaceTable: effectivePpt, races,
             sex: profile.sex, experienceLevel: profile.experienceLevel,
             trainingMode: profile.trainingMode || 'perf',
             hasDoneMarathon: profile.hasDoneMarathon === true,
             profileDiscipline: profile.discipline || 'road',
+            leadRecoveryWeeks: planWindow.leadWeeks,
           });
         } catch (e) { return null; }
         if (!plan || !plan.weeks || !plan.weeks.length) return null;
@@ -23202,7 +23466,7 @@
         const peakTss = Math.max(...plan.weeks.map(w => w.stats.tss));
         const qualPerWeek = Math.max(0, ...base.map(w => Object.values(w.days || {}).filter(d => d && QUAL.has(d.type)).length));
         return { medKm: Math.round(med), peakKm: Math.round(peakKm), peakTss: Math.round(peakTss), qualPerWeek };
-      }, [effectiveCp, targetDate, totalWeeks, sessionsPerWeek, strengthPerWeek, targetDistance, effectivePpt, races, profile.weightKg, profile.sex, profile.experienceLevel, profile.trainingMode, profile.hasDoneMarathon, profile.discipline]);
+      }, [effectiveCp, targetDate, planWindow, sessionsPerWeek, strengthPerWeek, targetDistance, effectivePpt, races, profile.weightKg, profile.sex, profile.experienceLevel, profile.trainingMode, profile.hasDoneMarathon, profile.discipline]);
 
       return (
         <div className={`fixed inset-0 z-50 flex ${preview ? '' : 'items-center justify-center p-4 md:pl-[15rem]'}`}>
@@ -23249,18 +23513,23 @@
                       </>
                     )}
                     {mode === 'custom' && (
-                      <div className="grid grid-cols-2 gap-2">
-                        <input type="date" className="input" value={customDate} onChange={(e) => setCustomDate(e.target.value)} />
-                        <select className="input" value={customDistance} onChange={(e) => setCustomDistance(e.target.value)}>
-                          <option value="5K">5 km</option><option value="10K">10 km</option><option value="15K">15 km</option><option value="Semi">Semi-marathon</option><option value="Marathon">Marathon</option>
-                        </select>
+                      <div className="space-y-2">
+                        <input type="text" className="input" value={customName} onChange={(e) => setCustomName(e.target.value)} placeholder="Nom de la course (ex : Marathon de Paris)" />
+                        <div className="grid grid-cols-2 gap-2">
+                          <input type="date" className="input" value={customDate} onChange={(e) => setCustomDate(e.target.value)} />
+                          <select className="input" value={customDistance} onChange={(e) => setCustomDistance(e.target.value)}>
+                            <option value="5K">5 km</option><option value="10K">10 km</option><option value="15K">15 km</option><option value="Semi">Semi-marathon</option><option value="Marathon">Marathon</option>
+                          </select>
+                        </div>
                       </div>
                     )}
                     {targetDate && (
                       <div className="mt-3 text-sm font-mono tabular" style={{ color: 'var(--compass)' }}>
-                        {totalWeeks} semaine{totalWeeks > 1 ? 's' : ''} de plan jusqu'à la course du {fmtDate(targetDate, true)}
+                        {planWindow.totalWeeks} semaine{planWindow.totalWeeks > 1 ? 's' : ''} de plan jusqu'à la course du {fmtDate(targetDate, true)}
                         <div className="font-mono text-xs mt-1" style={{ color: 'rgba(228,229,232,0.78)' }}>
-                          (semaine actuelle incluse · phase taper finale 1 sem)
+                          {planWindow.priorRace
+                            ? `démarre après ${planWindow.priorRace.name || 'ta course intermédiaire'} (${fmtDate(planWindow.priorRace.date, true)}) · ${planWindow.leadWeeks} sem de reprise · taper final 1 sem`
+                            : '(semaine actuelle incluse · phase taper finale 1 sem)'}
                         </div>
                       </div>
                     )}
@@ -23541,6 +23810,20 @@
             {preview.weeks.length} SEMAINES · CP {cp}W{lastDate ? ` · JUSQU'AU ${fmtDate(lastDate, true).toUpperCase()}` : ''}
           </div>
 
+          {/* Bandeau : course intermédiaire détectée → plan démarré après, avec reprise */}
+          {preview.repriseInfo && (
+            <div className="rounded-xl p-3.5 mb-4 flex items-start gap-2.5" style={{ background: 'rgba(74,158,255,0.10)', border: '1px solid rgba(74,158,255,0.35)' }}>
+              <IconInfo size={15} style={{ color: 'var(--compass)', flexShrink: 0, marginTop: 1 }} />
+              <div className="text-xs leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+                <span className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--compass)' }}>DÉMARRAGE APRÈS TA COURSE INTERMÉDIAIRE</span>
+                <div className="mt-1">
+                  Tu as <span style={{ color: 'var(--text)' }}>{preview.repriseInfo.priorRace.name || 'une course'}</span>
+                  {preview.repriseInfo.priorRace.distance ? ` (${preview.repriseInfo.priorRace.distance})` : ''} le <span style={{ color: 'var(--text)' }}>{fmtDate(preview.repriseInfo.priorRace.date, true)}</span> avant celle-ci. Le plan commence <span style={{ color: 'var(--text)' }}>après</span>, avec <span style={{ color: 'var(--compass)' }}>{preview.repriseInfo.leadWeeks} semaine{preview.repriseInfo.leadWeeks > 1 ? 's' : ''} de reprise</span> (footing easy, volume progressif) pour récupérer avant de relancer la préparation. Tes semaines d'ici là ne sont pas touchées.
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Phase ribbon — periodization at a glance */}
           <PvHead title="Périodisation" hint="STRUCTURE DU PLAN" />
           <div className="flex w-full rounded-lg overflow-hidden mb-6" style={{ height: 34, border: '1px solid rgba(255,255,255,0.25)' }}>
@@ -23557,19 +23840,24 @@
 
           {/* Totals */}
           <PvHead title="Charge globale" hint="SUR TOUT LE PLAN" />
-          <div className="grid grid-cols-3 gap-2 mb-4">
-            <div className="rounded-lg p-3 text-center" style={{ background: 'linear-gradient(155deg, rgba(255,255,255,0.16), rgba(212,255,0,0.06))', border: '1px solid rgba(255,255,255,0.26)' }}>
-              <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'rgba(224,225,228,0.92)' }}>VOLUME</div>
-              <div className="font-display text-3xl font-bold tabular" style={{ color: 'var(--compass)' }}>{Math.round(totalKm)}<span className="font-mono text-xs ml-1" style={{ color: 'rgba(230,231,234,0.78)' }}>km</span></div>
-            </div>
-            <div className="rounded-lg p-3 text-center" style={{ background: 'linear-gradient(155deg, rgba(255,255,255,0.16), rgba(212,255,0,0.06))', border: '1px solid rgba(255,255,255,0.26)' }}>
-              <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'rgba(224,225,228,0.92)' }}>DURÉE</div>
-              <div className="font-display text-3xl font-bold tabular" style={{ color: 'var(--text)' }}>{totalHours.toFixed(0)}<span className="font-mono text-xs ml-1" style={{ color: 'rgba(230,231,234,0.78)' }}>h</span></div>
-            </div>
-            <div className="rounded-lg p-3 text-center" style={{ background: 'linear-gradient(155deg, rgba(255,255,255,0.16), rgba(212,255,0,0.06))', border: '1px solid rgba(255,255,255,0.26)' }}>
-              <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'rgba(224,225,228,0.92)' }}>CHARGE</div>
-              <div className="font-display text-3xl font-bold tabular" style={{ color: 'var(--text)' }} title={TERMS.tss.tooltip}>{totalTSS}</div>
-            </div>
+          <div className="grid grid-cols-3 gap-2.5 mb-4">
+            {[
+              { label: 'VOLUME', Icon: IconRoute, c: 'var(--compass)', valColor: 'var(--compass)', glow: 'rgba(74,158,255,0.35)', val: Math.round(totalKm), unit: 'km' },
+              { label: 'DURÉE', Icon: IconClock, c: 'var(--text-dim)', valColor: 'var(--text)', glow: 'rgba(255,255,255,0.10)', val: totalHours.toFixed(0), unit: 'h' },
+              { label: 'CHARGE', Icon: IconZap, c: 'var(--caution)', valColor: 'var(--text)', glow: 'rgba(255,176,32,0.28)', val: totalTSS, unit: '', title: TERMS.tss.tooltip },
+            ].map((m) => (
+              <div key={m.label} className="relative rounded-xl px-3.5 py-3 overflow-hidden" title={m.title}
+                style={{ background: 'linear-gradient(160deg, var(--bg-elev-2), rgba(255,255,255,0.015) 70%)', border: '1px solid var(--border)' }}>
+                <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: m.c }} />
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <m.Icon size={12} style={{ color: m.c }} />
+                  <span className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>{m.label}</span>
+                </div>
+                <div className="font-display font-bold tabular leading-none" style={{ fontSize: 30, color: m.valColor, textShadow: `0 0 16px ${m.glow}` }}>
+                  {m.val}{m.unit && <span className="font-mono text-xs ml-1" style={{ color: 'var(--text-dim)', textShadow: 'none' }}>{m.unit}</span>}
+                </div>
+              </div>
+            ))}
           </div>
 
           {/* Weekly chart — volume km par semaine, fond teinté par phase.
@@ -23599,8 +23887,10 @@
               const valOf = (w) => w.stats?.km || 0;
               const selectedWi = open && open.wi != null ? open.wi : null;
               const goToWeek = (i) => {
-                // Ouverture FORCÉE : ferme toute autre semaine/jour déjà ouvert
-                // et ouvre uniquement la semaine cliquée (pas de toggle).
+                // Re-clic sur la même semaine déjà ouverte (panneau semaine, pas
+                // un jour) → on la referme, sans scroller.
+                if (open && open.wi === i && !open.dk) { setOpen(null); return; }
+                // Sinon : ferme tout autre panneau et ouvre uniquement celle-ci.
                 setOpen({ wi: i });
                 const scrollNow = () => {
                   const sc = document.querySelector('[data-plan-modal-scroll]');
@@ -23633,10 +23923,27 @@
                 if (last && last.phase === w.phase) last.end = i;
                 else phaseBands.push({ phase: w.phase, start: i, end: i });
               });
-              const linePoints = preview.weeks.map((w, i) => `${xOf(i)},${yOf(valOf(w))}`).join(' ');
-              const areaD = preview.weeks.length > 0
-                ? `M ${xOf(0)},${plotBottom} L ${preview.weeks.map((w, i) => `${xOf(i)},${yOf(valOf(w))}`).join(' L ')} L ${xOf(preview.weeks.length - 1)},${plotBottom} Z`
+              // Courbe LISSÉE (Catmull-Rom → Bézier cubique) pour un rendu
+              // sportif type Strava/Whoop, au lieu d'une polyligne anguleuse.
+              const pts = preview.weeks.map((w, i) => [xOf(i), yOf(valOf(w))]);
+              const smoothPath = (p) => {
+                if (p.length < 2) return p.length ? `M ${p[0][0]},${p[0][1]}` : '';
+                let d = `M ${p[0][0]},${p[0][1]}`;
+                for (let k = 0; k < p.length - 1; k++) {
+                  const p0 = p[k - 1] || p[k], p1 = p[k], p2 = p[k + 1], p3 = p[k + 2] || p2;
+                  const c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
+                  const c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
+                  d += ` C ${c1x.toFixed(2)},${c1y.toFixed(2)} ${c2x.toFixed(2)},${c2y.toFixed(2)} ${p2[0].toFixed(2)},${p2[1].toFixed(2)}`;
+                }
+                return d;
+              };
+              const lineD = smoothPath(pts);
+              const areaD = pts.length > 0
+                ? `${lineD} L ${pts[pts.length - 1][0].toFixed(2)},${plotBottom} L ${pts[0][0].toFixed(2)},${plotBottom} Z`
                 : '';
+              // Semaine de charge maximale (hors récup) → mise en valeur "pic".
+              let peakIdx = -1, peakVal = -1;
+              preview.weeks.forEach((w, i) => { const v = valOf(w); if (!w.isRecoveryWeek && v > peakVal) { peakVal = v; peakIdx = i; } });
               return (
                 <>
                   <div className="font-mono text-[10px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>KILOMÉTRAGE HEBDOMADAIRE <span style={{ opacity: 0.6 }}>· fond = phase</span></div>
@@ -23644,6 +23951,21 @@
                     {/* Pas de preserveAspectRatio="none" : on garde les proportions natives
                         pour ne pas étirer les chiffres et les points horizontalement. */}
                     <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 'auto', display: 'block' }}>
+                      <defs>
+                        <linearGradient id="pvArea" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" style={{ stopColor: 'var(--compass)', stopOpacity: 0.42 }} />
+                          <stop offset="55%" style={{ stopColor: 'var(--compass)', stopOpacity: 0.14 }} />
+                          <stop offset="100%" style={{ stopColor: 'var(--compass)', stopOpacity: 0 }} />
+                        </linearGradient>
+                        <linearGradient id="pvLine" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%" style={{ stopColor: 'var(--compass)' }} />
+                          <stop offset="100%" style={{ stopColor: '#8FE0FF' }} />
+                        </linearGradient>
+                        <filter id="pvGlow" x="-10%" y="-40%" width="120%" height="180%">
+                          <feGaussianBlur stdDeviation="2.4" result="b" />
+                          <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+                        </filter>
+                      </defs>
                       {/* Tout le décoratif : pointerEvents none pour que les clics passent
                           aux rects de clic au-dessus, peu importe le fill. */}
                       <g pointerEvents="none">
@@ -23675,22 +23997,38 @@
                           <rect x={selectedWi * colW} y={0} width={colW} height={H}
                             fill={PHASE_INFO[preview.weeks[selectedWi].phase].color} opacity={0.22} />
                         )}
-                        {/* Aplat sous la courbe km */}
-                        {areaD && <path d={areaD} fill={color} opacity={0.12} />}
-                        {/* Courbe km */}
-                        <polyline points={linePoints}
-                          stroke={color} strokeWidth={1.6} fill="none"
+                        {/* Aire dégradée sous la courbe */}
+                        {areaD && <path d={areaD} fill="url(#pvArea)" />}
+                        {/* Glow diffus sous la ligne (halo sportif) */}
+                        {lineD && <path d={lineD} stroke="var(--compass)" strokeWidth={3.2} fill="none"
+                          strokeLinejoin="round" strokeLinecap="round" opacity={0.35}
+                          filter="url(#pvGlow)" vectorEffect="non-scaling-stroke" />}
+                        {/* Courbe km lissée, dégradé + net par-dessus */}
+                        {lineD && <path d={lineD} stroke="url(#pvLine)" strokeWidth={2.4} fill="none"
                           strokeLinejoin="round" strokeLinecap="round"
-                          vectorEffect="non-scaling-stroke" />
-                        {/* Points — plus gros, bien visibles */}
+                          vectorEffect="non-scaling-stroke" />}
+                        {/* Pic de charge — halo accentué */}
+                        {peakIdx >= 0 && (
+                          <g>
+                            <circle cx={xOf(peakIdx)} cy={yOf(valOf(preview.weeks[peakIdx]))} r={6.5}
+                              fill="var(--compass)" opacity={0.18} filter="url(#pvGlow)" />
+                            <circle cx={xOf(peakIdx)} cy={yOf(valOf(preview.weeks[peakIdx]))} r={3}
+                              fill="#8FE0FF" stroke="var(--bg)" strokeWidth={1}
+                              vectorEffect="non-scaling-stroke" />
+                          </g>
+                        )}
+                        {/* Points : discrets sauf sélection (la ligne est la star) */}
                         {preview.weeks.map((w, i) => {
                           const isSel = selectedWi === i;
+                          if (!isSel && i === peakIdx) return null; // déjà mis en valeur
                           return (
                             <circle key={`${i}-pt`} cx={xOf(i)} cy={yOf(valOf(w))}
-                              r={isSel ? 4.2 : 2.6}
-                              fill={color} stroke="var(--bg)" strokeWidth={isSel ? 1.4 : 1}
+                              r={isSel ? 4.4 : 2}
+                              fill={isSel ? '#8FE0FF' : 'var(--compass)'}
+                              stroke="var(--bg)" strokeWidth={isSel ? 1.4 : 0.8}
+                              filter={isSel ? 'url(#pvGlow)' : undefined}
                               vectorEffect="non-scaling-stroke"
-                              style={{ opacity: isSel ? 1 : (w.isRecoveryWeek ? 0.65 : 0.95) }} />
+                              style={{ opacity: isSel ? 1 : (w.isRecoveryWeek ? 0.4 : 0.7) }} />
                           );
                         })}
                         {/* Nombre de km au-dessus de CHAQUE point (toutes les
@@ -24978,11 +25316,46 @@
                 }}
                 onGeneratePlan={(overrides, meta) => {
                   setPlanOverrides({ ...planOverrides, ...overrides });
+                  // Auto-crée une course pour la cible si elle n'existe pas
+                  // encore (mode date perso) → les plans suivants la détectent
+                  // comme course intermédiaire et démarrent après.
+                  if (meta && meta.targetRace && meta.targetRace.date) {
+                    const tr = meta.targetRace;
+                    const exists = tr.existingId != null
+                      || races.some(r => r && r.date === tr.date && String(r.distance || '').toLowerCase() === String(tr.distance || '').toLowerCase());
+                    if (!exists) {
+                      handleAddRace({
+                        id: Date.now(),
+                        name: (tr.name && tr.name.trim()) ? tr.name.trim() : `Objectif ${tr.distance} (${fmtDate(tr.date, true)})`,
+                        distance: tr.distance,
+                        date: tr.date,
+                        objective: '',
+                        priority: 'A',
+                      });
+                    }
+                  }
                   if (meta && meta.startDate) {
                     // planSourceCp = CP qui a servi à calculer les watts cibles du plan.
                     // Sert au bouton « Recalibrer les watts » dans Profil : si profile.cp
                     // diverge de planSourceCp, le plan n'est plus à l'échelle.
-                    setProfile({ ...profile, planStartDate: meta.startDate, planTotalWeeks: meta.totalWeeks, planSource: 'COMPASS Generator', planSourceCp: profile.cp, planSourceVma: profile.vma, planSourceEasyPace: profile.easyPaceMinPerKm });
+                    // On tient aussi un REGISTRE de tous les programmes générés
+                    // (profile.plans) pour pouvoir les lister et les supprimer 1 par 1.
+                    const tr = meta.targetRace;
+                    const planName = (tr && tr.name && tr.name.trim())
+                      ? tr.name.trim()
+                      : (tr ? `Objectif ${tr.distance} (${fmtDate(tr.date, true)})` : `Programme ${fmtDate(meta.startDate, true)}`);
+                    const entry = {
+                      id: 'plan_' + meta.startDate,
+                      name: planName,
+                      raceDate: tr ? tr.date : null,
+                      distance: tr ? tr.distance : null,
+                      startDate: meta.startDate,
+                      totalWeeks: meta.totalWeeks,
+                    };
+                    const prevPlans = Array.isArray(profile.plans) ? profile.plans : [];
+                    const plans = [...prevPlans.filter(p => p.id !== entry.id && p.startDate !== entry.startDate), entry]
+                      .sort((a, b) => new Date(a.startDate) - new Date(b.startDate));
+                    setProfile({ ...profile, planStartDate: meta.startDate, planTotalWeeks: meta.totalWeeks, planSource: 'COMPASS Generator', planSourceCp: profile.cp, planSourceVma: profile.vma, planSourceEasyPace: profile.easyPaceMinPerKm, plans });
                   }
                 }}
                 onDeletePlan={() => {
@@ -25007,6 +25380,41 @@
                     setPlanOverrides(prev);
                     setProfile(profile);
                   }});
+                }}
+                onDeleteOnePlan={(planId) => {
+                  const prevOverrides = planOverrides;
+                  const prevProfile = profile;
+                  const plansArr = Array.isArray(profile.plans) ? profile.plans : [];
+                  const p = plansArr.find(x => x.id === planId);
+                  if (!p) return;
+                  const next = { ...planOverrides };
+                  if (p.startDate && p.totalWeeks) {
+                    const start = new Date(p.startDate);
+                    for (let i = 0; i < p.totalWeeks; i++) {
+                      const d = new Date(start.getTime() + i * 7 * 86400000);
+                      delete next[toLocalDateKey(d)];
+                    }
+                  }
+                  const remaining = plansArr.filter(x => x.id !== planId);
+                  const patch = { ...profile, plans: remaining };
+                  // Si on supprime le "plan courant" legacy, on repointe sur le
+                  // dernier restant (ou on nettoie s'il n'y en a plus).
+                  if (profile.planStartDate === p.startDate) {
+                    const latest = remaining[remaining.length - 1];
+                    if (latest) { patch.planStartDate = latest.startDate; patch.planTotalWeeks = latest.totalWeeks; }
+                    else { patch.planStartDate = null; patch.planTotalWeeks = 12; patch.planSource = null; patch.planSourceCp = null; patch.planSourceVma = null; patch.planSourceEasyPace = null; }
+                  }
+                  setPlanOverrides(next);
+                  setProfile(patch);
+                  toast.push(`Programme « ${p.name} » supprimé.`, { kind: 'info', undo: () => { setPlanOverrides(prevOverrides); setProfile(prevProfile); } });
+                }}
+                onRegisterManualPlan={(entry) => {
+                  const prevPlans = Array.isArray(profile.plans) ? profile.plans : [];
+                  const e = { id: entry.id || ('plan_' + entry.startDate), source: 'manual', ...entry };
+                  const plans = [...prevPlans.filter(p => p.id !== e.id && p.startDate !== e.startDate), e]
+                    .sort((a, b) => new Date(a.startDate) - new Date(b.startDate));
+                  setProfile({ ...profile, plans });
+                  toast.push(`Programme « ${e.name} » enregistré.`, { kind: 'success' });
                 }}
                 onAddRace={handleAddRace}
                 onRemoveRace={handleRemoveRace}
