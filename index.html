@@ -357,8 +357,10 @@
     .plan-pill-scroll::-webkit-scrollbar { height: 6px; }
     .plan-pill-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
     .plan-week-pill { transition: transform 0.15s ease, box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease; cursor: pointer; }
-    .plan-week-pill:hover { transform: translateY(-2px); border-color: var(--accent) !important; box-shadow: 0 6px 18px rgba(212,255,0,0.18); }
-    .plan-week-pill:active { transform: translateY(0); }
+    /* Pas de translate : le ruban overflow-x rogne tout débordement vertical
+       (sinon le contour du haut est coupé au survol). Surbrillance INTERNE. */
+    .plan-week-pill:hover { border-color: var(--accent) !important; box-shadow: inset 0 0 0 1px rgba(212,255,0,0.45), inset 0 0 16px rgba(212,255,0,0.20); filter: brightness(1.06); }
+    .plan-week-pill:active { filter: brightness(0.97); }
 
     /* Plan grid — month rail collapses below the week card on narrow viewports */
     @media (max-width: 1023px) {
@@ -4763,16 +4765,19 @@
         const longestRun = wkActs.reduce((max, a) => Math.max(max, a.durationSec || 0), 0) / 60;
         const elevGain = wkActs.reduce((s, a) => s + (a.elevGain || 0), 0);
 
-        // Cible plan : km plannedKm sur la semaine
-        const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
-        const weekStr = lastWeekStart.toISOString().slice(0, 10);
-        const planWeek = (planOverrides || {})[weekStr];
+        // Cible plan : on passe par getPlannedSession (comme le reste de l'app)
+        // → gère les semaines éditées ET le plan généré/par défaut, et utilise
+        // la clé de semaine en heure LOCALE (l'ancien toISOString décalait en
+        // UTC → la clé ne matchait pas, d'où le faux « pas de plan »).
         let plannedKm = 0;
-        if (planWeek) {
-          dayKeys.forEach(dk => {
-            const d = planWeek[dk];
-            if (d && Number.isFinite(d.plannedKm)) plannedKm += d.plannedKm;
-          });
+        let plannedMin = 0;
+        for (let i = 0; i < 7; i++) {
+          const dd = new Date(lastWeekStart); dd.setDate(lastWeekStart.getDate() + i);
+          const p = getPlannedSession(profile, planOverrides, dd);
+          if (p && p.type !== 'rest') {
+            if (Number.isFinite(p.plannedKm)) plannedKm += p.plannedKm;
+            if (Number.isFinite(p.plannedMin)) plannedMin += p.plannedMin;
+          }
         }
 
         // Comparaison semaine précédente (S-2)
@@ -4794,7 +4799,9 @@
           totalKm, totalSec, totalTss: Math.round(totalTss),
           sessionsCount, longestRun: Math.round(longestRun), elevGain: Math.round(elevGain),
           plannedKm: Math.round(plannedKm * 10) / 10,
-          completionPct: plannedKm > 0 ? Math.round(totalKm / plannedKm * 100) : null,
+          completionPct: plannedKm > 0
+            ? Math.round(totalKm / plannedKm * 100)
+            : (plannedMin > 0 ? Math.round((totalSec / 60) / plannedMin * 100) : null),
           kmDelta, prevKm,
           bestSession: bestSession ? bestSession.activity : null,
           weekLabel: `${lastWeekStart.getDate()}/${String(lastWeekStart.getMonth()+1).padStart(2,'0')} – ${lastWeekEnd.getDate()}/${String(lastWeekEnd.getMonth()+1).padStart(2,'0')}`,
@@ -7870,15 +7877,28 @@
                     Range extends forward to whichever is later: +8 weeks, or the last week with any planned
                     session — so the user can scroll all the way to the end of their plan. */}
                 <div className="mb-4 -mx-1 px-1 overflow-x-auto plan-pill-scroll" ref={(el) => {
+                  if (!el) return;
                   // On first mount, scroll so "today" (off=0, 5th pill) is centered.
                   // No auto-scroll on click — strip stays static so the user keeps their bearings.
-                  if (el && !el.dataset.centered) {
+                  if (!el.dataset.centered) {
                     el.dataset.centered = '1';
                     const target = el.querySelector('[data-week-anchor="0"]');
                     if (target) {
                       const left = target.offsetLeft - (el.clientWidth / 2) + (target.clientWidth / 2);
                       el.scrollLeft = Math.max(0, left);
                     }
+                  }
+                  // Molette = défilement horizontal du ruban des semaines.
+                  // Écouteur natif non-passif pour pouvoir bloquer le scroll de page.
+                  if (!el.dataset.wheelBound) {
+                    el.dataset.wheelBound = '1';
+                    el.addEventListener('wheel', (e) => {
+                      if (el.scrollWidth <= el.clientWidth) return; // rien à faire défiler
+                      const d = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+                      if (!d) return;
+                      el.scrollLeft += d;
+                      e.preventDefault();
+                    }, { passive: false });
                   }
                 }}>
                   <div className="flex items-stretch gap-2 min-w-min">
@@ -7997,6 +8017,14 @@
                             if (linkedAct) { onViewActivity(linkedAct); return; }
                             if (hasDetail) setExpandedDayKey(prev => prev === dkey ? null : dkey); else editClick(d)();
                           };
+                          // Simple clic = action normale, INSTANTANÉE (déplier / journal /
+                          // éditeur). Le 2e clic d'un double est ignoré pour ne pas re-jouer
+                          // l'action ; le double clic ouvre l'éditeur (blocs de la séance).
+                          const cardSingleClick = (e) => {
+                            if (e && e.detail > 1) return; // 2e clic d'un double : ignoré
+                            headerClick();
+                          };
+                          const cardDoubleClick = () => { editClick(d)(); };
                           return ((() => {
                             const isToday = m.state === 'today';
                             const isDropTarget = dragOverIdx === i && dragDayIdx != null && dragDayIdx !== i;
@@ -8014,7 +8042,7 @@
                             const dateColor = isToday ? 'var(--accent)' : 'var(--text)';
                             return (
                           <div key={i} {...dh(i)} className="plan-day-card relative w-full rounded-xl mb-2 overflow-hidden" style={{ background: bg, border: `1px solid ${borderColor}`, opacity: dragDayIdx === i ? 0.4 : 1 }} aria-label={`${DAYS_FR_LONG[d.date.getDay()]} ${d.date.getDate()} — ${m.planned && !m.isRest ? m.planned.label : m.isRest ? 'Repos' : 'Aucune séance'}`}>
-                            <div onClick={headerClick} className="text-left flex items-stretch gap-3 px-3 py-3" style={{ cursor: 'pointer', minHeight: 64 }}>
+                            <div onClick={cardSingleClick} onDoubleClick={cardDoubleClick} title="Double-clic : éditer les blocs de la séance" className="text-left flex items-stretch gap-3 px-3 py-3" style={{ cursor: 'pointer', minHeight: 64 }}>
                               <div className="flex flex-col items-center justify-center flex-shrink-0" style={{ width: 50 }}>
                                 <div className="t-meta" style={{ color: labelColor, fontSize: 10 }}>{DAYS_FR[d.date.getDay()].toUpperCase()}</div>
                                 <div className="t-numeric-m mt-0.5" style={{ color: dateColor, fontWeight: 600 }}>{String(d.date.getDate()).padStart(2,'0')}</div>
@@ -8054,7 +8082,28 @@
                             {hasDetail && isExp && (
                               <div className="px-3 pb-3 pt-2" style={{ borderTop: '1px solid var(--border)' }}>
                                 <div className="t-body leading-relaxed mb-3" style={{ whiteSpace: 'pre-wrap' }}>
-                                  {m.planned.detail ? m.planned.detail : <span style={{ color: 'var(--text-faint)' }}>Pas de détail renseigné pour cette séance.</span>}
+                                  {m.planned.detail
+                                    ? m.planned.detail
+                                    : (() => {
+                                        const pb = pvrBlocksFromStructured(m.planned.blocks);
+                                        if (!pb || !pb.length) return <span style={{ color: 'var(--text-faint)' }}>Pas de détail renseigné pour cette séance.</span>;
+                                        return (
+                                          <div className="space-y-1" style={{ whiteSpace: 'normal' }}>
+                                            {pb.map((b, bi) => {
+                                              const dim = b.isWarmup || b.isCooldown || b.isRecovery;
+                                              return (
+                                                <div key={bi} className="flex items-baseline gap-2">
+                                                  <span className="font-mono text-[10px]" style={{ color: 'var(--text-faint)', minWidth: 14 }}>{bi + 1}</span>
+                                                  <span style={{ color: dim ? 'var(--text-dim)' : 'var(--text)' }}>
+                                                    {b.label}
+                                                    {b.isWarmup ? ' · échauffement' : b.isCooldown ? ' · retour au calme' : b.isRecovery ? ' · récup' : ''}
+                                                  </span>
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        );
+                                      })()}
                                 </div>
                                 {(m.planned.plannedMin || m.planned.plannedKm) && (
                                   <div className="font-mono tabular mb-3" style={{ color: m.typeColor, fontSize: 11 }}>
@@ -12040,39 +12089,9 @@
               </Card>
               {/* L9.10 — Splits km par km (style Strava). Absent sur les vieux
                   imports d'avant la persistance kmSplits → carte simplement masquée. */}
-              {Array.isArray(activity.kmSplits) && activity.kmSplits.length > 0 && (() => {
-                const sp = activity.kmSplits;
-                const fmtP = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
-                const fulls = sp.filter(s => !s.partialM).map(s => s.paceSecPerKm);
-                const fastest = Math.min(...fulls), slowest = Math.max(...fulls);
-                const span = Math.max(1, slowest - fastest);
-                return (
-                  <Card className="p-5">
-                    <div className="font-mono text-[10px] tracking-widest mb-3" style={{ color: 'var(--text-dim)' }}>SPLITS · KM PAR KM</div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      {sp.map((s) => {
-                        const isFast = !s.partialM && s.paceSecPerKm === fastest && fulls.length > 1;
-                        const barPct = s.partialM ? 100 : 12 + 88 * (1 - (s.paceSecPerKm - fastest) / span);
-                        return (
-                          <div key={s.km} className="flex items-center gap-3">
-                            <span className="t-numeric-s tabular" style={{ width: 28, textAlign: 'right', color: 'var(--text-dim)' }}>{s.km}</span>
-                            <div style={{ flex: 1, height: 22, background: 'var(--bg-elev-3)', borderRadius: 'var(--r-sm)', overflow: 'hidden' }}>
-                              <div style={{ width: `${barPct}%`, height: '100%', background: isFast ? 'var(--accent)' : 'var(--compass)', opacity: isFast ? 1 : 0.55, borderRadius: 'var(--r-sm)', transition: 'width var(--motion-base) var(--ease-soft)' }} />
-                            </div>
-                            <span className="t-numeric-s tabular" style={{ width: 64, textAlign: 'right', color: isFast ? 'var(--accent)' : 'var(--text)' }}>
-                              {fmtP(s.paceSecPerKm)}<span className="t-meta-dim" style={{ marginLeft: 2 }}>/km</span>
-                            </span>
-                            {s.partialM
-                              ? <span className="t-meta-dim" style={{ width: 52, textAlign: 'right' }}>{(s.partialM / 1000).toFixed(2)}km</span>
-                              : <span className="t-meta-dim" style={{ width: 52, textAlign: 'right' }}>{fmtP(s.timeSec)}</span>}
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <div className="t-meta-dim mt-3" style={{ color: 'var(--text-faint)' }}>Barre = vitesse relative · le km le plus rapide est en {' '}<span style={{ color: 'var(--accent)' }}>accent</span>.</div>
-                  </Card>
-                );
-              })()}
+              {Array.isArray(activity.kmSplits) && activity.kmSplits.length > 0 && (
+                <KmSplitsCard splits={activity.kmSplits} />
+              )}
               {/* Cardiac drift — only shown for steady-state efforts (excluded for intervals) */}
               {(() => {
                 const drift = getEffectiveCardiacDrift(activity);
@@ -12142,25 +12161,7 @@
 
               {/* Best efforts */}
               {effortRows.length > 0 && (
-                <Card className="p-5">
-                  <div className="font-mono text-[10px] tracking-widest mb-3" style={{ color: 'var(--text-dim)' }}>MEILLEURS EFFORTS DE LA SÉANCE</div>
-                  <div className="space-y-2">
-                    {effortRows.map(({ d, p }) => {
-                      const dur = d < 60 ? `${d}s` : d < 3600 ? `${Math.floor(d/60)} min` : `${Math.floor(d/3600)}h`;
-                      const pctCp = cp ? Math.round((p / cp) * 100) : null;
-                      return (
-                        <div key={d} className="flex items-center gap-3">
-                          <div className="font-mono text-xs tabular w-16" style={{ color: 'var(--text-dim)' }}>{dur}</div>
-                          <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
-                            <div className="h-full" style={{ width: `${Math.min(100, pctCp || 0)}%`, background: pctCp >= 100 ? 'var(--accent)' : 'var(--compass)' }} />
-                          </div>
-                          <div className="font-mono text-sm tabular text-right w-20">{p}W</div>
-                          {pctCp && <div className="font-mono text-[10px] tabular w-12 text-right" style={{ color: pctCp >= 100 ? 'var(--accent)' : 'var(--text-dim)' }}>{pctCp}%</div>}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </Card>
+                <BestEffortsCard rows={effortRows} cp={cp} />
               )}
               <div className="font-mono text-[10px] text-center" style={{ color: 'var(--text-faint)' }}>{activity.sampleCount} échantillons · {activity.fileName || 'fichier importé'}</div>
 
@@ -12171,6 +12172,89 @@
             </div>
           </div>
         </div>
+      );
+    }
+
+    // Splits km par km — clic sur un km = surlignage (sélection visuelle).
+    function KmSplitsCard({ splits }) {
+      const [sel, setSel] = useState(null);
+      const sp = splits;
+      const fmtP = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
+      const fulls = sp.filter(s => !s.partialM).map(s => s.paceSecPerKm);
+      const fastest = Math.min(...fulls), slowest = Math.max(...fulls);
+      const span = Math.max(1, slowest - fastest);
+      return (
+        <Card className="p-5">
+          <div className="font-mono text-[10px] tracking-widest mb-3" style={{ color: 'var(--text-dim)' }}>SPLITS · KM PAR KM</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {sp.map((s) => {
+              const isFast = !s.partialM && s.paceSecPerKm === fastest && fulls.length > 1;
+              const barPct = s.partialM ? 100 : 12 + 88 * (1 - (s.paceSecPerKm - fastest) / span);
+              const selected = sel === s.km;
+              return (
+                <button
+                  key={s.km}
+                  type="button"
+                  onClick={() => setSel(selected ? null : s.km)}
+                  className="flex items-center gap-3 text-left w-full"
+                  style={{ padding: '3px 6px', borderRadius: 'var(--r-sm)', border: `1px solid ${selected ? 'var(--compass)' : 'transparent'}`, background: selected ? 'var(--bg-elev)' : 'transparent', cursor: 'pointer' }}
+                >
+                  <span className="t-numeric-s tabular" style={{ width: 28, textAlign: 'right', color: selected ? 'var(--compass)' : 'var(--text-dim)' }}>{s.km}</span>
+                  <div style={{ flex: 1, height: 22, background: 'var(--bg-elev-3)', borderRadius: 'var(--r-sm)', overflow: 'hidden' }}>
+                    <div style={{ width: `${barPct}%`, height: '100%', background: isFast ? 'var(--accent)' : 'var(--compass)', opacity: isFast ? 1 : (selected ? 0.9 : 0.55), borderRadius: 'var(--r-sm)', transition: 'width var(--motion-base) var(--ease-soft)' }} />
+                  </div>
+                  <span className="t-numeric-s tabular" style={{ width: 64, textAlign: 'right', color: isFast ? 'var(--accent)' : 'var(--text)' }}>
+                    {fmtP(s.paceSecPerKm)}<span className="t-meta-dim" style={{ marginLeft: 2 }}>/km</span>
+                  </span>
+                  {s.partialM
+                    ? <span className="t-meta-dim" style={{ width: 52, textAlign: 'right' }}>{(s.partialM / 1000).toFixed(2)}km</span>
+                    : <span className="t-meta-dim" style={{ width: 52, textAlign: 'right' }}>{fmtP(s.timeSec)}</span>}
+                </button>
+              );
+            })}
+          </div>
+          <div className="t-meta-dim mt-3" style={{ color: 'var(--text-faint)' }}>
+            {sel != null
+              ? <>Km {sel} surligné — re-clique pour désélectionner.</>
+              : <>Clique un km pour le surligner · barre = vitesse relative · le km le plus rapide est en <span style={{ color: 'var(--accent)' }}>accent</span>.</>}
+          </div>
+        </Card>
+      );
+    }
+
+    // Meilleurs efforts de la séance — clic = surlignage (sélection visuelle).
+    function BestEffortsCard({ rows, cp }) {
+      const [sel, setSel] = useState(null);
+      return (
+        <Card className="p-5">
+          <div className="font-mono text-[10px] tracking-widest mb-3" style={{ color: 'var(--text-dim)' }}>MEILLEURS EFFORTS DE LA SÉANCE</div>
+          <div className="space-y-2">
+            {rows.map(({ d, p }) => {
+              const dur = d < 60 ? `${d}s` : d < 3600 ? `${Math.floor(d/60)} min` : `${Math.floor(d/3600)}h`;
+              const pctCp = cp ? Math.round((p / cp) * 100) : null;
+              const selected = sel === d;
+              return (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => setSel(selected ? null : d)}
+                  className="flex items-center gap-3 text-left w-full"
+                  style={{ padding: '3px 6px', borderRadius: 'var(--r-sm)', border: `1px solid ${selected ? 'var(--compass)' : 'transparent'}`, background: selected ? 'var(--bg-elev)' : 'transparent', cursor: 'pointer' }}
+                >
+                  <div className="font-mono text-xs tabular w-16" style={{ color: selected ? 'var(--compass)' : 'var(--text-dim)' }}>{dur}</div>
+                  <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
+                    <div className="h-full" style={{ width: `${Math.min(100, pctCp || 0)}%`, background: pctCp >= 100 ? 'var(--accent)' : 'var(--compass)' }} />
+                  </div>
+                  <div className="font-mono text-sm tabular text-right w-20">{p}W</div>
+                  {pctCp && <div className="font-mono text-[10px] tabular w-12 text-right" style={{ color: pctCp >= 100 ? 'var(--accent)' : 'var(--text-dim)' }}>{pctCp}%</div>}
+                </button>
+              );
+            })}
+          </div>
+          <div className="t-meta-dim mt-3" style={{ color: 'var(--text-faint)' }}>
+            {sel != null ? 'Effort surligné — re-clique pour désélectionner.' : 'Clique un effort pour le surligner.'}
+          </div>
+        </Card>
       );
     }
 
@@ -20324,23 +20408,22 @@
           for (const s of selected) {
             for (let k = s.start; k < s.end; k++) used[k] = true;
           }
+          // Référence de l'écart = BAS de la fourchette prévue (atteindre le bas
+          // = objectif atteint). La détection ci-dessus utilise toujours le
+          // milieu pour choisir la fenêtre, mais le verdict se cale sur le bas.
+          const refLow = block.powerLow != null ? block.powerLow : block.mid;
           resultsByIdx[bIdx] = selected.map((s, i) => ({
             idx: i + 1,
             power: Math.round(s.avg),
-            delta: Math.round(s.avg - block.mid),
+            delta: Math.round(s.avg - refLow),
             startSec: s.start,
           }));
         }
 
-        // Order blocks by their TEMPORAL position in the activity, not by plan order.
-        // Tony may have done blocks in a different order than his plan listed them.
-        const blocksWithStart = workBlocks.map((b, i) => {
-          const reps = resultsByIdx[i];
-          const earliest = reps && reps.length ? Math.min(...reps.map(r => r.startSec)) : Infinity;
-          return { block: b, reps, earliestStart: earliest };
-        });
-        blocksWithStart.sort((a, b) => a.earliestStart - b.earliestStart);
-        return blocksWithStart.map(x => ({ block: x.block, reps: x.reps }));
+        // Ordre d'affichage = ordre du plan (chronologique : échauffement →
+        // travail → … → retour au calme). On NE réordonne PLUS selon l'instant
+        // de détection dans l'activité, qui produisait un ordre déroutant.
+        return workBlocks.map((b, i) => ({ block: b, reps: resultsByIdx[i] }));
       }, [workBlocks, activity]);
 
       // Fallback for old imports without trackpoint data: use best-effort matching per block
@@ -20359,7 +20442,7 @@
             reps: [{
               idx: 1,
               power: activity.bestEfforts[best],
-              delta: Math.round(activity.bestEfforts[best] - b.mid),
+              delta: Math.round(activity.bestEfforts[best] - (b.powerLow != null ? b.powerLow : b.mid)),
               startSec: 0,
               approx: Math.abs(best - b.durSec) > 15,
               bestDurSec: best,
@@ -22960,6 +23043,24 @@
     // ========================================================================
     // PLAN GENERATOR MODAL — UI for generating a new plan
     // ========================================================================
+    // En-tête d'étape du générateur : pastille numérotée + titre display +
+    // accessoire optionnel à droite (badge reco). Donne la hiérarchie visuelle :
+    // les étapes ressortent, les encarts explicatifs restent secondaires.
+    function GenStep({ n, title, hint, right = null }) {
+      return (
+        <div className="flex items-start justify-between gap-3 mb-3 flex-wrap">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center justify-center rounded-lg font-display font-bold flex-shrink-0" style={{ width: 28, height: 28, fontSize: 14, background: 'rgba(74,158,255,0.16)', color: 'var(--compass)', border: '1px solid rgba(74,158,255,0.42)' }}>{n}</div>
+            <div>
+              <div className="font-display font-bold" style={{ color: 'var(--text)', fontSize: 17, lineHeight: 1.15 }}>{title}</div>
+              {hint && <div className="font-mono text-[10px] tracking-widest mt-0.5" style={{ color: 'var(--text-faint)' }}>{hint}</div>}
+            </div>
+          </div>
+          {right}
+        </div>
+      );
+    }
+
     function PlanGeneratorModal({ profile, races, activities, sessionTemplates = [], onGenerate, onCancel }) {
       const toast = useToast();
       const futureRaces = (races || []).filter(r => new Date(r.date) >= new Date()).sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -23073,23 +23174,53 @@
         onGenerate(overrides, { startDate: toLocalDateKey(preview.weeks[0].weekStart), totalWeeks });
       }
 
+      // Aperçu EN DIRECT de l'incidence du nb de séances (et du renfo) : on
+      // construit un plan léger en mémoire et on en sort volume médian, pic
+      // km, pic charge (TSS) et séances qualité/sem. Recalculé à chaque
+      // changement de curseur — pas besoin de régénérer pour voir l'effet.
+      const liveImpact = useMemo(() => {
+        if (!effectiveCp || !targetDate || totalWeeks < 4 || totalWeeks > 40) return null;
+        let plan;
+        try {
+          plan = buildPlan({
+            raceDate: targetDate, totalWeeks, cp: effectiveCp, weightKg: profile.weightKg || 70,
+            sessionsPerWeek, strengthPerWeek, raceDistance: targetDistance,
+            powerPaceTable: effectivePpt, races,
+            sex: profile.sex, experienceLevel: profile.experienceLevel,
+            trainingMode: profile.trainingMode || 'perf',
+            hasDoneMarathon: profile.hasDoneMarathon === true,
+            profileDiscipline: profile.discipline || 'road',
+          });
+        } catch (e) { return null; }
+        if (!plan || !plan.weeks || !plan.weeks.length) return null;
+        const QUAL = new Set(['intervals', 'tempo', 'test', 'hills']);
+        const norm = plan.weeks.filter(w => !w.isRecoveryWeek && !w.isRaceWeek);
+        const base = norm.length ? norm : plan.weeks;
+        const kms = base.map(w => w.stats.km).sort((a, b) => a - b);
+        const med = kms.length ? kms[Math.floor(kms.length / 2)] : 0;
+        const peakKm = Math.max(...plan.weeks.map(w => w.stats.km));
+        const peakTss = Math.max(...plan.weeks.map(w => w.stats.tss));
+        const qualPerWeek = Math.max(0, ...base.map(w => Object.values(w.days || {}).filter(d => d && QUAL.has(d.type)).length));
+        return { medKm: Math.round(med), peakKm: Math.round(peakKm), peakTss: Math.round(peakTss), qualPerWeek };
+      }, [effectiveCp, targetDate, totalWeeks, sessionsPerWeek, strengthPerWeek, targetDistance, effectivePpt, races, profile.weightKg, profile.sex, profile.experienceLevel, profile.trainingMode, profile.hasDoneMarathon, profile.discipline]);
+
       return (
         <div className={`fixed inset-0 z-50 flex ${preview ? '' : 'items-center justify-center p-4 md:pl-[15rem]'}`}>
           <div className="absolute inset-0 bg-black/85 backdrop-blur-md" onClick={onCancel} />
-          <div data-plan-modal-scroll className={`relative w-full overflow-y-auto scale-in ${preview ? 'h-full rounded-none' : 'max-w-3xl max-h-[92vh] rounded-2xl'}`} style={{ background: 'linear-gradient(160deg, rgba(20,20,22,0.96), rgba(12,12,13,0.96))', border: preview ? 'none' : '1px solid rgba(255,255,255,0.26)', boxShadow: preview ? 'none' : '0 30px 80px rgba(0,0,0,0.6), inset 0 1px 0 rgba(216,217,220,0.10)' }}>
-            <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-5 backdrop-blur-xl" style={{ background: 'linear-gradient(180deg, rgba(20,20,22,0.92), rgba(20,20,22,0.78))', borderBottom: '1px solid rgba(255,255,255,0.22)' }}>
+          <div data-plan-modal-scroll className={`relative w-full overflow-y-auto scale-in ${preview ? 'h-full rounded-none' : 'max-w-4xl max-h-[92vh] rounded-2xl'}`} style={{ background: 'linear-gradient(160deg, rgba(20,20,22,0.96), rgba(12,12,13,0.96))', border: preview ? 'none' : '1px solid rgba(255,255,255,0.26)', boxShadow: preview ? 'none' : '0 30px 80px rgba(0,0,0,0.6), inset 0 1px 0 rgba(216,217,220,0.10)' }}>
+            <div data-plan-modal-header className="sticky top-0 z-10 flex items-center justify-between px-6 py-5 backdrop-blur-xl" style={{ background: 'linear-gradient(180deg, rgba(20,20,22,0.92), rgba(20,20,22,0.78))', borderBottom: '1px solid rgba(255,255,255,0.22)' }}>
               <div>
                 <div className="font-mono text-[10px] tracking-widest mb-1" style={{ color: 'var(--accent)' }}>GÉNÉRATEUR DE PROGRAMME</div>
-                <div className="font-display text-xl font-bold" style={{ color: 'var(--text)' }}>{preview ? 'Aperçu du plan' : 'Nouveau programme d\'entraînement'}</div>
+                <div className="font-display text-2xl font-bold" style={{ color: 'var(--text)' }}>{preview ? 'Aperçu du plan' : 'Nouveau programme d\'entraînement'}</div>
               </div>
               <button onClick={onCancel} className="btn w-10 h-10 rounded-full flex items-center justify-center" style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(224,225,228,0.20)', color: 'rgba(230,231,234,0.92)' }}><IconX size={18} /></button>
             </div>
             <div className="p-6 md:p-7">
               {!preview ? (
-                <>
+                <div className="space-y-6 md:space-y-8">
                   {/* Target */}
-                  <div className="mb-5">
-                    <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'rgba(224,225,228,0.92)' }}>COURSE CIBLE</div>
+                  <div>
+                    <GenStep n={1} title="Course cible" hint="POUR QUELLE ÉCHÉANCE" />
                     {futureRaces.length > 0 && (
                       <div className="flex gap-2 mb-3">
                         <button onClick={() => setMode('race')} className="btn flex-1 py-2.5 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: mode === 'race' ? 'var(--compass)' : 'rgba(255,255,255,0.10)', color: mode === 'race' ? '#000' : 'rgba(230,231,234,0.92)', border: `1px solid ${mode === 'race' ? 'var(--compass)' : 'rgba(255,255,255,0.26)'}` }}>DEPUIS MES COURSES</button>
@@ -23153,31 +23284,59 @@
                   </div>
 
                   {/* Sessions per week */}
-                  <div className="mb-5">
-                    <div className="flex items-baseline justify-between mb-2 gap-2 flex-wrap">
-                      <div className="font-mono text-[10px] tracking-widest" style={{ color: 'rgba(224,225,228,0.92)' }}>SÉANCES DE COURSE PAR SEMAINE</div>
-                      {recommendedSessions && (
-                        <div className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>
-                          RECO POUR {String(targetDistance).toUpperCase()} : {recommendedSessions}/SEM
+                  <div>
+                    <GenStep
+                      n={2}
+                      title="Séances de course / semaine"
+                      hint="FRÉQUENCE D'ENTRAÎNEMENT"
+                      right={recommendedSessions && (
+                        <div className="font-mono text-[9px] tracking-widest rounded-full px-2.5 py-1 self-center" style={{ color: 'var(--compass)', background: 'rgba(74,158,255,0.12)', border: '1px solid rgba(74,158,255,0.35)' }}>
+                          RECO {String(targetDistance).toUpperCase()} · {recommendedSessions}/SEM
                         </div>
                       )}
-                    </div>
-                    <div className="grid grid-cols-4 gap-2">
+                    />
+                    <div className="grid grid-cols-4 gap-3">
                       {[3, 4, 5, 6].map(n => (
-                        <button key={n} onClick={() => setSessionsPerWeek(n)} className="btn py-3 rounded-lg relative" style={{ background: sessionsPerWeek === n ? 'var(--compass)' : 'rgba(255,255,255,0.10)', color: sessionsPerWeek === n ? '#000' : 'var(--text)', border: `1px solid ${sessionsPerWeek === n ? 'var(--compass)' : (recommendedSessions === n ? 'rgba(74,158,255,0.45)' : 'rgba(255,255,255,0.25)')}` }}>
+                        <button key={n} onClick={() => setSessionsPerWeek(n)} className="btn py-4 rounded-lg relative" style={{ background: sessionsPerWeek === n ? 'var(--compass)' : 'rgba(255,255,255,0.10)', color: sessionsPerWeek === n ? '#000' : 'var(--text)', border: `1px solid ${sessionsPerWeek === n ? 'var(--compass)' : (recommendedSessions === n ? 'rgba(74,158,255,0.45)' : 'rgba(255,255,255,0.25)')}` }}>
                           <div className="font-display font-bold text-lg">{n}</div>
                           <div className="font-mono text-[9px] tracking-widest mt-0.5" style={{ color: sessionsPerWeek === n ? '#000' : 'rgba(230,231,234,0.85)' }}>{n === 3 ? 'MINIMAL' : n === 4 ? 'STANDARD' : n === 5 ? 'AVANCÉ' : 'EXPERT'}</div>
                         </button>
                       ))}
                     </div>
+                    {liveImpact ? (
+                      <div className="mt-4 rounded-lg p-4" style={{ background: 'rgba(74,158,255,0.10)', border: '1px solid rgba(74,158,255,0.35)' }}>
+                        <div className="font-mono text-[9px] tracking-widest mb-3" style={{ color: 'var(--compass)' }}>INCIDENCE DIRECTE · {sessionsPerWeek} SÉANCES/SEM</div>
+                        <div className="grid grid-cols-4 gap-3 text-center">
+                          <div>
+                            <div className="font-display font-bold text-lg tabular" style={{ color: 'var(--text)' }}>{liveImpact.medKm}</div>
+                            <div className="font-mono text-[8px] tracking-widest" style={{ color: 'rgba(230,231,234,0.75)' }}>KM/SEM TYPE</div>
+                          </div>
+                          <div>
+                            <div className="font-display font-bold text-lg tabular" style={{ color: 'var(--text)' }}>{liveImpact.peakKm}</div>
+                            <div className="font-mono text-[8px] tracking-widest" style={{ color: 'rgba(230,231,234,0.75)' }}>PIC KM</div>
+                          </div>
+                          <div>
+                            <div className="font-display font-bold text-lg tabular" style={{ color: 'var(--text)' }}>{liveImpact.peakTss}</div>
+                            <div className="font-mono text-[8px] tracking-widest" style={{ color: 'rgba(230,231,234,0.75)' }}>PIC CHARGE TSS</div>
+                          </div>
+                          <div>
+                            <div className="font-display font-bold text-lg tabular" style={{ color: 'var(--text)' }}>{liveImpact.qualPerWeek}</div>
+                            <div className="font-mono text-[8px] tracking-widest" style={{ color: 'rgba(230,231,234,0.75)' }}>QUALITÉ/SEM</div>
+                          </div>
+                        </div>
+                        <div className="text-[11px] mt-2 leading-snug" style={{ color: 'rgba(230,231,234,0.80)' }}>Estimation recalculée en direct. Génère l'aperçu pour le détail semaine par semaine.</div>
+                      </div>
+                    ) : (
+                      <div className="text-[11px] mt-3 leading-snug" style={{ color: 'rgba(230,231,234,0.60)' }}>Choisis une course/date cible pour voir l'incidence directe du nombre de séances.</div>
+                    )}
                   </div>
 
                   {/* Strength */}
-                  <div className="mb-5">
-                    <div className="font-mono text-[10px] tracking-widest mb-2" style={{ color: 'rgba(224,225,228,0.92)' }}>SÉANCES DE RENFO PAR SEMAINE</div>
-                    <div className="grid grid-cols-4 gap-2">
+                  <div>
+                    <GenStep n={3} title="Séances de renfo / semaine" hint="OPTIONNEL · PRÉVENTION BLESSURE" />
+                    <div className="grid grid-cols-4 gap-3">
                       {[0, 1, 2, 3].map(n => (
-                        <button key={n} onClick={() => setStrengthPerWeek(n)} className="btn py-3 rounded-lg" style={{ background: strengthPerWeek === n ? 'var(--accent)' : 'rgba(255,255,255,0.10)', color: strengthPerWeek === n ? '#000' : 'var(--text)', border: `1px solid ${strengthPerWeek === n ? 'var(--accent)' : 'rgba(255,255,255,0.25)'}` }}>
+                        <button key={n} onClick={() => setStrengthPerWeek(n)} className="btn py-4 rounded-lg" style={{ background: strengthPerWeek === n ? 'var(--accent)' : 'rgba(255,255,255,0.10)', color: strengthPerWeek === n ? '#000' : 'var(--text)', border: `1px solid ${strengthPerWeek === n ? 'var(--accent)' : 'rgba(255,255,255,0.25)'}` }}>
                           <div className="font-display font-bold text-lg">{n === 0 ? '—' : n}</div>
                           <div className="font-mono text-[9px] tracking-widest mt-0.5" style={{ color: strengthPerWeek === n ? '#000' : 'rgba(230,231,234,0.85)' }}>{n === 0 ? 'AUCUNE' : `${n} / SEM`}</div>
                         </button>
@@ -23191,7 +23350,7 @@
                   </div>
 
                   {/* Historical calibration info */}
-                  <div className="mb-5 rounded-lg p-3" style={{ background: hasHistory ? 'rgba(143, 232, 106, 0.10)' : 'rgba(255, 176, 32, 0.10)', border: hasHistory ? '1px solid rgba(143, 232, 106, 0.40)' : '1px solid rgba(255, 176, 32, 0.40)' }}>
+                  <div className="rounded-lg p-4" style={{ background: hasHistory ? 'rgba(143, 232, 106, 0.10)' : 'rgba(255, 176, 32, 0.10)', border: hasHistory ? '1px solid rgba(143, 232, 106, 0.40)' : '1px solid rgba(255, 176, 32, 0.40)' }}>
                     <div className="flex items-start gap-2">
                       <IconInfo size={13} style={{ color: hasHistory ? 'var(--positive)' : 'var(--caution)', flexShrink: 0, marginTop: 2 }} />
                       <div className="text-xs leading-relaxed" style={{ color: 'rgba(230,231,234,0.90)' }}>
@@ -23228,7 +23387,7 @@
                     if (prKeysShort.length > 0) iSignals.push(`PR ${prKeysShort[0]}`);
                     if (iSignals.length === 0) iSignals.push('footing déclaré (contraint)');
                     return (
-                      <div className="mb-5 rounded-lg p-3" style={{ background: 'linear-gradient(155deg, rgba(255,255,255,0.14), rgba(212,255,0,0.06))', border: '1px solid rgba(255,255,255,0.26)' }}>
+                      <div className="rounded-lg p-4" style={{ background: 'linear-gradient(155deg, rgba(255,255,255,0.14), rgba(212,255,0,0.06))', border: '1px solid rgba(255,255,255,0.26)' }}>
                         <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
                           <div className="font-mono text-[10px] tracking-widest" style={{ color: 'rgba(224,225,228,0.92)' }}>BASE AÉROBIE — 2 AXES</div>
                           <div className="flex items-center gap-4">
@@ -23264,7 +23423,7 @@
                     <button onClick={onCancel} className="btn-base btn-secondary btn-lg flex-1">Annuler</button>
                     <button onClick={generatePreview} className="btn-base btn-primary btn-lg flex-1 flex items-center justify-center gap-2">Générer l'aperçu <IconArrowRight size={14} /></button>
                   </div>
-                </>
+                </div>
               ) : (
                 <PlanPreview preview={preview} cp={effectiveCp} archetype={archetype} onBack={() => setPreview(null)} onConfirm={confirmPlan} />
               )}
@@ -23274,9 +23433,40 @@
       );
     }
 
+    // En-tête de section de l'aperçu : titre display + filet de séparation +
+    // accessoire optionnel à droite. Donne la hiérarchie (Périodisation /
+    // Charge globale / Calendrier) cohérente avec les étapes du formulaire.
+    function PvHead({ title, hint, right = null }) {
+      return (
+        <div className="flex items-baseline justify-between gap-3 mb-3 pb-2" style={{ borderBottom: '1px solid var(--border)' }}>
+          <span className="font-display font-bold" style={{ color: 'var(--text)', fontSize: 16, lineHeight: 1.15 }}>{title}</span>
+          {right || (hint && <span className="font-mono text-[9px] tracking-widest" style={{ color: 'var(--text-faint)' }}>{hint}</span>)}
+        </div>
+      );
+    }
+
     function PlanPreview({ preview, cp, archetype = null, onBack, onConfirm }) {
       const phaseSummary = preview.phasePlan;
       const [open, setOpen] = useState(null); // { wi } = whole week, or { wi, dk } = a single day
+      // Hauteurs RÉELLES (mesurées, pas devinées) de l'en-tête sticky ET du
+      // graphe collant. headerH → top du graphe (collage exact, pas de bande).
+      // headerH + chart → scroll-margin-top des semaines : scrollIntoView les
+      // pose alors PILE sous la courbe, de façon déterministe.
+      const [headerH, setHeaderH] = useState(72);
+      const [chartStickyH, setChartStickyH] = useState(0);
+      useEffect(() => {
+        const measure = () => {
+          const h = document.querySelector('[data-plan-modal-header]');
+          if (h) setHeaderH(Math.round(h.getBoundingClientRect().height));
+          const c = document.querySelector('[data-plan-chart-sticky]');
+          if (c) setChartStickyH(Math.round(c.getBoundingClientRect().height));
+        };
+        measure();
+        const r = requestAnimationFrame(measure); // re-mesure après que le SVG s'est posé
+        window.addEventListener('resize', measure);
+        return () => { cancelAnimationFrame(r); window.removeEventListener('resize', measure); };
+      }, []);
+      const weekScrollMargin = headerH + chartStickyH + 8; // marge pile sous la courbe
       const totalKm = preview.weeks.reduce((s, w) => s + (w.stats?.km || 0), 0);
       const totalTSS = preview.weeks.reduce((s, w) => s + (w.stats?.tss || 0), 0);
       const totalHours = preview.weeks.reduce((s, w) => s + (w.stats?.duration || 0), 0) / 60;
@@ -23352,7 +23542,8 @@
           </div>
 
           {/* Phase ribbon — periodization at a glance */}
-          <div className="flex w-full rounded-lg overflow-hidden mb-5" style={{ height: 34, border: '1px solid rgba(255,255,255,0.25)' }}>
+          <PvHead title="Périodisation" hint="STRUCTURE DU PLAN" />
+          <div className="flex w-full rounded-lg overflow-hidden mb-6" style={{ height: 34, border: '1px solid rgba(255,255,255,0.25)' }}>
             {phaseOrder.map(([k, n], i) => {
               const info = PHASE_INFO[k];
               return (
@@ -23365,7 +23556,8 @@
           </div>
 
           {/* Totals */}
-          <div className="grid grid-cols-3 gap-2 mb-5">
+          <PvHead title="Charge globale" hint="SUR TOUT LE PLAN" />
+          <div className="grid grid-cols-3 gap-2 mb-4">
             <div className="rounded-lg p-3 text-center" style={{ background: 'linear-gradient(155deg, rgba(255,255,255,0.16), rgba(212,255,0,0.06))', border: '1px solid rgba(255,255,255,0.26)' }}>
               <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'rgba(224,225,228,0.92)' }}>VOLUME</div>
               <div className="font-display text-3xl font-bold tabular" style={{ color: 'var(--compass)' }}>{Math.round(totalKm)}<span className="font-mono text-xs ml-1" style={{ color: 'rgba(230,231,234,0.78)' }}>km</span></div>
@@ -23376,19 +23568,21 @@
             </div>
             <div className="rounded-lg p-3 text-center" style={{ background: 'linear-gradient(155deg, rgba(255,255,255,0.16), rgba(212,255,0,0.06))', border: '1px solid rgba(255,255,255,0.26)' }}>
               <div className="font-mono text-[9px] tracking-widest mb-1" style={{ color: 'rgba(224,225,228,0.92)' }}>CHARGE</div>
-              <div className="font-display text-3xl font-bold tabular" style={{ color: 'var(--accent)' }} title={TERMS.tss.tooltip}>{totalTSS}</div>
+              <div className="font-display text-3xl font-bold tabular" style={{ color: 'var(--text)' }} title={TERMS.tss.tooltip}>{totalTSS}</div>
             </div>
           </div>
 
           {/* Weekly chart — volume km par semaine, fond teinté par phase.
-              Click sur une colonne = ouvre le panneau de la semaine + scroll. */}
-          <div className="mb-5">
+              Click sur une colonne = ouvre le panneau de la semaine + scroll.
+              STICKY : reste collé sous l'en-tête quand on scrolle le calendrier
+              (fond opaque + filet bas pour masquer le contenu qui défile dessous). */}
+          <div data-plan-chart-sticky className="mb-5 sticky" style={{ top: headerH, zIndex: 5, background: 'var(--bg)', paddingTop: 6, paddingBottom: 8, borderBottom: '1px solid var(--border)', boxShadow: '0 10px 16px -10px rgba(0,0,0,0.75)' }}>
             {(() => {
               const color = 'var(--compass)';
               const W = 1000;
-              const H = 130;
-              const topPad = 18; // room pour les chiffres km au-dessus des points
-              const bottomPad = 14;
+              const H = 92;
+              const topPad = 16; // room pour les chiffres km au-dessus des points
+              const bottomPad = 12;
               const plotTop = topPad;
               const plotBottom = H - bottomPad;
               const plotH = plotBottom - plotTop;
@@ -23405,20 +23599,31 @@
               const valOf = (w) => w.stats?.km || 0;
               const selectedWi = open && open.wi != null ? open.wi : null;
               const goToWeek = (i) => {
-                toggleWeek(i);
-                // Double rAF pour laisser React commiter, puis scroll manuel du modal
-                // (scrollIntoView ne bouge pas quand la cible est déjà partiellement visible).
-                requestAnimationFrame(() => {
-                  requestAnimationFrame(() => {
-                    const el = document.querySelector(`[data-week-anchor="${i}"]`);
-                    const scroller = document.querySelector('[data-plan-modal-scroll]');
-                    if (!el || !scroller) return;
-                    const elRect = el.getBoundingClientRect();
-                    const scRect = scroller.getBoundingClientRect();
-                    const target = scroller.scrollTop + (elRect.top - scRect.top) - 96;
-                    scroller.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
-                  });
-                });
+                // Ouverture FORCÉE : ferme toute autre semaine/jour déjà ouvert
+                // et ouvre uniquement la semaine cliquée (pas de toggle).
+                setOpen({ wi: i });
+                const scrollNow = () => {
+                  const sc = document.querySelector('[data-plan-modal-scroll]');
+                  if (!sc) return;
+                  // Requête SCOPÉE au conteneur de la modale + attribut unique
+                  // (data-pv-week) : évite la collision avec les pastilles
+                  // data-week-anchor du ruban de la vue Plan en arrière-plan.
+                  const el = sc.querySelector(`[data-pv-week="${i}"]`);
+                  if (!el) return;
+                  const headerEl = document.querySelector('[data-plan-modal-header]');
+                  const chartEl = document.querySelector('[data-plan-chart-sticky]');
+                  const hH = headerEl ? headerEl.offsetHeight : 0;
+                  const cH = chartEl ? chartEl.offsetHeight : 0;
+                  const offset = hH + cH + 8;
+                  const scTop = sc.getBoundingClientRect().top;
+                  const elTop = el.getBoundingClientRect().top;
+                  const target = Math.max(0, sc.scrollTop + (elTop - scTop) - offset);
+                  sc.scrollTo({ top: target, behavior: 'auto' });
+                };
+                requestAnimationFrame(() => requestAnimationFrame(() => {
+                  scrollNow();
+                  requestAnimationFrame(() => requestAnimationFrame(scrollNow));
+                }));
               };
               // Regroupe les semaines consécutives de même phase pour les dessiner
               // comme bandes de fond colorées (1 rect par bloc de phase).
@@ -23434,20 +23639,7 @@
                 : '';
               return (
                 <>
-                  <div className="flex items-center justify-between mb-1.5 flex-wrap gap-2">
-                    <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-faint)' }}>KILOMÉTRAGE HEBDOMADAIRE</div>
-                    <div className="flex gap-2 flex-wrap">
-                      {phaseBands.map((b, idx) => {
-                        const info = PHASE_INFO[b.phase];
-                        return (
-                          <span key={idx} className="font-mono text-[9px] tracking-widest flex items-center gap-1" style={{ color: info.color }}>
-                            <span style={{ width: 6, height: 6, borderRadius: 2, background: info.color, display: 'inline-block', opacity: 0.7 }} />
-                            {info.label.toUpperCase()}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  </div>
+                  <div className="font-mono text-[10px] tracking-widest mb-1.5" style={{ color: 'var(--text-faint)' }}>KILOMÉTRAGE HEBDOMADAIRE <span style={{ opacity: 0.6 }}>· fond = phase</span></div>
                   <div className="rounded-md overflow-hidden" style={{ background: 'var(--bg)', padding: '3px 4px 0' }}>
                     {/* Pas de preserveAspectRatio="none" : on garde les proportions natives
                         pour ne pas étirer les chiffres et les points horizontalement. */}
@@ -23501,7 +23693,8 @@
                               style={{ opacity: isSel ? 1 : (w.isRecoveryWeek ? 0.65 : 0.95) }} />
                           );
                         })}
-                        {/* Nombre de km au-dessus de chaque point */}
+                        {/* Nombre de km au-dessus de CHAQUE point (toutes les
+                            semaines, y compris sur les longs plans). */}
                         {preview.weeks.map((w, i) => {
                           const v = valOf(w);
                           const isSel = selectedWi === i;
@@ -23514,15 +23707,21 @@
                             </text>
                           );
                         })}
-                        {/* Labels de semaine en bas */}
-                        {preview.weeks.map((w, i) => (
-                          <text key={`${i}-wlabel`} x={xOf(i)} y={H - 3} fontSize={7}
-                            fill={selectedWi === i ? PHASE_INFO[w.phase].color : 'var(--text-faint)'}
-                            textAnchor="middle" fontFamily="JetBrains Mono"
-                            style={{ fontWeight: selectedWi === i ? 700 : 400, opacity: selectedWi === i ? 1 : 0.7 }}>
-                            S{w.weekIdx}{w.isRecoveryWeek ? '·R' : ''}{w.isRaceWeek ? '·C' : ''}
-                          </text>
-                        ))}
+                        {/* Labels de semaine en bas — 1 sur 2 sur les longs plans
+                            (>16 sem), en gardant la sélection et la dernière. */}
+                        {preview.weeks.map((w, i) => {
+                          const many = preview.weeks.length > 16;
+                          const showLbl = !many || i % 2 === 0 || selectedWi === i || i === preview.weeks.length - 1;
+                          if (!showLbl) return null;
+                          return (
+                            <text key={`${i}-wlabel`} x={xOf(i)} y={H - 3} fontSize={7}
+                              fill={selectedWi === i ? PHASE_INFO[w.phase].color : 'var(--text-faint)'}
+                              textAnchor="middle" fontFamily="JetBrains Mono"
+                              style={{ fontWeight: selectedWi === i ? 700 : 400, opacity: selectedWi === i ? 1 : 0.7 }}>
+                              S{w.weekIdx}{w.isRecoveryWeek ? '·R' : ''}{w.isRaceWeek ? '·C' : ''}
+                            </text>
+                          );
+                        })}
                       </g>
                       {/* Zones de clic — pointerEvents="all" pour capter même si fill transparent */}
                       {preview.weeks.map((w, i) => {
@@ -23558,6 +23757,7 @@
           </div>
 
           {/* Calendar — one row per week. Click a session for its detail, or the SEM column for the whole week. */}
+          <PvHead title="Calendrier semaine par semaine" hint="CLIQUE POUR LE DÉTAIL" />
           <div className="rounded-xl p-2.5 md:p-4 mb-4" style={{ background: 'var(--bg-elev-2)', border: '1px solid var(--border)' }}>
             {/* Day-of-week headers */}
             <div className="grid gap-1.5 mb-2" style={{ gridTemplateColumns: gridCols }}>
@@ -23580,7 +23780,7 @@
                         <span className="font-mono text-[10px] truncate" style={{ color: 'var(--text-faint)' }}>· {info.focus}</span>
                       </div>
                     )}
-                    <div data-week-anchor={i} className="grid gap-1.5" style={{ gridTemplateColumns: gridCols, marginBottom: 6, scrollMarginTop: 96 }}>
+                    <div data-pv-week={i} className="grid gap-1.5" style={{ gridTemplateColumns: gridCols, marginBottom: 6, scrollMarginTop: weekScrollMargin }}>
                       {/* Week-info cell — click to expand the whole week */}
                       <button onClick={() => toggleWeek(i)} className="rounded-lg flex flex-col items-start justify-center px-2 py-1.5 text-left transition-colors"
                         style={{ background: weekOpen && !open.dk ? tint(info.color, 16) : 'var(--bg)', border: `1px solid ${weekOpen ? info.color : 'var(--border)'}`, borderLeft: `4px solid ${info.color}`, minHeight: 92 }}>
