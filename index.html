@@ -7987,7 +7987,16 @@
                   return (
                       <div className="flex flex-col">
                         {weekDays.map((d, i) => { const m = meta(d); const di = (d.date.getDay()+6)%7; const dkey = wsKey + ':' + dayKeys[di]; const hasDetail = m.planned && !m.isRest; const isExp = expandedDayKey === dkey;
-                          const headerClick = () => { if (hasDetail) setExpandedDayKey(prev => prev === dkey ? null : dkey); else editClick(d)(); };
+                          // Séance validée (activité importée + rattachée à ce jour, ou à défaut
+                          // la 1re activité du jour) → un clic ouvre directement le journal de
+                          // l'activité, pas l'éditeur de séance.
+                          const linkedAct = m.hasActivity
+                            ? (d.activities.find(a => a.linkedSession && a.linkedSession.weekStartKey === wsKey && a.linkedSession.dayKey === dayKeys[di]) || d.activities[0])
+                            : null;
+                          const headerClick = () => {
+                            if (linkedAct) { onViewActivity(linkedAct); return; }
+                            if (hasDetail) setExpandedDayKey(prev => prev === dkey ? null : dkey); else editClick(d)();
+                          };
                           return ((() => {
                             const isToday = m.state === 'today';
                             const isDropTarget = dragOverIdx === i && dragDayIdx != null && dragDayIdx !== i;
@@ -8031,7 +8040,12 @@
                                   <span className="font-mono tracking-widest" style={{ color: 'var(--text-faint)', fontSize: 11 }}>+ AJOUTER UNE SÉANCE</span>
                                 )}
                               </div>
-                              {hasDetail && (
+                              {linkedAct ? (
+                                <div className="flex items-center gap-1 flex-shrink-0" title="Voir l'activité réalisée">
+                                  <span className="font-mono tracking-widest" style={{ color: 'var(--positive)', fontSize: 9 }}>VOIR</span>
+                                  <IconArrowRight size={14} style={{ color: 'var(--positive)' }} />
+                                </div>
+                              ) : hasDetail && (
                                 <div className="flex items-center flex-shrink-0" aria-hidden="true">
                                   <IconChevronDown size={14} style={{ color: 'var(--text-faint)', transform: isExp ? 'rotate(180deg)' : 'none', transition: 'transform var(--motion-fast) var(--ease-soft)' }} />
                                 </div>
@@ -11704,6 +11718,16 @@
       }
       const reps = detected.reps;
       if (reps.length === 0) {
+        // Sur un test (ex : test CP 3'+20'), la moyenne globale mélange l'effort
+        // max et la longue récup easy → chiffre trompeur ("RÉCUPÉRATION").
+        // Le calcul CP utilise ailleurs les meilleurs 3'/20', pas cette moyenne.
+        // Détection robuste : type de séance liée 'test' OU nom/détail évoquant
+        // un test CP (cas où l'activité n'est pas reliée à une séance 'test').
+        const _ls = activity.linkedSession;
+        const _testTxt = `${_ls ? (_ls.label || '') + ' ' + (_ls.detail || '') : ''} ${activity.name || ''}`.toLowerCase();
+        const _looksLikeTest = (_ls && _ls.type === 'test')
+          || /test\s*cp|test\s*\d+\s*['′]|calibrage|recalibrage|stryd\s*3|3\s*['′]\s*\/\s*20/.test(_testTxt);
+        if (_looksLikeTest) return null;
         // Effort continu : pas de fractions, mais on peut donner un verdict de TENUE.
         // Utile pour les footings, sorties longues, séances tempo continues.
         const p = activity.trackpointPowers;
@@ -11958,8 +11982,15 @@
               {/* Planned vs realized (if linked to a plan) */}
               {activity.linkedSession && <PlannedVsRealizedCard activity={activity} cp={cp} />}
 
-              {/* Auto-detected intervals — always show, complements PlannedVsRealizedCard */}
-              <AutoDetectedIntervalsCard activity={activity} cp={cp} />
+              {/* Fractions auto-détectées : on MASQUE le doublon quand
+                  « Planifié vs réalisé » affiche déjà les blocs (séance reliée
+                  + blocs d'effort). Reste visible sur les séances libres ou
+                  non reliées au plan (où elle apporte une vraie info). */}
+              {(() => {
+                const pvrBlocks = activity.linkedSession ? pvrResolveWorkBlocks(activity.linkedSession, cp) : [];
+                if (pvrBlocks.length > 0) return null;
+                return <AutoDetectedIntervalsCard activity={activity} cp={cp} />;
+              })()}
 
               {/* Session analysis — narrative in French */}
               {profile && allActivities && <SessionAnalysisCard activity={activity} profile={profile} allActivities={allActivities} />}
@@ -20007,188 +20038,160 @@
     // ========================================================================
     // PLANNED VS REALIZED — shown in ActivityDetailModal when linked
     // ========================================================================
-    function PlannedVsRealizedCard({ activity, cp }) {
-      const linked = activity.linkedSession;
-
-      // Parse a session detail into ordered BLOCKS.
-      // Handles complex workouts like:
-      //   "10' @160-197W + 55' à 185-202W + 6×(1' à 248-261W + 2' à 160-197W) + 7' à 160-197W"
-      // Returns an array of blocks:
-      //   [{ reps: 1, durSec: 600, powerLow: 160, powerHigh: 197, mid: 178, label: "10' à 160-197W" },
-      //    { reps: 1, durSec: 3300, powerLow: 185, powerHigh: 202, mid: 193, label: "55' à 185-202W" },
-      //    { reps: 6, durSec: 60, powerLow: 248, powerHigh: 261, mid: 254, label: "6×1' à 248-261W" },
-      //    { reps: 1, durSec: 420, powerLow: 160, powerHigh: 197, mid: 178, label: "7' à 160-197W" }]
-      // Note: recovery-between-reps blocks (like "+ 2' à 160-197W" inside parens) are SKIPPED as reps,
-      // but we extract their power as context.
-      const parseSessionBlocks = (s) => {
-        if (!s) return [];
-        const blocks = [];
-        // First, capture parenthesized group patterns: "N×(EFFORT + RECOVERY)"
-        // We replace them in-place with a marker and emit the effort block.
-        let work = String(s);
-
-        // Expand "N×(A + B)" → handle specially: A is the effort, B the recovery
-        work = work.replace(/(\d+)\s*[×x]\s*\(([^)]+)\)/gi, (match, n, contents) => {
-          const reps = parseInt(n);
-          // Inside parens, typically "1' à 248-261W + 2' à 160-197W"
-          // We extract only the FIRST segment (the work interval, not the recovery)
-          const firstSeg = contents.split(/\s*\+\s*/)[0].trim();
-          // Rewrite as "N×<firstSeg>" in outer string for main parser
-          // Parse that firstSeg for dur + power
-          const durMatch = firstSeg.match(/(\d+(?:\.\d+)?)\s*['′]/) || firstSeg.match(/(\d+)\s*["″]/);
-          const rangeMatch = firstSeg.match(/(\d{2,3})\s*[-–]\s*(\d{2,3})\s*w/i);
-          const singleMatch = firstSeg.match(/à\s*(\d{2,3})\s*w/i) || firstSeg.match(/(?:^|\s)(\d{2,3})\s*w\b/i);
-          if (durMatch) {
-            const isSec = /["″]/.test(firstSeg);
-            const durSec = isSec ? parseInt(durMatch[1]) : Math.round(parseFloat(durMatch[1]) * 60);
-            let powerLow = null, powerHigh = null;
-            if (rangeMatch) { powerLow = parseInt(rangeMatch[1]); powerHigh = parseInt(rangeMatch[2]); }
-            else if (singleMatch) { powerLow = powerHigh = parseInt(singleMatch[1]); }
-            const durLabel = isSec ? `${durSec}"` : `${Math.round(durSec / 60)}'`;
-            const powLabel = powerLow !== null ? (powerLow === powerHigh ? `${powerLow}W` : `${powerLow}-${powerHigh}W`) : '';
-            blocks.push({
-              reps, durSec,
-              powerLow, powerHigh,
-              mid: powerLow !== null ? (powerLow + powerHigh) / 2 : null,
-              label: `${reps}×${durLabel}${powLabel ? ' à ' + powLabel : ''}`,
-              isRecovery: false, isWarmup: false, isCooldown: false,
-            });
-          }
-          return ''; // remove from main parsing
-        });
-
-        // Now parse remaining "+" separated segments, linear form
-        // Normalize separators: replace "@" with "à" for easier parsing
-        work = work.replace(/@/g, 'à');
-        // Split on " + " or " , " top-level
-        const segments = work.split(/\s*\+\s*/).map(x => x.trim()).filter(x => x.length > 2);
-
-        for (const seg of segments) {
-          // Skip pure éch/ret markers (they'll be caught by regex below)
-          // Try "N×D'" direct pattern (shouldn't happen here since we removed them above, but safety)
-          const nxPattern = seg.match(/(\d+)\s*[×x]\s*(\d+(?:\.\d+)?)\s*['′]/) || seg.match(/(\d+)\s*[×x]\s*(\d+)\s*["″]/);
-          if (nxPattern) {
-            const reps = parseInt(nxPattern[1]);
-            const isSec = /["″]/.test(nxPattern[0]);
-            const durSec = isSec ? parseInt(nxPattern[2]) : Math.round(parseFloat(nxPattern[2]) * 60);
-            const rangeMatch = seg.match(/(\d{2,3})\s*[-–]\s*(\d{2,3})\s*w/i);
-            const singleMatch = seg.match(/à\s*(\d{2,3})\s*w/i) || seg.match(/(?:^|\s)(\d{2,3})\s*w\b/i);
-            let powerLow = null, powerHigh = null;
-            if (rangeMatch) { powerLow = parseInt(rangeMatch[1]); powerHigh = parseInt(rangeMatch[2]); }
-            else if (singleMatch) { powerLow = powerHigh = parseInt(singleMatch[1]); }
-            const durLabel = isSec ? `${durSec}"` : `${Math.round(durSec / 60)}'`;
-            const powLabel = powerLow !== null ? (powerLow === powerHigh ? `${powerLow}W` : `${powerLow}-${powerHigh}W`) : '';
-            blocks.push({
-              reps, durSec, powerLow, powerHigh,
-              mid: powerLow !== null ? (powerLow + powerHigh) / 2 : null,
-              label: `${reps}×${durLabel}${powLabel ? ' à ' + powLabel : ''}`,
-              isRecovery: false, isWarmup: false, isCooldown: false,
-            });
-            continue;
-          }
-
-          // Single effort: "D' à XW" or "D' à X-YW"
-          const durMatch = seg.match(/(\d+(?:\.\d+)?)\s*['′]/) || seg.match(/(\d+)\s*["″]/);
-          if (!durMatch) continue;
-          const isSec = /["″]/.test(seg);
+    // Parse a planned session's text detail into ordered effort blocks.
+    // Shared (module scope) so both PlannedVsRealizedCard and the card that
+    // gates the duplicate "Fractions détectées" use the EXACT same result.
+    function pvrParseSessionBlocks(s, cp) {
+      if (!s) return [];
+      const blocks = [];
+      let work = String(s);
+      work = work.replace(/(\d+)\s*[×x]\s*\(([^)]+)\)/gi, (match, n, contents) => {
+        const reps = parseInt(n);
+        const firstSeg = contents.split(/\s*\+\s*/)[0].trim();
+        const durMatch = firstSeg.match(/(\d+(?:\.\d+)?)\s*['′]/) || firstSeg.match(/(\d+)\s*["″]/);
+        const rangeMatch = firstSeg.match(/(\d{2,3})\s*[-–]\s*(\d{2,3})\s*w/i);
+        const singleMatch = firstSeg.match(/à\s*(\d{2,3})\s*w/i) || firstSeg.match(/(?:^|\s)(\d{2,3})\s*w\b/i);
+        if (durMatch) {
+          const isSec = /["″]/.test(firstSeg);
           const durSec = isSec ? parseInt(durMatch[1]) : Math.round(parseFloat(durMatch[1]) * 60);
-
+          let powerLow = null, powerHigh = null;
+          if (rangeMatch) { powerLow = parseInt(rangeMatch[1]); powerHigh = parseInt(rangeMatch[2]); }
+          else if (singleMatch) { powerLow = powerHigh = parseInt(singleMatch[1]); }
+          const durLabel = isSec ? `${durSec}"` : `${Math.round(durSec / 60)}'`;
+          const powLabel = powerLow !== null ? (powerLow === powerHigh ? `${powerLow}W` : `${powerLow}-${powerHigh}W`) : '';
+          blocks.push({
+            reps, durSec, powerLow, powerHigh,
+            mid: powerLow !== null ? (powerLow + powerHigh) / 2 : null,
+            label: `${reps}×${durLabel}${powLabel ? ' à ' + powLabel : ''}`,
+            isRecovery: false, isWarmup: false, isCooldown: false,
+          });
+        }
+        return '';
+      });
+      work = work.replace(/@/g, 'à');
+      const segments = work.split(/\s*\+\s*/).map(x => x.trim()).filter(x => x.length > 2);
+      for (const seg of segments) {
+        const nxPattern = seg.match(/(\d+)\s*[×x]\s*(\d+(?:\.\d+)?)\s*['′]/) || seg.match(/(\d+)\s*[×x]\s*(\d+)\s*["″]/);
+        if (nxPattern) {
+          const reps = parseInt(nxPattern[1]);
+          const isSec = /["″]/.test(nxPattern[0]);
+          const durSec = isSec ? parseInt(nxPattern[2]) : Math.round(parseFloat(nxPattern[2]) * 60);
           const rangeMatch = seg.match(/(\d{2,3})\s*[-–]\s*(\d{2,3})\s*w/i);
           const singleMatch = seg.match(/à\s*(\d{2,3})\s*w/i) || seg.match(/(?:^|\s)(\d{2,3})\s*w\b/i);
           let powerLow = null, powerHigh = null;
           if (rangeMatch) { powerLow = parseInt(rangeMatch[1]); powerHigh = parseInt(rangeMatch[2]); }
           else if (singleMatch) { powerLow = powerHigh = parseInt(singleMatch[1]); }
-
-          // Mark recovery/warmup/cooldown blocks (low intensity or explicit éch/ret)
-          const isWarmup = /éch|warmup/i.test(seg);
-          const isCooldown = /ret|cool/i.test(seg);
-          const isRecovery = isWarmup || isCooldown || (powerLow !== null && cp && powerLow / cp < 0.75);
-
           const durLabel = isSec ? `${durSec}"` : `${Math.round(durSec / 60)}'`;
           const powLabel = powerLow !== null ? (powerLow === powerHigh ? `${powerLow}W` : `${powerLow}-${powerHigh}W`) : '';
-
           blocks.push({
-            reps: 1, durSec, powerLow, powerHigh,
+            reps, durSec, powerLow, powerHigh,
             mid: powerLow !== null ? (powerLow + powerHigh) / 2 : null,
-            label: `${durLabel}${powLabel ? ' à ' + powLabel : ''}${isWarmup ? ' (éch)' : isCooldown ? ' (ret)' : ''}`,
-            isRecovery, isWarmup, isCooldown,
+            label: `${reps}×${durLabel}${powLabel ? ' à ' + powLabel : ''}`,
+            isRecovery: false, isWarmup: false, isCooldown: false,
           });
+          continue;
         }
+        const durMatch = seg.match(/(\d+(?:\.\d+)?)\s*['′]/) || seg.match(/(\d+)\s*["″]/);
+        if (!durMatch) continue;
+        const isSec = /["″]/.test(seg);
+        const durSec = isSec ? parseInt(durMatch[1]) : Math.round(parseFloat(durMatch[1]) * 60);
+        const rangeMatch = seg.match(/(\d{2,3})\s*[-–]\s*(\d{2,3})\s*w/i);
+        const singleMatch = seg.match(/à\s*(\d{2,3})\s*w/i) || seg.match(/(?:^|\s)(\d{2,3})\s*w\b/i);
+        let powerLow = null, powerHigh = null;
+        if (rangeMatch) { powerLow = parseInt(rangeMatch[1]); powerHigh = parseInt(rangeMatch[2]); }
+        else if (singleMatch) { powerLow = powerHigh = parseInt(singleMatch[1]); }
+        const isWarmup = /éch|warmup/i.test(seg);
+        const isCooldown = /ret|cool/i.test(seg);
+        const isRecovery = isWarmup || isCooldown || (powerLow !== null && cp && powerLow / cp < 0.75);
+        const durLabel = isSec ? `${durSec}"` : `${Math.round(durSec / 60)}'`;
+        const powLabel = powerLow !== null ? (powerLow === powerHigh ? `${powerLow}W` : `${powerLow}-${powerHigh}W`) : '';
+        blocks.push({
+          reps: 1, durSec, powerLow, powerHigh,
+          mid: powerLow !== null ? (powerLow + powerHigh) / 2 : null,
+          label: `${durLabel}${powLabel ? ' à ' + powLabel : ''}${isWarmup ? ' (éch)' : isCooldown ? ' (ret)' : ''}`,
+          isRecovery, isWarmup, isCooldown,
+        });
+      }
+      return blocks;
+    }
 
-        return blocks;
-      };
-
-      // Convert structured blocks (from editor) into the same format parseSessionBlocks produces.
-      // This way, sessions saved with the structured editor (no text detail) still work.
-      const blocksFromStructured = (structured) => {
-        if (!Array.isArray(structured) || structured.length === 0) return null;
-        const out = [];
-        structured.forEach(b => {
-          if (b.kind === 'group' && Array.isArray(b.children) && b.children.length > 0) {
-            // The first child is the work, others are recovery
-            const reps = b.reps || 1;
-            b.children.forEach((c, idx) => {
-              const durSec = Math.round((c.durMin || 0) * 60);
-              if (durSec <= 0) return;
-              const isRecovery = idx > 0 || c.blockKind === 'recovery';
-              const durLabel = durSec >= 60 && durSec % 60 === 0
-                ? `${durSec / 60}'`
-                : durSec < 60 ? `${durSec}"` : `${Math.floor(durSec / 60)}'${String(durSec % 60).padStart(2, '0')}`;
-              const powLabel = c.powerLow != null
-                ? (c.powerLow === c.powerHigh ? `${c.powerLow}W` : `${c.powerLow}-${c.powerHigh}W`)
-                : '';
-              out.push({
-                reps: idx === 0 ? reps : reps, // recoveries also repeat
-                durSec,
-                powerLow: c.powerLow,
-                powerHigh: c.powerHigh,
-                mid: c.powerLow != null ? (c.powerLow + (c.powerHigh ?? c.powerLow)) / 2 : null,
-                label: `${reps > 1 ? reps + '×' : ''}${durLabel}${powLabel ? ' à ' + powLabel : ''}`,
-                isRecovery,
-                isWarmup: false,
-                isCooldown: false,
-              });
-            });
-          } else if (b.kind === 'single' || b.blockKind) {
-            const durSec = Math.round((b.durMin || 0) * 60);
+    function pvrBlocksFromStructured(structured) {
+      if (!Array.isArray(structured) || structured.length === 0) return null;
+      const out = [];
+      structured.forEach(b => {
+        if (b.kind === 'group' && Array.isArray(b.children) && b.children.length > 0) {
+          const reps = b.reps || 1;
+          b.children.forEach((c, idx) => {
+            const durSec = Math.round((c.durMin || 0) * 60);
             if (durSec <= 0) return;
-            const isRecovery = b.blockKind === 'recovery' || b.blockKind === 'cooldown';
-            const isWarmup = b.blockKind === 'warmup';
+            const isRecovery = idx > 0 || c.blockKind === 'recovery';
             const durLabel = durSec >= 60 && durSec % 60 === 0
               ? `${durSec / 60}'`
               : durSec < 60 ? `${durSec}"` : `${Math.floor(durSec / 60)}'${String(durSec % 60).padStart(2, '0')}`;
-            const powLabel = b.powerLow != null
-              ? (b.powerLow === b.powerHigh ? `${b.powerLow}W` : `${b.powerLow}-${b.powerHigh}W`)
+            const powLabel = c.powerLow != null
+              ? (c.powerLow === c.powerHigh ? `${c.powerLow}W` : `${c.powerLow}-${c.powerHigh}W`)
               : '';
             out.push({
-              reps: 1,
+              reps: idx === 0 ? reps : reps,
               durSec,
-              powerLow: b.powerLow,
-              powerHigh: b.powerHigh,
-              mid: b.powerLow != null ? (b.powerLow + (b.powerHigh ?? b.powerLow)) / 2 : null,
-              label: `${durLabel}${powLabel ? ' à ' + powLabel : ''}`,
-              isRecovery: isRecovery || isWarmup,
-              isWarmup,
-              isCooldown: b.blockKind === 'cooldown',
+              powerLow: c.powerLow,
+              powerHigh: c.powerHigh,
+              mid: c.powerLow != null ? (c.powerLow + (c.powerHigh ?? c.powerLow)) / 2 : null,
+              label: `${reps > 1 ? reps + '×' : ''}${durLabel}${powLabel ? ' à ' + powLabel : ''}`,
+              isRecovery,
+              isWarmup: false,
+              isCooldown: false,
             });
-          }
-        });
-        return out.length > 0 ? out : null;
-      };
+          });
+        } else if (b.kind === 'single' || b.blockKind) {
+          const durSec = Math.round((b.durMin || 0) * 60);
+          if (durSec <= 0) return;
+          const isRecovery = b.blockKind === 'recovery' || b.blockKind === 'cooldown';
+          const isWarmup = b.blockKind === 'warmup';
+          const durLabel = durSec >= 60 && durSec % 60 === 0
+            ? `${durSec / 60}'`
+            : durSec < 60 ? `${durSec}"` : `${Math.floor(durSec / 60)}'${String(durSec % 60).padStart(2, '0')}`;
+          const powLabel = b.powerLow != null
+            ? (b.powerLow === b.powerHigh ? `${b.powerLow}W` : `${b.powerLow}-${b.powerHigh}W`)
+            : '';
+          out.push({
+            reps: 1,
+            durSec,
+            powerLow: b.powerLow,
+            powerHigh: b.powerHigh,
+            mid: b.powerLow != null ? (b.powerLow + (b.powerHigh ?? b.powerLow)) / 2 : null,
+            label: `${durLabel}${powLabel ? ' à ' + powLabel : ''}`,
+            isRecovery: isRecovery || isWarmup,
+            isWarmup,
+            isCooldown: b.blockKind === 'cooldown',
+          });
+        }
+      });
+      return out.length > 0 ? out : null;
+    }
 
-      // Source priority: structured blocks → text detail → fall back to bestEfforts heuristic
-      const allBlocks = blocksFromStructured(linked.blocks) || parseSessionBlocks(linked.detail || '');
-      // Working blocks = non-recovery, non-warmup, with power specified
+    // Effort blocks of the linked plan (non-recovery, with power). Empty array
+    // when there's nothing to compare → that's the signal "Planifié vs réalisé"
+    // is NOT showing a per-block breakdown, so the auto-detected card stays.
+    function pvrResolveWorkBlocks(linked, cp) {
+      if (!linked) return [];
+      const allBlocks = pvrBlocksFromStructured(linked.blocks) || pvrParseSessionBlocks(linked.detail || '', cp);
       let workBlocks = allBlocks.filter(b => !b.isRecovery && b.mid !== null);
-      // Fallback : sur un footing pur ou sortie longue à allure easy, TOUS les blocs
-      // sont marqués isRecovery (puissance < 75% CP). Sans fallback, la card ne
-      // s'afficherait pas du tout. On relâche le critère pour exclure uniquement
-      // les éch/ret explicites — ça permet d'avoir un verdict de TENUE sur les
-      // blocs easy planifiés (« 45' à 175W » → tenu à 178W ± 6 par exemple).
-      const isEasySession = workBlocks.length === 0;
-      if (isEasySession) {
+      if (workBlocks.length === 0) {
         workBlocks = allBlocks.filter(b => !b.isWarmup && !b.isCooldown && b.mid !== null);
       }
+      return workBlocks;
+    }
+
+    function PlannedVsRealizedCard({ activity, cp }) {
+      const linked = activity.linkedSession;
+
+      // Parsing des blocs : voir pvrParseSessionBlocks / pvrBlocksFromStructured / pvrResolveWorkBlocks (module scope, au-dessus).
+
+      // Source priority + fallback easy géré dans le résolveur partagé
+      // (pvrResolveWorkBlocks), pour que cette carte et le masquage du doublon
+      // "Fractions détectées" partent EXACTEMENT du même calcul.
+      const workBlocks = pvrResolveWorkBlocks(linked, cp);
 
       const plannedLabel = linked.label || 'Séance prévue';
       const plannedTypeLabel = { rest: 'Repos', easy: 'Footing easy', tempo: 'Seuil', intervals: 'Intervalles', long: 'Sortie longue', test: 'Test' }[linked.type] || linked.type;
@@ -20439,7 +20442,7 @@
 
           {/* Per-block breakdown */}
           {blockData && blockData.length > 0 && (
-            <div className="space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
               {blockData.map((br, bi) => {
                 const b = br.block;
                 const powLabel = b.powerLow === b.powerHigh ? `${b.powerLow}W` : `${b.powerLow}-${b.powerHigh}W`;
@@ -23947,7 +23950,24 @@
       useEffect(() => {
         let changed = false;
         const updated = activities.map(a => {
-          if (a.linkedSession) return a;
+          // Déjà lié : on enrichit juste avec les blocs structurés si absents
+          // (activités importées avant ce correctif → comparaison bloc par bloc).
+          if (a.linkedSession) {
+            if (Array.isArray(a.linkedSession.blocks)) return a;
+            const ps = getPlannedSession(profile, planOverrides, new Date(a.startMs));
+            if (ps && Array.isArray(ps.blocks) && ps.blocks.length) {
+              changed = true;
+              return {
+                ...a,
+                linkedSession: {
+                  ...a.linkedSession,
+                  blocks: ps.blocks,
+                  detail: a.linkedSession.detail || ps.detail || '',
+                },
+              };
+            }
+            return a;
+          }
           const planned = getPlannedSession(profile, planOverrides, new Date(a.startMs));
           if (planned && planned.type !== 'rest') {
             changed = true;
@@ -23959,6 +23979,7 @@
                 type: planned.type,
                 label: planned.label,
                 detail: planned.detail,
+                blocks: Array.isArray(planned.blocks) ? planned.blocks : null,
               },
             };
           }
@@ -24182,6 +24203,19 @@
                 message: `${planned.label || 'Séance'} complétée comme prévu. La régularité sur les séances clés, c'est ce qui construit la progression.`,
               });
             }
+          }
+        }
+        // Enrichit le lien avec les BLOCS STRUCTURÉS de la séance prévue (éditeur
+        // « blocs de la séance ») — sinon « Planifié vs réalisé » ne pouvait
+        // comparer que via le texte du détail. Couvre forcedLink ET auto-détection.
+        if (activity.linkedSession && !Array.isArray(activity.linkedSession.blocks)) {
+          const ps = getPlannedSession(profile, planOverrides, new Date(activity.startMs));
+          if (ps && Array.isArray(ps.blocks) && ps.blocks.length) {
+            activity.linkedSession = {
+              ...activity.linkedSession,
+              blocks: ps.blocks,
+              detail: activity.linkedSession.detail || ps.detail || '',
+            };
           }
         }
         const updated = [activity, ...activities].sort((a, b) => b.startMs - a.startMs);
