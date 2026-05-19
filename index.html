@@ -8157,7 +8157,8 @@
               plansList = [{ id: 'legacy', name: profile.planSource === 'COMPASS Generator' ? 'Programme Compass (actuel)' : 'Programme actuel', startDate: profile.planStartDate, totalWeeks: profile.planTotalWeeks || 12, raceDate: null }];
             }
             plansList.sort((a, b) => new Date(a.startDate) - new Date(b.startDate));
-            const endOf = (p) => p.raceDate ? p.raceDate : toLocalDateKey(new Date(new Date(p.startDate).getTime() + ((p.totalWeeks || 1) - 1) * 7 * 86400000));
+            const addWeeksLocal = (dateLike, n) => { const d = new Date(dateLike); d.setDate(d.getDate() + n * 7); return d; };
+            const endOf = (p) => p.raceDate ? p.raceDate : toLocalDateKey(addWeeksLocal(p.startDate, (p.totalWeeks || 1) - 1));
             // Totaux réels (km + durée) sur la fenêtre du programme, lus dans
             // les overrides — reflète aussi les modifs faites à la main.
             const dKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
@@ -8165,7 +8166,7 @@
               let km = 0, min = 0;
               const start = new Date(p.startDate);
               for (let i = 0; i < (p.totalWeeks || 0); i++) {
-                const wk = (planOverrides || {})[toLocalDateKey(new Date(start.getTime() + i * 7 * 86400000))];
+                const wk = (planOverrides || {})[toLocalDateKey(addWeeksLocal(start, i))];
                 if (!wk) continue;
                 dKeys.forEach(dk => {
                   const day = wk[dk];
@@ -14740,7 +14741,7 @@
     // based on planned sessions in upcoming weeks. Uses the same EWMA model as
     // historical CTL/ATL/TSB (42d / 7d time constants).
     // ========================================================================
-    function FutureLoadProjectionCard({ activities, profile, planOverrides }) {
+    function FutureLoadProjectionCard({ activities, profile, planOverrides, races = [] }) {
       const [hoverIdx, setHoverIdx] = useState(null);
       const svgRef = useRef(null);
       const projection = useMemo(() => {
@@ -14915,6 +14916,19 @@
       const todayIdx = xs.findIndex(p => p.isToday);
       const todayX = todayIdx >= 0 ? x(todayIdx) : x(14);
 
+      // Marqueurs de course : index colonne calculé en JOURS LOCAUX (robuste DST).
+      const raceMarkers = (races || [])
+        .filter(r => r && r.date && xs.length)
+        .map(r => {
+          const s = xs[0].date;
+          const s0 = new Date(s.getFullYear(), s.getMonth(), s.getDate());
+          const rd = new Date(String(r.date) + 'T00:00:00');
+          if (isNaN(rd.getTime())) return null;
+          const days = Math.round((rd.getTime() - s0.getTime()) / 86400000);
+          return { r, idx: days };
+        })
+        .filter(o => o && o.idx >= 0 && o.idx < xs.length);
+
       function handleMouseMove(e) {
         if (!svgRef.current) return;
         const rect = svgRef.current.getBoundingClientRect();
@@ -15005,6 +15019,18 @@
 
             {/* Future zone shaded */}
             <rect x={todayX} y={padT} width={W - padR - todayX} height={ch} fill="var(--compass)" opacity="0.04" />
+
+            {/* Courses (lignes verticales + nom) — couleur accent (objectifs) */}
+            {raceMarkers.map(({ r, idx }, k) => {
+              const xpos = x(idx);
+              const labelY = padT + 12 + (k % 3) * 12;
+              return (
+                <g key={'race-' + r.id}>
+                  <line x1={xpos} y1={padT} x2={xpos} y2={padT + ch} stroke="var(--accent)" strokeWidth="1" opacity="0.55" strokeDasharray="3,3" />
+                  <text x={xpos + 4} y={labelY} fontFamily="JetBrains Mono" fontSize="9" fill="var(--accent)" style={{ paintOrder: 'stroke', stroke: 'var(--bg)', strokeWidth: 3, strokeLinejoin: 'round' }}>{r.name}</text>
+                </g>
+              );
+            })}
 
             {/* "Today" vertical line */}
             <line x1={todayX} y1={padT} x2={todayX} y2={padT + ch} stroke="var(--compass)" strokeWidth="1" strokeDasharray="3,3" opacity="0.6" />
@@ -15128,7 +15154,10 @@
         // Future planned TSS (idx 0 = tomorrow)
         const futureTssByDay = new Array(futureDays).fill(0);
         for (let d = 1; d <= futureDays; d++) {
-          const date = new Date(todayMs + d * dayMs);
+          // Arithmétique en JOURS locaux (setDate), pas en ms : insensible aux
+          // changements d'heure. L'ancien `todayMs + d*dayMs` faisait sauter
+          // un jour au passage à l'heure d'hiver → baisse de charge fantôme.
+          const date = new Date(today); date.setDate(today.getDate() + d);
           const wsDate = getWeekStart(date);
           const wsKey = toLocalDateKey(wsDate);
           const dayIdx = (date.getDay() + 6) % 7;
@@ -15770,8 +15799,11 @@
           // K varie de 0.5 (faible qualité) à 1.0 (dense qualité), point d'ancrage
           // à 0.4 densité qualité (= 1.5 séances qualité sur 4 par semaine).
           const K = 0.5 + 1.25 * Math.max(0, Math.min(0.4, qualityDensity - 0.1));
+          // Arithmétique en JOURS LOCAUX (setDate) pour être insensible aux
+          // changements d'heure — même fix que UnifiedFitnessChart/buildPlan.
+          const todayLocal = new Date(todayMs);
           for (let d = 1; d <= totalDays; d++) {
-            const date = new Date(todayMs + d * dayMs);
+            const date = new Date(todayLocal); date.setDate(todayLocal.getDate() + d);
             const wsDate = getWeekStart(date);
             const wsKey = toLocalDateKey(wsDate);
             const dayIdx = (date.getDay() + 6) % 7;
@@ -16562,7 +16594,7 @@
                   <div><ACWRCard acwr={acwr} softMode={profile.trainingMode === 'maintenance' || profile.experienceLevel === 'occasional'} trailMode={profile.discipline === 'trail'} /></div>
                 </div>
               )}
-              <div className="mb-4"><FutureLoadProjectionCard activities={activities} profile={profile} planOverrides={planOverrides} /></div>
+              <div className="mb-4"><FutureLoadProjectionCard activities={activities} profile={profile} planOverrides={planOverrides} races={races} /></div>
               <div className="mb-4"><ACWRProjectionCard activities={activities} profile={profile} planOverrides={planOverrides} /></div>
             </>
           )}
@@ -16570,7 +16602,7 @@
           {/* Tab content: Tendances */}
           {tab === 'tendances' && (
             <>
-              {hasFitnessData && <div className="mb-4"><UnifiedFitnessChartCard activities={activities} profile={profile} planOverrides={planOverrides} /></div>}
+              {hasFitnessData && <div className="mb-4"><UnifiedFitnessChartCard activities={activities} profile={profile} planOverrides={planOverrides} races={races} /></div>}
               <div className={`grid grid-cols-1 ${(isPaceModePred ? activities.length >= 2 : hasPowerData) ? 'lg:grid-cols-2' : ''} gap-3 mb-4`}>
                 <WeeklyTSSCard weeks={weeklyTss} hasPowerData={hasFitnessData} />
                 {isPaceModePred
@@ -17041,7 +17073,7 @@
     // Toggleable series via legend chips (charge / forme / fatigue / fraîcheur).
     // Replaces the old FormTrendCard which is now redundant.
     // ========================================================================
-    function UnifiedFitnessChartCard({ activities, profile, planOverrides }) {
+    function UnifiedFitnessChartCard({ activities, profile, planOverrides, races = [] }) {
       const [hoverIdx, setHoverIdx] = useState(null);
       // Charge (TSS) masquée par défaut : les barres TSS quotidiennes parasitent
       // la lecture des courbes CTL/ATL/TSB sur les fenêtres longues. L'utilisateur
@@ -17050,6 +17082,10 @@
       // Fenêtre par défaut : "tout" (vue d'ensemble). L'utilisateur peut zoomer
       // sur 30j ou 90j s'il veut le détail récent.
       const [zoom, setZoom] = useState('all');
+      // Décalage temporel (en jours) appliqué aux fenêtres 30j/90j pour scroller
+      // dans le passé/futur. Réinitialisé à 0 quand on change de fenêtre.
+      const [windowOffset, setWindowOffset] = useState(0);
+      const changeZoom = (z) => { setZoom(z); setWindowOffset(0); };
 
       const data = useMemo(() => {
         if ((!profile.cp && !profile.vma) || !activities) return null;
@@ -17092,13 +17128,19 @@
             if (dms >= todayMs && dms > lastPlannedMs) lastPlannedMs = dms;
           });
         });
-        const futureDays = Math.min(180, Math.max(0, Math.round((lastPlannedMs - todayMs) / dayMs) + 7));
+        // Plafond élargi à 400 j (> 1 an) pour couvrir les plans longue échéance
+        // (marathon préparé loin, plans chaînés). L'ancien plafond 180 j coupait
+        // les plans qui s'étendent au-delà de ~6 mois.
+        const futureDays = Math.min(400, Math.max(0, Math.round((lastPlannedMs - todayMs) / dayMs) + 7));
 
         // Build future arrays
         const futCtl = [], futAtl = [], futTsb = [], futTss = [];
         let ctl = seedCtl, atl = seedAtl;
         for (let d = 1; d <= futureDays; d++) {
-          const date = new Date(todayMs + d * dayMs);
+          // Arithmétique en JOURS locaux (setDate), pas en ms : insensible aux
+          // changements d'heure. L'ancien `todayMs + d*dayMs` faisait sauter
+          // un jour au passage à l'heure d'hiver → baisse de charge fantôme.
+          const date = new Date(today); date.setDate(today.getDate() + d);
           const wsDate = getWeekStart(date);
           const wsKey = toLocalDateKey(wsDate);
           const dayIdx = (date.getDay() + 6) % 7;
@@ -17153,11 +17195,11 @@
       const fullPastDays = fullData.pastDays;
       let dispStart = 0, dispEnd = fullTotalDays;
       if (zoom === '30j') {
-        dispStart = Math.max(0, fullTodayIdx - 30);
-        dispEnd = Math.min(fullTotalDays, fullTodayIdx + 31);
+        dispStart = Math.max(0, fullTodayIdx - 30 + windowOffset);
+        dispEnd = Math.min(fullTotalDays, fullTodayIdx + 31 + windowOffset);
       } else if (zoom === '90j') {
-        dispStart = Math.max(0, fullTodayIdx - 90);
-        dispEnd = Math.min(fullTotalDays, fullTodayIdx + 91);
+        dispStart = Math.max(0, fullTodayIdx - 90 + windowOffset);
+        dispEnd = Math.min(fullTotalDays, fullTodayIdx + 91 + windowOffset);
       }
       const ctl = fullData.ctl.slice(dispStart, dispEnd);
       const atl = fullData.atl.slice(dispStart, dispEnd);
@@ -17211,6 +17253,21 @@
       const todayX = x(todayIdx);
       const slot = cw / totalDays;
       const barW = Math.max(1, slot * 0.7);
+
+      // Marqueurs de course : pour chaque course dont la date tombe dans la
+      // fenêtre affichée, on calcule l'index colonne (en jours locaux, pas en
+      // ms — robuste aux changements d'heure).
+      const raceMarkers = (races || [])
+        .filter(r => r && r.date)
+        .map(r => {
+          const s = dateAt(0);
+          const s0 = new Date(s.getFullYear(), s.getMonth(), s.getDate());
+          const rd = new Date(String(r.date) + 'T00:00:00');
+          if (isNaN(rd.getTime())) return null;
+          const days = Math.round((rd.getTime() - s0.getTime()) / 86400000);
+          return { r, idx: days };
+        })
+        .filter(o => o && o.idx >= 0 && o.idx < totalDays);
 
       // Path builders
       function buildPath(arr, yFn) {
@@ -17301,7 +17358,7 @@
             <span className="tracking-widest" style={{ color: 'var(--text-faint)' }}>FENÊTRE</span>
             <ChartRangeSelector
               value={zoom}
-              onChange={setZoom}
+              onChange={changeZoom}
               options={[
                 { value: '30j', label: '30J' },
                 { value: '90j', label: '90J' },
@@ -17309,6 +17366,29 @@
               ]}
               ariaLabel="Fenêtre du graphique forme/fatigue"
             />
+            {/* Navigation temporelle (uniquement en mode 30j/90j) : on décale
+                la fenêtre de la moitié de sa largeur à chaque clic. */}
+            {zoom !== 'all' && (() => {
+              const step = zoom === '30j' ? 15 : 45;
+              const minOffset = -fullTodayIdx + (zoom === '30j' ? 30 : 90);
+              const maxOffset = (fullTotalDays - 1 - fullTodayIdx) - (zoom === '30j' ? 30 : 90);
+              const canPrev = windowOffset > minOffset;
+              const canNext = windowOffset < maxOffset;
+              const btn = (disabled) => ({
+                background: disabled ? 'transparent' : 'var(--bg-elev)',
+                border: `1px solid ${disabled ? 'var(--border)' : 'var(--border-bright)'}`,
+                color: disabled ? 'var(--text-faint)' : 'var(--text-dim)',
+                opacity: disabled ? 0.4 : 1,
+                cursor: disabled ? 'default' : 'pointer',
+              });
+              return (
+                <span className="ml-1 inline-flex items-center gap-1">
+                  <button className="btn px-2 py-1 rounded" style={btn(!canPrev)} disabled={!canPrev} title="Fenêtre précédente" onClick={() => setWindowOffset(o => Math.max(minOffset, o - step))}>‹</button>
+                  <button className="btn px-2 py-1 rounded" style={btn(windowOffset === 0)} disabled={windowOffset === 0} title="Centrer sur aujourd'hui" onClick={() => setWindowOffset(0)}>AUJ.</button>
+                  <button className="btn px-2 py-1 rounded" style={btn(!canNext)} disabled={!canNext} title="Fenêtre suivante" onClick={() => setWindowOffset(o => Math.min(maxOffset, o + step))}>›</button>
+                </span>
+              );
+            })()}
             {zoom !== 'all' && (fullPastDays > pastDays || (fullTotalDays - fullPastDays) > futureDays) && (
               <span className="ml-1 italic" style={{ color: 'var(--text-faint)' }}>
                 · données complètes calculées · {fullPastDays}J passé + {fullTotalDays - fullPastDays}J futur disponibles
@@ -17410,9 +17490,21 @@
               </>
             )}
 
+            {/* Courses (lignes verticales + nom) — couleur accent (objectifs) */}
+            {raceMarkers.map(({ r, idx }, k) => {
+              const xpos = x(idx);
+              const labelY = padT + 12 + (k % 3) * 12; // décale verticalement si plusieurs courses
+              return (
+                <g key={'race-' + r.id}>
+                  <line x1={xpos} y1={padT} x2={xpos} y2={padT + ch} stroke="var(--accent)" strokeWidth="1" opacity="0.55" strokeDasharray="3,3" />
+                  <text x={xpos + 4} y={labelY} fontFamily="JetBrains Mono" fontSize="9" fill="var(--accent)" style={{ paintOrder: 'stroke', stroke: 'var(--bg)', strokeWidth: 3, strokeLinejoin: 'round' }}>{r.name}</text>
+                </g>
+              );
+            })}
+
             {/* Today vertical line */}
-            <line x1={todayX} y1={padT} x2={todayX} y2={padT + ch} stroke="var(--accent)" strokeWidth="1" strokeDasharray="2,2" opacity="0.7" />
-            <text x={todayX} y={padT - 6} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="9" fill="var(--accent)">AUJ.</text>
+            <line x1={todayX} y1={padT} x2={todayX} y2={padT + ch} stroke="var(--text)" strokeWidth="1" strokeDasharray="2,2" opacity="0.8" />
+            <text x={todayX} y={padT - 6} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="9" fill="var(--text)">AUJ.</text>
 
             {/* Hover crosshair + dots */}
             {hoverIdx !== null && (
@@ -19609,8 +19701,11 @@
           let ctl = fitnessNow.ctl, atl = fitnessNow.atl;
           let totalPlannedTss = 0, daysWithSession = 0, longRunCount = 0, totalPlannedKm = 0;
           const kmPace = (profile.easyPaceMinPerKm && profile.easyPaceMinPerKm > 0) ? profile.easyPaceMinPerKm : 6.0;
+          // Arithmétique en JOURS LOCAUX (setDate) pour être insensible aux
+          // changements d'heure — même fix que UnifiedFitnessChart/buildPlan.
+          const todayLocal = new Date(todayMs);
           for (let d = 1; d <= totalDays; d++) {
-            const date = new Date(todayMs + d * dayMs);
+            const date = new Date(todayLocal); date.setDate(todayLocal.getDate() + d);
             const wsDate = getWeekStart(date);
             const wsKey = toLocalDateKey(wsDate);
             const dayIdx = (date.getDay() + 6) % 7;
@@ -20814,6 +20909,11 @@
       easy: {
         base: (cp, w, ctx) => {
           const T = (ctx && Number.isFinite(ctx.targetMin)) ? Math.max(20, Math.min(120, Math.round(ctx.targetMin))) : 40;
+          // Récup OU reprise post-course → footing strict, AUCUNE accélération.
+          // (Daniels / Pfitzinger : recovery = easy uniquement, pas de stride.)
+          if (ctx && (ctx.isRecoveryWeek || ctx.isLeadReprise)) {
+            return { label: 'Footing récup strict', detail: `${T}' à ${Math.round(cp*0.65)}-${Math.round(cp*0.72)}W strict, sans accélération`, purpose: 'Récupération active : aucune sollicitation neuromusculaire, on laisse le corps absorber.', explicitDurationMin: T };
+          }
           const T0 = Math.max(15, T - 5); // pour variantes avec strides en queue (5' réservés)
           const T1 = Math.max(15, T - 8); // pour variantes avec strides longs (~8' réservés)
           const variants = [
@@ -20828,6 +20928,9 @@
         },
         build: (cp, w, ctx) => {
           const T = (ctx && Number.isFinite(ctx.targetMin)) ? Math.max(20, Math.min(120, Math.round(ctx.targetMin))) : 45;
+          if (ctx && (ctx.isRecoveryWeek || ctx.isLeadReprise)) {
+            return { label: 'Footing récup strict', detail: `${T}' à ${Math.round(cp*0.65)}-${Math.round(cp*0.72)}W strict, sans accélération`, purpose: 'Récupération active : laisse les adaptations s\'installer.', explicitDurationMin: T };
+          }
           const T0 = Math.max(20, T - 5);
           const T1 = Math.max(20, T - 8);
           const variants = [
@@ -20842,6 +20945,9 @@
         },
         peak: (cp, w, ctx) => {
           const T = (ctx && Number.isFinite(ctx.targetMin)) ? Math.max(20, Math.min(100, Math.round(ctx.targetMin))) : 32;
+          if (ctx && (ctx.isRecoveryWeek || ctx.isLeadReprise)) {
+            return { label: 'Footing récup strict', detail: `${T}' à ${Math.round(cp*0.65)}-${Math.round(cp*0.72)}W strict, sans accélération`, purpose: 'Récupération active à l\'approche du pic, on préserve la fraîcheur.', explicitDurationMin: T };
+          }
           const T0 = Math.max(15, T - 4);
           const variants = [
             { label: 'Footing court', detail: `${T0}' à ${Math.round(cp*0.70)}W + 4×15" à ${Math.round(cp*1.20)}W (R 45" à ${Math.round(cp*0.65)}W)`, purpose: 'Maintien aérobie léger, activation neuromusculaire avant course.', explicitDurationMin: T },
@@ -22870,7 +22976,14 @@
       // de partir de la cible théorique. Garantit un creux net dans le graphique.
       let prevWeekKm = null;
       for (let w = 1; w <= totalWeeks; w++) {
-        const weekStart = new Date(firstWeekStart.getTime() + (w - 1) * 7 * 86400000);
+        // IMPORTANT : arithmétique en JOURS locaux (setDate), pas en ms brutes.
+        // L'ancien `+ (w-1)*7*86400000` dérivait au passage d'un changement
+        // d'heure → toLocalDateKey() basculait sur dimanche pour les semaines
+        // suivantes, la clé d'override ne matchait plus celle de
+        // getPlannedSession (lundi) → plan par défaut affiché après ~la date
+        // du changement d'heure. setDate reste DST-safe (lundi 00:00 local).
+        const weekStart = new Date(firstWeekStart);
+        weekStart.setDate(weekStart.getDate() + (w - 1) * 7);
         const phase = getPhaseForWeek(w, phasePlan);
         // Récup OBLIGATOIRE toutes les 4 semaines, y compris en Peak — sinon on enchaîne
         // jusqu'à 6-7 semaines de charge sans deload (cas concret : 15-sem marathon où
@@ -22879,8 +22992,13 @@
         // c'est trop tard pour deload).
         // Semaines de REPRISE en tête de plan (course intermédiaire faite juste
         // avant) : forcées soft, tout easy, volume rampé doucement.
+        // Le cycle de deload périodique (toutes les 4 sem) part de la FIN de la
+        // reprise — sinon on empile 3+1 sem easy (ex : marathon : 3 sem reprise
+        // puis w=4 forcée deload = 4 sem easy d'affilée, contre-productif).
         const isLeadReprise = w <= leadRecoveryWeeks;
-        const isRecoveryWeek = isLeadReprise || ((w % 4 === 0) && phase !== 'taper' && (totalWeeks - w) >= 2 && w !== totalWeeks);
+        const wAfterLead = w - leadRecoveryWeeks; // 0 pendant reprise, ≥1 après
+        const isPeriodicRecovery = !isLeadReprise && wAfterLead > 0 && (wAfterLead % 4 === 0) && phase !== 'taper' && (totalWeeks - w) >= 2 && w !== totalWeeks;
+        const isRecoveryWeek = isLeadReprise || isPeriodicRecovery;
         const isRaceWeek = w === totalWeeks;
 
         const pat = isLeadReprise
@@ -22959,7 +23077,11 @@
           else phaseStartW = phasePlan.base + phasePlan.build + phasePlan.peak + 1;
           for (let i = phaseStartW; i <= w; i++) {
             const iPhase = getPhaseForWeek(i, phasePlan);
-            const iIsRecovery = (i % 4 === 0) && iPhase !== 'taper' && (totalWeeks - i) >= 2 && i !== totalWeeks;
+            // Cohérent avec isRecoveryWeek : pendant les sem de reprise OU si
+            // le cycle de deload (post-reprise) tombe pile.
+            const iIsLeadReprise = i <= leadRecoveryWeeks;
+            const iAfterLead = i - leadRecoveryWeeks;
+            const iIsRecovery = iIsLeadReprise || (iAfterLead > 0 && (iAfterLead % 4 === 0) && iPhase !== 'taper' && (totalWeeks - i) >= 2 && i !== totalWeeks);
             if (!iIsRecovery) chargeWeekInPhase++;
           }
           const buildOne = (day, sessionType, targetMinOverride) => {
@@ -22973,6 +23095,7 @@
               weekInPhase,            // position calendaire dans la phase (1-based)
               chargeWeekInPhase,      // position parmi les semaines de charge (ignore les récups)
               isRecoveryWeek,         // pour que pickByWeekInPhase choisisse variant[0] (deload)
+              isLeadReprise,          // semaines de reprise post-course intermédiaire (footing strict, pas de strides)
               targetMin: sessionType === 'long' ? longRunMin
                 : sessionType === 'easy' ? targetMinOverride
                 : undefined,
@@ -23064,8 +23187,19 @@
             ? Math.max(20, Math.min(dynamicCap, Math.round(easyBudgetKm * easyMinPerKm / easyCount)))
             : 0;
 
-          // Pass 2 : easy avec durée calculée pour atteindre la cible
-          easyEntries.forEach(day => buildOne(day, 'easy', perEasyMin));
+          // Pass 2 : easy avec durée calculée pour atteindre la cible.
+          // En reprise post-course, sem 2 et 3 : le DIMANCHE devient l'easy
+          // longue (≈ 1.4× les autres), pour réhabituer aux durées sans casser
+          // le volume hebdo cible (Pfitzinger). En sem 1, tout reste uniforme.
+          const repriseLongRun = isLeadReprise && w >= 2 && easyEntries.includes('dim') && easyCount >= 2;
+          if (repriseLongRun) {
+            const denom = (easyCount - 1) + 1.4;
+            const baseMin = Math.max(20, Math.min(dynamicCap, Math.round((easyBudgetKm * easyMinPerKm) / denom)));
+            const sundayMin = Math.min(dynamicCap, Math.round(baseMin * 1.4));
+            easyEntries.forEach(day => buildOne(day, 'easy', day === 'dim' ? sundayMin : baseMin));
+          } else {
+            easyEntries.forEach(day => buildOne(day, 'easy', perEasyMin));
+          }
         }
 
         // Mémorise le km réel de cette semaine pour la règle -30 % de récup la semaine suivante.
@@ -23165,7 +23299,7 @@
         });
 
         weeks.push({
-          weekIdx: w, weekStart, phase, isRecoveryWeek, isRaceWeek, days,
+          weekIdx: w, weekStart, phase, isRecoveryWeek, isLeadReprise, isRaceWeek, days,
           stats: {
             duration: weekDuration,
             km: Math.round(weekKm * 10) / 10,
@@ -23333,7 +23467,7 @@
         let startWeek = currentWeekStart;
         if (priorRace) {
           // On démarre la semaine APRÈS la semaine de la course intermédiaire.
-          startWeek = new Date(getWeekStart(new Date(priorRace.date)).getTime() + 7 * 86400000);
+          startWeek = getWeekStart(new Date(priorRace.date)); startWeek.setDate(startWeek.getDate() + 7);
         }
         const effTotal = Math.max(0, Math.round((raceWeekStart.getTime() - startWeek.getTime()) / (7 * 86400000)) + 1);
         let leadWeeks = 0;
@@ -24124,7 +24258,7 @@
                         style={{ background: weekOpen && !open.dk ? tint(info.color, 16) : 'var(--bg)', border: `1px solid ${weekOpen ? info.color : 'var(--border)'}`, borderLeft: `4px solid ${info.color}`, minHeight: 92 }}>
                         <span className="font-display font-bold leading-none" style={{ fontSize: 16, color: 'var(--text)' }}>S{w.weekIdx}</span>
                         {(w.isRecoveryWeek || w.isRaceWeek) && (
-                          <span className="font-mono tracking-widest leading-none mt-1.5 px-1 py-0.5 rounded" style={{ fontSize: 8, color: w.isRaceWeek ? '#000' : 'var(--text)', background: w.isRaceWeek ? 'var(--accent)' : 'var(--bg-elev-2)' }}>{w.isRaceWeek ? 'COURSE' : 'RÉCUP'}</span>
+                          <span className="font-mono tracking-widest leading-none mt-1.5 px-1 py-0.5 rounded" style={{ fontSize: 8, color: w.isRaceWeek ? '#000' : (w.isLeadReprise ? 'var(--compass)' : 'var(--text)'), background: w.isRaceWeek ? 'var(--accent)' : (w.isLeadReprise ? 'rgba(74,158,255,0.18)' : 'var(--bg-elev-2)') }}>{w.isRaceWeek ? 'COURSE' : (w.isLeadReprise ? 'REPRISE' : 'RÉCUP')}</span>
                         )}
                         {w.stats && (
                           <span className="font-display font-bold tabular leading-none mt-1.5" style={{ fontSize: 15, color: 'var(--text)' }}>
@@ -24172,7 +24306,7 @@
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-display font-bold text-base">Semaine {w.weekIdx}{open.dk ? ` · ${dayFull[open.dk]}` : ''}</span>
                           <Tag color={info.color}>{info.label.toUpperCase()}</Tag>
-                          {w.isRecoveryWeek && <Tag color="var(--text-dim)">RÉCUP</Tag>}
+                          {w.isRecoveryWeek && <Tag color={w.isLeadReprise ? 'var(--compass)' : 'var(--text-dim)'}>{w.isLeadReprise ? 'REPRISE' : 'RÉCUP'}</Tag>}
                           {w.isRaceWeek && <Tag color="var(--accent)">COURSE</Tag>}
                           <span className="font-mono text-[10px] tabular flex-1 text-right" style={{ color: 'var(--text-faint)' }}>{fmtDate(w.weekStart)}{w.stats ? ` · ${w.stats.km}km · ${Math.floor(w.stats.duration / 60)}h${String(w.stats.duration % 60).padStart(2, '0')} · ${w.stats.tss} de charge` : ''}</span>
                         </div>
@@ -25368,7 +25502,7 @@
                     next = { ...planOverrides };
                     const start = new Date(profile.planStartDate);
                     for (let i = 0; i < profile.planTotalWeeks; i++) {
-                      const d = new Date(start.getTime() + i * 7 * 86400000);
+                      const d = new Date(start); d.setDate(d.getDate() + i * 7);
                       delete next[toLocalDateKey(d)];
                     }
                   } else {
@@ -25391,7 +25525,7 @@
                   if (p.startDate && p.totalWeeks) {
                     const start = new Date(p.startDate);
                     for (let i = 0; i < p.totalWeeks; i++) {
-                      const d = new Date(start.getTime() + i * 7 * 86400000);
+                      const d = new Date(start); d.setDate(d.getDate() + i * 7);
                       delete next[toLocalDateKey(d)];
                     }
                   }
@@ -25404,9 +25538,27 @@
                     if (latest) { patch.planStartDate = latest.startDate; patch.planTotalWeeks = latest.totalWeeks; }
                     else { patch.planStartDate = null; patch.planTotalWeeks = 12; patch.planSource = null; patch.planSourceCp = null; patch.planSourceVma = null; patch.planSourceEasyPace = null; }
                   }
+                  // Course liée : si une course non terminée correspond exactement
+                  // au plan (date + distance) ET n'est pas réutilisée par un autre
+                  // programme, on la supprime aussi. Sinon on la laisse (sécurité).
+                  let removedRaceName = null;
+                  const prevRaces = races;
+                  if (p.raceDate) {
+                    const matchRace = (races || []).find(r => r && !r.completedAt && r.date === p.raceDate && String(r.distance || '').toLowerCase() === String(p.distance || '').toLowerCase());
+                    if (matchRace) {
+                      const stillUsed = remaining.some(other => other.raceDate === p.raceDate && String(other.distance || '').toLowerCase() === String(p.distance || '').toLowerCase());
+                      if (!stillUsed) {
+                        setRaces(races.filter(r => r.id !== matchRace.id));
+                        removedRaceName = matchRace.name;
+                      }
+                    }
+                  }
                   setPlanOverrides(next);
                   setProfile(patch);
-                  toast.push(`Programme « ${p.name} » supprimé.`, { kind: 'info', undo: () => { setPlanOverrides(prevOverrides); setProfile(prevProfile); } });
+                  const msg = removedRaceName
+                    ? `Programme « ${p.name} » et course « ${removedRaceName} » supprimés.`
+                    : `Programme « ${p.name} » supprimé.`;
+                  toast.push(msg, { kind: 'info', undo: () => { setPlanOverrides(prevOverrides); setProfile(prevProfile); if (removedRaceName) setRaces(prevRaces); } });
                 }}
                 onRegisterManualPlan={(entry) => {
                   const prevPlans = Array.isArray(profile.plans) ? profile.plans : [];
