@@ -15773,29 +15773,77 @@
         const wprime = cpWp.fit ? cpWp.fit.wprime : 15000;
         const distMap = { '5k': 5, '10k': 10, semi: 21.1, marathon: 42.2 };
 
-        // ---- PAST PORTION: from cpHistory ----
+        // ---- PAST PORTION: cpHistory + dates des PR ----
+        // Avant on appelait predictRaceTimeV2 avec baselineCp=null → aucune
+        // mise à l'échelle de l'anchor PR → toutes les entrées passées
+        // donnaient la MÊME prédiction (ligne droite). On passe maintenant
+        // baselineCp=profile.cp et cp=e.cp pour que l'anchor PR scale
+        // proportionnellement au CP historique (Riegel via cpRatio).
+        // On enrichit aussi avec les dates des PR comme points d'ancrage
+        // supplémentaires, en filtrant les PR à ceux existants à la date.
         const cpHistory = (profile.cpHistory || []).filter(h => h.value).map(h => ({
           ms: new Date(h.date).getTime(),
           cp: h.value,
         })).sort((a, b) => a.ms - b.ms);
-        // Always include current cp as today's marker
-        const todayCpEntry = { ms: todayMs, cp: profile.cp };
-        // Only keep history entries STRICTLY before today, then add today
-        const pastEntries = cpHistory.filter(h => h.ms < todayMs);
-        pastEntries.push(todayCpEntry);
+        const cpHistPast = cpHistory.filter(h => h.ms < todayMs);
+        const cpAtCP = (ms) => {
+          let last = null;
+          for (const e of cpHistPast) { if (e.ms <= ms) last = e.cp; else break; }
+          return last != null ? last : profile.cp;
+        };
+        const pastEventsRawCP = [];
+        cpHistPast.forEach(h => pastEventsRawCP.push({ ms: h.ms, cp: h.cp }));
+        if (profile.prsDates && profile.prs) {
+          Object.entries(profile.prsDates).forEach(([k, dStr]) => {
+            if (!dStr || !profile.prs[k]) return;
+            const m = new Date(dStr).getTime();
+            if (!isNaN(m) && m < todayMs) pastEventsRawCP.push({ ms: m, cp: cpAtCP(m) });
+          });
+        }
+        // Dédupe par jour
+        const seenDayCP = new Set();
+        const pastEventsCP = [];
+        pastEventsRawCP.sort((a, b) => a.ms - b.ms).forEach(ev => {
+          const dayKey = Math.floor(ev.ms / dayMs);
+          if (seenDayCP.has(dayKey)) return;
+          seenDayCP.add(dayKey);
+          pastEventsCP.push(ev);
+        });
+        // Today comme dernier point (marqueur de transition)
+        pastEventsCP.push({ ms: todayMs, cp: profile.cp, isToday: true });
 
-        const pastSeries = pastEntries.map(e => {
+        const pastSeries = pastEventsCP.map(e => {
           const date = new Date(e.ms);
+          // Pour les points passés : filtre PR à ceux établis ≤ date, et
+          // passe {} comme prsDates car isPrFresh compare à Date.now() (non
+          // pertinent pour reconstruction historique). Pour today : PR courants.
+          let usePrs, usePrsDates;
+          if (e.isToday) {
+            usePrs = profile.prs;
+            usePrsDates = profile.prsDates;
+          } else {
+            usePrs = {};
+            if (profile.prsDates && profile.prs) {
+              Object.entries(profile.prsDates).forEach(([k, dStr]) => {
+                if (!dStr || !profile.prs[k]) return;
+                const dms = new Date(dStr).getTime();
+                if (!isNaN(dms) && dms <= e.ms) usePrs[k] = profile.prs[k];
+              });
+            }
+            usePrsDates = {};
+          }
           const times = {}, paces = {}, conf = {};
           Object.entries(distMap).forEach(([k, km]) => {
-            const pred = predictRaceTimeV2(e.cp, wprime, profile.weightKg, km, profile.prs, cpWp.merged, null, null, profile.prsDates);
+            // baselineCp=profile.cp + cp=e.cp → l'anchor PR se scale via
+            // cpRatio. Si e.cp < profile.cp (passé), prédiction plus lente.
+            const pred = predictRaceTimeV2(e.cp, wprime, profile.weightKg, km, usePrs, cpWp.merged, null, profile.cp, usePrsDates);
             if (pred) {
               times[k] = pred.timeSec;
               paces[k] = pred.timeSec / km;
               conf[k] = pred.confidence;
             }
           });
-          return { ms: e.ms, date, cp: e.cp, isFuture: false, isToday: e.ms === todayMs, tsb: null, times, paces, conf };
+          return { ms: e.ms, date, cp: e.cp, isFuture: false, isToday: !!e.isToday, tsb: null, times, paces, conf };
         });
 
         // ---- FUTURE PORTION: from planned CTL projection ----
@@ -15916,6 +15964,35 @@
             });
             futureSeries.push({ ms: date.getTime(), date, cp: Math.round(projCp), isFuture: true, isToday: false, tsb, times, paces, conf });
           }
+        }
+
+        // Fix discontinuité aujourd'hui→futur (CP mode) : le point « aujourd'hui »
+        // (dernier de pastSeries) est calculé avec tsb=null, mais les points
+        // futurs intègrent un tsb computed qui plonge souvent négatif quand
+        // le plan ramp (ATL > CTL) → drop visible au premier point projeté.
+        // On calcule l'offset au point aujourd'hui (today PR-ancré sans tsb
+        // − today PR-ancré avec future-tsb) et on l'applique à tous les points
+        // futurs : la courbe part exactement d'aujourd'hui.
+        if (futureSeries.length > 0) {
+          const todayPtCP = pastSeries[pastSeries.length - 1];
+          const offsetByDistCP = {};
+          Object.entries(distMap).forEach(([k, km]) => {
+            const futureAtToday = predictRaceTimeV2(profile.cp, wprime, profile.weightKg, km, profile.prs, cpWp.merged, fitnessNow.tsb, profile.cp, profile.prsDates);
+            if (futureAtToday && todayPtCP.paces[k]) {
+              const futurePace = futureAtToday.timeSec / km;
+              offsetByDistCP[k] = todayPtCP.paces[k] - futurePace;
+            } else {
+              offsetByDistCP[k] = 0;
+            }
+          });
+          futureSeries.forEach(p => {
+            Object.entries(distMap).forEach(([k, km]) => {
+              if (p.paces[k] && offsetByDistCP[k]) {
+                p.paces[k] = p.paces[k] + offsetByDistCP[k];
+                p.times[k] = Math.round(p.paces[k] * km);
+              }
+            });
+          });
         }
 
         // Combined series, sorted
