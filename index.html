@@ -15670,24 +15670,96 @@
             return { ms, date: new Date(ms), cp: null, vma: projectedVma, scores, isFuture, isToday, tsb: null, times, paces, conf };
           };
 
-          // ---- PAST PORTION (pace) : reconstruite depuis profile.vmaHistory ----
-          // Sans ça la timeline pace n'avait AUCUN point passé (série plate /
-          // commençant à aujourd'hui). Chaque point d'historique VMA produit
-          // une prédiction de temps avec la VMA de l'époque.
-          const vmaHist = (profile.vmaHistory || [])
-            .filter(h => h && h.value && new Date(h.date).getTime() < todayMs)
+          // ---- PAST PORTION (pace) : vmaHistory + dates des PR ----
+          // Avant on n'utilisait QUE vmaHistory (souvent 1 entrée → ligne droite
+          // dans Tendances). On ajoute maintenant les dates de PR comme points
+          // d'ancrage : chaque PR posé dans le passé crée un point où la
+          // prédiction utilise UNIQUEMENT les PR existants à cette date. Pour
+          // chaque date passée on cherche la VMA la plus récente ≤ date, ou la
+          // VMA actuelle en dernier recours. Note : on passe `{}` à
+          // predictRaceTimePace comme prsDates car isPrFresh compare à
+          // Date.now() — non pertinent pour la reconstitution historique.
+          const vmaHistSorted = (profile.vmaHistory || [])
+            .filter(h => h && h.value && !isNaN(new Date(h.date).getTime()))
             .map(h => ({ ms: new Date(h.date).getTime(), vma: h.value }))
             .sort((a, b) => a.ms - b.ms);
-          const pastPts = vmaHist.map(e => {
+          const vmaAt = (ms) => {
+            let last = null;
+            for (const e of vmaHistSorted) { if (e.ms <= ms) last = e.vma; else break; }
+            return last != null ? last : vma;
+          };
+          const pastEventsRaw = [];
+          vmaHistSorted.forEach(h => { if (h.ms < todayMs) pastEventsRaw.push({ ms: h.ms }); });
+          if (profile.prsDates && profile.prs) {
+            Object.entries(profile.prsDates).forEach(([k, dStr]) => {
+              if (!dStr || !profile.prs[k]) return;
+              const m = new Date(dStr).getTime();
+              if (!isNaN(m) && m < todayMs) pastEventsRaw.push({ ms: m });
+            });
+          }
+          // Dédupe par jour (plusieurs PR ou VMA le même jour → un seul point)
+          const seenDay = new Set();
+          const pastEvents = [];
+          pastEventsRaw.sort((a, b) => a.ms - b.ms).forEach(ev => {
+            const dayKey = Math.floor(ev.ms / dayMs);
+            if (seenDay.has(dayKey)) return;
+            seenDay.add(dayKey);
+            pastEvents.push(ev);
+          });
+          const pastPts = pastEvents.map(ev => {
+            const vmaThen = vmaAt(ev.ms);
+            const prsThen = {};
+            if (profile.prsDates && profile.prs) {
+              Object.entries(profile.prsDates).forEach(([k, dStr]) => {
+                if (!dStr || !profile.prs[k]) return;
+                const dms = new Date(dStr).getTime();
+                if (!isNaN(dms) && dms <= ev.ms) prsThen[k] = profile.prs[k];
+              });
+            }
             const times = {}, paces = {}, conf = {};
             Object.entries(distMap).forEach(([k, km]) => {
-              const pred = predictRaceTimePace(e.vma, km, profile.prs, 0, profile.prsDates, currentScores, profile.easyPaceMinPerKm, tierForTimeline);
+              const pred = predictRaceTimePace(vmaThen, km, prsThen, 0, {}, currentScores, profile.easyPaceMinPerKm, tierForTimeline);
               if (pred) { times[k] = pred.timeSec; paces[k] = pred.timeSec / km; conf[k] = pred.confidence; }
             });
-            return { ms: e.ms, date: new Date(e.ms), cp: null, vma: e.vma, scores: currentScores, isFuture: false, isToday: false, tsb: null, times, paces, conf };
+            return { ms: ev.ms, date: new Date(ev.ms), cp: null, vma: vmaThen, scores: currentScores, isFuture: false, isToday: false, tsb: null, times, paces, conf };
           });
 
           const seriesPts = samples.map((ms, i) => computePoint(ms, i === 0));
+
+          // Fix discontinuité aujourd'hui→futur : le point « aujourd'hui »
+          // (seriesPts[0]) est ancré PR via predictRaceTimePace, mais les
+          // points futurs partent du modèle VMA brut (paceForIntensity ÷
+          // execCoef) en bypassant volontairement le PR. Quand le PR est plus
+          // rapide que le modèle pur (cas normal), ça crée une marche vers le
+          // bas dès le premier point projeté. On calcule l'offset au point
+          // aujourd'hui (PR-ancré − modèle pur) et on l'applique à tous les
+          // points futurs : la courbe part exactement d'aujourd'hui, et c'est
+          // seulement la progression du plan qui la fait bouger ensuite.
+          if (seriesPts.length > 1) {
+            const cpFracByDistOff = { '5k': 1.04, '10k': 0.99, semi: 0.92, marathon: 0.85 };
+            const execCoefOff = tierExecutionCoef(tierForTimeline);
+            const todayPt = seriesPts[0];
+            const offsetByDist = {};
+            Object.entries(distMap).forEach(([k]) => {
+              const modelSec = paceForIntensity(cpFracByDistOff[k], vma, currentScores, profile.easyPaceMinPerKm);
+              if (modelSec && isFinite(modelSec) && todayPt.paces[k]) {
+                const modelPace = modelSec / Math.max(execCoefOff, 0.5);
+                offsetByDist[k] = todayPt.paces[k] - modelPace;
+              } else {
+                offsetByDist[k] = 0;
+              }
+            });
+            for (let i = 1; i < seriesPts.length; i++) {
+              const p = seriesPts[i];
+              Object.entries(distMap).forEach(([k, km]) => {
+                if (p.paces[k] && offsetByDist[k]) {
+                  p.paces[k] = p.paces[k] + offsetByDist[k];
+                  p.times[k] = Math.round(p.paces[k] * km);
+                }
+              });
+            }
+          }
+
           const allPts = [...pastPts, ...seriesPts];
           return { series: allPts, todayMs, todayIdx: pastPts.length, futureDays: Math.round((horizonMs - todayMs) / dayMs), baseCp: null, cpWpFit: null, wprime: null, paceMode: true };
         }
