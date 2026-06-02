@@ -720,6 +720,7 @@
       planOverrides: 'compass_plan_overrides_v1',
       sessionTemplates: 'compass_session_templates_v1',
       phaseGraduations: 'compass_phase_graduations_v1',
+      racesSeeded: 'compass_race_templates_seeded_v1',
     };
     const storage = {
       get(k, fb = null) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fb; } catch (e) { console.error('[Compass] storage.get failed for key', k, e); return fb; } },
@@ -3427,6 +3428,7 @@
       { v: 'hills',     l: 'Côtes (trail)', emoji: '⛰️', Icon: IconTrending, color: 'var(--negative)' },
       { v: 'long',      l: 'Sortie longue', emoji: '🛣️', Icon: IconRoute,    color: 'var(--compass)' },
       { v: 'test',      l: 'Test',          emoji: '🎯', Icon: IconTarget,   color: 'var(--caution)' },
+      { v: 'race',      l: 'Course',        emoji: '🏁', Icon: IconTrophy,   color: 'var(--accent)' },
     ];
     const SESSION_TYPE_MAP = SESSION_TYPES.reduce((m, t) => { m[t.v] = t; return m; }, {});
 
@@ -3626,6 +3628,25 @@
         plannedMin: tpl.plannedMin ?? null,
         strengthToday: tpl.strengthToday ?? null,
       };
+    }
+
+    // Templates de COURSE prêts à l'emploi (5K / 10K / semi / marathon), injectés une
+    // seule fois dans la Bibliothèque. Pas de blocs watts (l'allure de course se gère par
+    // distance) → l'allure cible est exprimée en % de CP dans le texte, cohérent avec le
+    // reste de l'app. IDs fixes pour rester identifiables / non dupliqués.
+    function makeRaceTemplates() {
+      const now = Date.now();
+      const base = { type: 'race', blocks: null, plannedMin: null, strengthToday: null, createdAt: now, lastUsed: null, useCount: 0 };
+      return [
+        { ...base, id: 'tpl_race_5k', name: 'Course 5K', plannedKm: 5,
+          detail: 'Course 5K · objectif.\nAllure cible ≈ 108–112% CP (au-dessus du seuil).\nÉchauffement 15–20\' progressif + 3–4 lignes droites, puis effort soutenu et régulier. Pars légèrement en deçà, finis fort.' },
+        { ...base, id: 'tpl_race_10k', name: 'Course 10K', plannedKm: 10,
+          detail: 'Course 10K · objectif.\nAllure cible ≈ 100–104% CP (autour du seuil).\nÉchauffement 15–20\', départ contrôlé les 2 premiers km, vise un négative split.' },
+        { ...base, id: 'tpl_race_semi', name: 'Semi-marathon', plannedKm: 21.1,
+          detail: 'Semi-marathon · objectif.\nAllure cible ≈ 92–96% CP.\nÉchauffement 10–15\', pacing très régulier, eau/gel selon ton plan de ravito.' },
+        { ...base, id: 'tpl_race_marathon', name: 'Marathon', plannedKm: 42.2,
+          detail: 'Marathon · objectif.\nAllure cible ≈ 83–88% CP.\nÉchauffement léger 5–10\', discipline sur l\'allure les 30 premiers km, nutrition toutes les 30–40\'.' },
+      ];
     }
 
     // Recompute display values when CP changes — template watts auto-rescale
@@ -9177,7 +9198,7 @@
         );
       }
 
-      const typeLabels = { easy: 'Easy', tempo: 'Tempo', intervals: 'Intervals', hills: 'Côtes', long: 'Long', test: 'Test', rest: 'Repos' };
+      const typeLabels = { easy: 'Easy', tempo: 'Tempo', intervals: 'Intervals', hills: 'Côtes', long: 'Long', test: 'Test', race: 'Course', rest: 'Repos' };
 
       return (
         <div className="relative" ref={ref}>
@@ -13914,7 +13935,7 @@
     // ========================================================================
     // LIBRARY VIEW — Glossary & training principles
     // ========================================================================
-    function LibraryView({ sessionTemplates = [], onDeleteTemplate, onRenameTemplate, onUpdateTemplate, profile, activities = [] }) {
+    function LibraryView({ sessionTemplates = [], onDeleteTemplate, onRenameTemplate, onUpdateTemplate, onAddToCalendar, profile, activities = [] }) {
       return (
         <div className="max-w-[1100px] mx-auto px-5 md:px-10 py-6 md:py-10 fade-in pb-nav">
           <div className="mb-6">
@@ -13923,16 +13944,21 @@
             <p className="t-body-dim mt-2 max-w-2xl">Sauvegarde tes séances habituelles depuis Plan pour les ré-injecter sur n'importe quel jour en un clic.{isPaceMode(profile) ? ' Les allures cibles suivent ta VMA et ta base aérobie actuelles.' : ' Les watts cibles sont automatiquement ajustés à ta puissance seuil actuelle.'}</p>
           </div>
 
-          <MySessionsView templates={sessionTemplates} onDelete={onDeleteTemplate} onRename={onRenameTemplate} onUpdate={onUpdateTemplate} profile={profile} activities={activities} />
+          <MySessionsView templates={sessionTemplates} onDelete={onDeleteTemplate} onRename={onRenameTemplate} onUpdate={onUpdateTemplate} onAddToCalendar={onAddToCalendar} profile={profile} activities={activities} />
         </div>
       );
     }
 
-    function MySessionsView({ templates, onDelete, onRename, onUpdate, profile, activities = [] }) {
+    function MySessionsView({ templates, onDelete, onRename, onUpdate, onAddToCalendar, profile, activities = [] }) {
       const dialog = useDialog();
       const [filter, setFilter] = useState('all'); // all | easy | tempo | intervals | long | test
       const [expanded, setExpanded] = useState(null);
       const [editing, setEditing] = useState(null); // template en cours d'édition (objet tpl) ou null
+      const [addingToCal, setAddingToCal] = useState(null); // id du template dont on choisit la date
+      const [calDate, setCalDate] = useState(() => {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      });
       const cp = profile?.cp;
 
       if (!templates || templates.length === 0) {
@@ -13950,8 +13976,8 @@
         );
       }
 
-      const typeLabels = { easy: 'Easy', tempo: 'Tempo', intervals: 'Intervals', hills: 'Côtes', long: 'Long', test: 'Test' };
-      const typeColors = { easy: 'var(--go)', tempo: 'var(--warn)', intervals: 'var(--alert)', long: 'var(--compass)', test: 'var(--danger)' };
+      const typeLabels = { easy: 'Easy', tempo: 'Tempo', intervals: 'Intervals', hills: 'Côtes', long: 'Long', test: 'Test', race: 'Course' };
+      const typeColors = { easy: 'var(--go)', tempo: 'var(--warn)', intervals: 'var(--alert)', long: 'var(--compass)', test: 'var(--danger)', race: 'var(--accent)' };
 
       const filtered = filter === 'all' ? templates : templates.filter(t => t.type === filter);
       // Sort: most recently used first, then most used, then most recent
@@ -14019,6 +14045,16 @@
                     >
                       {isOpen ? 'MASQUER' : 'VOIR'} <IconChevronDown size={11} style={{ display: 'inline', transform: isOpen ? 'rotate(180deg)' : 'rotate(0)', transition: 'transform 0.2s' }} />
                     </button>
+                    {onAddToCalendar && (
+                      <button
+                        onClick={() => setAddingToCal(addingToCal === tpl.id ? null : tpl.id)}
+                        className="btn px-3 py-2 rounded-lg font-mono text-[10px] tracking-widest flex items-center gap-1"
+                        style={{ background: addingToCal === tpl.id ? 'var(--accent)' : 'var(--bg-elev)', color: addingToCal === tpl.id ? '#000' : 'var(--accent)', border: '1px solid var(--accent)' }}
+                        title="Ajouter cette séance à un jour du calendrier"
+                      >
+                        <IconPlus size={11} /> AU PLAN
+                      </button>
+                    )}
                     {onUpdate && (
                       <button
                         onClick={() => setEditing(tpl)}
@@ -14049,6 +14085,22 @@
                       <IconTrash size={13} />
                     </button>
                   </div>
+
+                  {/* Ligne d'ajout au calendrier — révélée par « + AU PLAN » */}
+                  {addingToCal === tpl.id && onAddToCalendar && (
+                    <div className="px-4 pb-4 -mt-1 flex items-center gap-2 flex-wrap fade-in">
+                      <span className="text-sm" style={{ color: 'var(--text-dim)' }}>Ajouter au :</span>
+                      <input
+                        type="date"
+                        className="input input-mono"
+                        style={{ padding: '0.4rem 0.5rem', fontSize: 13 }}
+                        value={calDate}
+                        onChange={(e) => setCalDate(e.target.value)}
+                      />
+                      <Button variant="primary" size="sm" icon={IconPlus} onClick={() => { onAddToCalendar(tpl, calDate); setAddingToCal(null); }}>Ajouter au plan</Button>
+                      <button onClick={() => setAddingToCal(null)} className="btn px-2.5 py-1.5 rounded-lg font-mono text-[10px] tracking-widest" style={{ background: 'var(--bg-elev)', color: 'var(--text-dim)' }}>ANNULER</button>
+                    </div>
+                  )}
                   {isOpen && (
                     <div className="px-4 pb-4 fade-in">
                       {tpl.detail && (
@@ -14946,8 +14998,14 @@
         const fitSeries = fitnessNow.series;
         const fitLen = fitSeries.ctl.length;
         const series = [];
+        // Arithmétique en JOURS LOCAUX (setDate) pour être insensible aux changements
+        // d'heure — sinon, au passage à l'heure d'hiver (journée de 25 h), deux itérations
+        // tombent sur le même jour calendaire et la séance de ce jour est comptée DEUX FOIS
+        // (ATL gonflé → fraîcheur faussement très basse → faux warning surentraînement).
+        // Même fix que la carte projection-course / UnifiedFitnessChart / buildPlan.
+        const startLocal = new Date(startMs);
         for (let d = 0; d < totalDays; d++) {
-          const date = new Date(startMs + d * 86400000);
+          const date = new Date(startLocal); date.setDate(startLocal.getDate() + d); date.setHours(0, 0, 0, 0);
           const isToday = Math.abs(date.getTime() - todayMs) < 86400000 / 2;
           const isPastOrToday = date.getTime() <= todayMs + 86400000 / 2;
 
@@ -14976,7 +15034,7 @@
         let ctl = todaySeriesItem ? todaySeriesItem.ctl : ctlToday;
         let atl = todaySeriesItem ? todaySeriesItem.atl : atlToday;
         for (let d = 0; d < totalDays; d++) {
-          const date = new Date(startMs + d * 86400000);
+          const date = new Date(startLocal); date.setDate(startLocal.getDate() + d); date.setHours(0, 0, 0, 0);
           const isPastOrToday = date.getTime() <= todayMs + 86400000 / 2;
           if (isPastOrToday) continue; // already in series
 
@@ -19978,8 +20036,9 @@
           {
             const startMs = blockStartMs < raceMs ? blockStartMs : todayMs;
             const spanDays = Math.round((raceMs - startMs) / dayMs);
+            const startLocal = new Date(startMs); // jours locaux (insensible aux changements d'heure)
             for (let d = 0; d <= spanDays; d++) {
-              const date = new Date(startMs + d * dayMs);
+              const date = new Date(startLocal); date.setDate(startLocal.getDate() + d); date.setHours(0, 0, 0, 0);
               const wsKey = toLocalDateKey(getWeekStart(date));
               const dayKey = dayKeys[(date.getDay() + 6) % 7];
               const pl = (planOverrides || {})[wsKey] && planOverrides[wsKey][dayKey];
@@ -24829,7 +24888,18 @@
         if (changed) storage.set(KEYS.planOverrides, cleaned);
         return cleaned;
       });
-      const [sessionTemplates, setSessionTemplates] = useState(() => storage.get(KEYS.sessionTemplates, []));
+      const [sessionTemplates, setSessionTemplates] = useState(() => {
+        let tpls = storage.get(KEYS.sessionTemplates, []);
+        // Injection unique des templates de course (5K/10K/semi/marathon) dans la Bibliothèque.
+        // Le flag racesSeeded évite de les ré-ajouter si l'utilisateur en supprime ensuite.
+        if (!storage.get(KEYS.racesSeeded)) {
+          const existing = new Set(tpls.map(t => t.id));
+          const toAdd = makeRaceTemplates().filter(t => !existing.has(t.id));
+          if (toAdd.length) tpls = [...toAdd, ...tpls];
+          storage.set(KEYS.racesSeeded, true);
+        }
+        return tpls;
+      });
       const [phaseGraduations, setPhaseGraduations] = useState(() => storage.get(KEYS.phaseGraduations, []));
       const [pendingGraduation, setPendingGraduation] = useState(null);
       const [pendingPainCheckin, setPendingPainCheckin] = useState(null);
@@ -25575,6 +25645,23 @@
         toast.push('Template mis à jour.', { kind: 'success' });
       }
 
+      // Ajoute un template directement sur un jour du calendrier (depuis la Bibliothèque).
+      // On écrit dans planOverrides (persisté par effet) sans toucher au reste de la semaine.
+      function handleAddTemplateToCalendar(tpl, dateStr) {
+        const d = new Date(dateStr + 'T00:00:00');
+        if (isNaN(d.getTime())) { toast.push('Date invalide.', { kind: 'warn' }); return; }
+        const ws = getWeekStart(d);
+        const tWsKey = `${ws.getFullYear()}-${String(ws.getMonth() + 1).padStart(2, '0')}-${String(ws.getDate()).padStart(2, '0')}`;
+        const dayKeysL = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
+        const tDayKey = dayKeysL[(d.getDay() + 6) % 7];
+        const emptyWeek = dayKeysL.reduce((a, k) => ({ ...a, [k]: { type: 'rest', label: 'Repos', detail: '', blocks: null, strengthToday: null, plannedKm: null, plannedMin: null } }), {});
+        const base = planOverrides[tWsKey] ? { ...planOverrides[tWsKey] } : emptyWeek;
+        base[tDayKey] = templateToDay(tpl);
+        setPlanOverrides({ ...planOverrides, [tWsKey]: base });
+        handleApplyTemplate(tpl); // compte l'utilisation (lastUsed/useCount)
+        toast.push(`"${tpl.name}" ajouté au ${DAYS_FR_LONG[d.getDay()]} ${d.getDate()}/${d.getMonth() + 1}.`, { kind: 'success' });
+      }
+
       // Force scroll to top on view change
       useEffect(() => { window.scrollTo({ top: 0, behavior: 'smooth' }); }, [view]);
 
@@ -25891,7 +25978,7 @@
               />
             )}
             {view === 'analytics' && <AnalyticsView activities={activities} profile={profile} checkins={checkins} planOverrides={planOverrides} races={races} strengthSessions={strengthSessions} onSaveProfile={(np) => setProfile(np)} onViewActivity={(a) => setActivityModal(a)} />}
-            {view === 'library' && <LibraryView sessionTemplates={sessionTemplates} onDeleteTemplate={handleDeleteTemplate} onRenameTemplate={handleRenameTemplate} onUpdateTemplate={handleUpdateTemplate} profile={profile} activities={activities} />}
+            {view === 'library' && <LibraryView sessionTemplates={sessionTemplates} onDeleteTemplate={handleDeleteTemplate} onRenameTemplate={handleRenameTemplate} onUpdateTemplate={handleUpdateTemplate} onAddToCalendar={handleAddTemplateToCalendar} profile={profile} activities={activities} />}
             </div>
           </main>
 
