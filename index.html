@@ -9505,7 +9505,7 @@
     // Design: clear sections separated by hairlines, type picker as chips,
     // library collapsed by default, sticky footer.
     // ========================================================================
-    function DayEditModal({ dayKey, dayLabel, dayDate, day, wsKey, weekContext, sessionTemplates, planOverrides, onSaveTemplate, onApplyTemplate, onDuplicateToDay, onImportActivity, linkedActivity, onViewActivity, typeOptions, onSaveDay, onClose }) {
+    function DayEditModal({ dayKey, dayLabel, dayDate, day, wsKey, weekContext, sessionTemplates, planOverrides, onSaveTemplate, onApplyTemplate, onDuplicateToDay, onImportActivity, linkedActivity, onViewActivity, typeOptions, onSaveDay, onClose, isTemplateEdit = false }) {
       const [localDay, setLocalDay] = useState(() => ({
         type: day.type || 'rest',
         label: day.label ?? (day.type === 'rest' ? 'Repos' : ''),
@@ -9656,7 +9656,7 @@
             {/* Header */}
             <div className="px-6 py-5 flex items-start justify-between gap-3" style={{ borderBottom: '1px solid var(--border)' }}>
               <div className="min-w-0 flex-1">
-                <div className="t-meta mb-1" style={{ color: 'var(--text-dim)' }}>{dayLabel.toUpperCase()} · {dateLabel}</div>
+                <div className="t-meta mb-1" style={{ color: 'var(--text-dim)' }}>{isTemplateEdit ? 'TEMPLATE · MODIFIER' : `${dayLabel.toUpperCase()} · ${dateLabel}`}</div>
                 <div className="flex items-baseline gap-2 flex-wrap">
                   <span id={titleId} className="t-h2" style={{ color: 'var(--text)' }}>
                     {isRest ? 'Repos' : (localDay.label || t.l)}
@@ -9840,7 +9840,9 @@
                       Blocks get full width here, so the visual timeline + block cards can breathe. */}
                   <div className="flex-1 min-w-0 space-y-6">
 
-                  {/* SECTION 4 — Library + import — collapsible row of small actions */}
+                  {/* SECTION 4 — Library + import — collapsible row of small actions.
+                      Masqué quand on édite un template depuis la Bibliothèque (sans objet ici). */}
+                  {!isTemplateEdit && (
                   <section>
                     <div className="flex items-center justify-between mb-3">
                       <div className="flex items-center gap-2">
@@ -9889,6 +9891,7 @@
                       </div>
                     )}
                   </section>
+                  )}
 
                   {/* SECTION 4b — Dupliquer cette séance vers une autre semaine (sans effort) */}
                   {onDuplicateToDay && !isRest && (
@@ -13911,7 +13914,7 @@
     // ========================================================================
     // LIBRARY VIEW — Glossary & training principles
     // ========================================================================
-    function LibraryView({ sessionTemplates = [], onDeleteTemplate, onRenameTemplate, profile }) {
+    function LibraryView({ sessionTemplates = [], onDeleteTemplate, onRenameTemplate, onUpdateTemplate, profile, activities = [] }) {
       return (
         <div className="max-w-[1100px] mx-auto px-5 md:px-10 py-6 md:py-10 fade-in pb-nav">
           <div className="mb-6">
@@ -13920,15 +13923,16 @@
             <p className="t-body-dim mt-2 max-w-2xl">Sauvegarde tes séances habituelles depuis Plan pour les ré-injecter sur n'importe quel jour en un clic.{isPaceMode(profile) ? ' Les allures cibles suivent ta VMA et ta base aérobie actuelles.' : ' Les watts cibles sont automatiquement ajustés à ta puissance seuil actuelle.'}</p>
           </div>
 
-          <MySessionsView templates={sessionTemplates} onDelete={onDeleteTemplate} onRename={onRenameTemplate} profile={profile} />
+          <MySessionsView templates={sessionTemplates} onDelete={onDeleteTemplate} onRename={onRenameTemplate} onUpdate={onUpdateTemplate} profile={profile} activities={activities} />
         </div>
       );
     }
 
-    function MySessionsView({ templates, onDelete, onRename, profile }) {
+    function MySessionsView({ templates, onDelete, onRename, onUpdate, profile, activities = [] }) {
       const dialog = useDialog();
       const [filter, setFilter] = useState('all'); // all | easy | tempo | intervals | long | test
       const [expanded, setExpanded] = useState(null);
+      const [editing, setEditing] = useState(null); // template en cours d'édition (objet tpl) ou null
       const cp = profile?.cp;
 
       if (!templates || templates.length === 0) {
@@ -14015,6 +14019,16 @@
                     >
                       {isOpen ? 'MASQUER' : 'VOIR'} <IconChevronDown size={11} style={{ display: 'inline', transform: isOpen ? 'rotate(180deg)' : 'rotate(0)', transition: 'transform 0.2s' }} />
                     </button>
+                    {onUpdate && (
+                      <button
+                        onClick={() => setEditing(tpl)}
+                        className="btn px-3 py-2 rounded-lg font-mono text-[10px] tracking-widest"
+                        style={{ background: 'var(--compass)', color: '#000' }}
+                        title="Modifier le contenu (blocs, puissance, durée…)"
+                      >
+                        MODIFIER
+                      </button>
+                    )}
                     <button
                       onClick={async () => {
                         const newName = await dialog.prompt({ title: 'Renommer le template', defaultValue: tpl.name, placeholder: 'Nouveau nom' });
@@ -14063,6 +14077,39 @@
               );
             })}
           </div>
+
+          {/* Éditeur plein écran réutilisé pour modifier le contenu d'un template
+              (mêmes blocs en % de CP que dans le Plan). isTemplateEdit masque les
+              sections « bibliothèque/import » et « dupliquer » qui n'ont pas de sens ici. */}
+          {editing && (
+            <DayEditModal
+              key={editing.id}
+              isTemplateEdit
+              dayKey="tpl"
+              dayLabel={editing.name || 'Template'}
+              dayDate={new Date()}
+              day={templateToDay(editing)}
+              wsKey={null}
+              weekContext={(() => {
+                const paceMode = isPaceMode(profile);
+                return {
+                  cp: paceMode ? null : profile?.cp,
+                  weightKg: profile?.weightKg,
+                  ppt: buildPowerPaceTable(activities || []),
+                  paceMode,
+                  vma: profile?.vma,
+                  easyPaceMinPerKm: profile?.easyPaceMinPerKm,
+                  fcMax: profile?.fcMax,
+                  fcRest: profile?.fcRest,
+                };
+              })()}
+              sessionTemplates={templates}
+              planOverrides={{}}
+              typeOptions={SESSION_TYPES}
+              onSaveDay={(patch) => { if (onUpdate) onUpdate(editing.id, patch); setEditing(null); }}
+              onClose={() => setEditing(null)}
+            />
+          )}
         </>
       );
     }
@@ -25508,6 +25555,26 @@
         setSessionTemplates(sessionTemplates.map(t => t.id === id ? { ...t, name: newName.trim() } : t));
       }
 
+      // Édition du contenu d'un template depuis la Bibliothèque : on reçoit le `day` édité
+      // (type, label, detail, blocks, dur/km, renfo) et on le réinjecte dans le template.
+      // Le label de la séance devient le nom du template s'il est renseigné.
+      function handleUpdateTemplate(id, dayPatch) {
+        setSessionTemplates(sessionTemplates.map(t => {
+          if (t.id !== id) return t;
+          return {
+            ...t,
+            name: (dayPatch.label && dayPatch.label.trim()) ? dayPatch.label.trim() : t.name,
+            type: dayPatch.type ?? t.type,
+            detail: dayPatch.detail ?? t.detail,
+            blocks: Array.isArray(dayPatch.blocks) ? dayPatch.blocks : null,
+            plannedKm: dayPatch.plannedKm ?? null,
+            plannedMin: dayPatch.plannedMin ?? null,
+            strengthToday: dayPatch.strengthToday ?? null,
+          };
+        }));
+        toast.push('Template mis à jour.', { kind: 'success' });
+      }
+
       // Force scroll to top on view change
       useEffect(() => { window.scrollTo({ top: 0, behavior: 'smooth' }); }, [view]);
 
@@ -25824,7 +25891,7 @@
               />
             )}
             {view === 'analytics' && <AnalyticsView activities={activities} profile={profile} checkins={checkins} planOverrides={planOverrides} races={races} strengthSessions={strengthSessions} onSaveProfile={(np) => setProfile(np)} onViewActivity={(a) => setActivityModal(a)} />}
-            {view === 'library' && <LibraryView sessionTemplates={sessionTemplates} onDeleteTemplate={handleDeleteTemplate} onRenameTemplate={handleRenameTemplate} profile={profile} />}
+            {view === 'library' && <LibraryView sessionTemplates={sessionTemplates} onDeleteTemplate={handleDeleteTemplate} onRenameTemplate={handleRenameTemplate} onUpdateTemplate={handleUpdateTemplate} profile={profile} activities={activities} />}
             </div>
           </main>
 
