@@ -7744,6 +7744,25 @@
         });
         return out;
       }
+      // Duplique une séance vers n'importe quel jour/semaine. La semaine cible est lue depuis
+      // planOverrides (ou créée vide), on n'écrase que le jour ciblé. IDs de blocs régénérés
+      // pour éviter les collisions de clés React avec la séance source.
+      function duplicateDayTo(targetWsKey, targetDayKey, dayData) {
+        const cloned = JSON.parse(JSON.stringify(dayData));
+        if (Array.isArray(cloned.blocks)) {
+          cloned.blocks = cloned.blocks.map(b => {
+            const nb = { ...b, id: 'b_' + Math.random().toString(36).slice(2, 9) };
+            if (b.kind === 'group' && Array.isArray(b.children)) {
+              nb.children = b.children.map(c => ({ ...c, id: 'b_' + Math.random().toString(36).slice(2, 9) }));
+            }
+            return nb;
+          });
+        }
+        const base = planOverrides[targetWsKey] ? { ...planOverrides[targetWsKey] } : buildDeletedWeek();
+        base[targetDayKey] = cloned;
+        onSavePlanWeek(targetWsKey, base);
+      }
+
       // Swap the planned sessions of two days (by index 0=Mon..6=Sun) within the displayed week.
       // Only the plan content moves — logged activities/renfo stay attached to their real date.
       function swapPlannedDays(fromIdx, toIdx) {
@@ -8146,7 +8165,7 @@
 
           {/* Renfo lives in its own top-level tab now (see App view === 'renfo') */}
 
-          {editingWeek && <WeekEditorModal key={editingWeek} wsKey={editingWeek} initial={editingWeekInitial} planOverrides={planOverrides} sessionTemplates={sessionTemplates} onSaveTemplate={onSaveTemplate} onApplyTemplate={onApplyTemplate} activities={activities} onImportActivity={onImportActivity} onViewActivity={onViewActivity} onSave={(week) => { onSavePlanWeek(editingWeek, week); setEditingWeek(null); }} onDelete={() => { onSavePlanWeek(editingWeek, buildDeletedWeek()); setEditingWeek(null); }} onClose={() => setEditingWeek(null)} weekContext={{ cp: profile.cp, weightKg: profile.weightKg, ppt: buildPowerPaceTable(activities || []) }} />}
+          {editingWeek && <WeekEditorModal key={editingWeek} wsKey={editingWeek} initial={editingWeekInitial} planOverrides={planOverrides} sessionTemplates={sessionTemplates} onSaveTemplate={onSaveTemplate} onApplyTemplate={onApplyTemplate} onDuplicateToDay={duplicateDayTo} activities={activities} onImportActivity={onImportActivity} onViewActivity={onViewActivity} onSave={(week) => { onSavePlanWeek(editingWeek, week); setEditingWeek(null); }} onDelete={() => { onSavePlanWeek(editingWeek, buildDeletedWeek()); setEditingWeek(null); }} onClose={() => setEditingWeek(null)} weekContext={{ cp: profile.cp, weightKg: profile.weightKg, ppt: buildPowerPaceTable(activities || []) }} />}
           {generatorOpen && <PlanGeneratorModal profile={profile} races={races} activities={activities} sessionTemplates={sessionTemplates} onGenerate={(overrides, meta) => { onGeneratePlan(overrides, meta); setGeneratorOpen(false); }} onCancel={() => setGeneratorOpen(false)} />}
           {managePlansOpen && (() => {
             // Liste des programmes générés. Fallback : si aucun registre mais un
@@ -8378,6 +8397,7 @@
                 planOverrides={planOverrides}
                 onSaveTemplate={onSaveTemplate}
                 onApplyTemplate={onApplyTemplate}
+                onDuplicateToDay={duplicateDayTo}
                 onImportActivity={onImportActivity}
                 linkedActivity={linkedActivity}
                 onViewActivity={(a) => { onViewActivity(a); setEditingInlineDay(null); }}
@@ -8623,6 +8643,29 @@
         else if (b.kind === 'group') (b.children || []).forEach(c => addSingle(c, b.reps));
       });
       return { totalMin: Math.round(totalMin * 10) / 10, totalKm: Math.round(totalKm * 10) / 10 };
+    }
+
+    // Format a block's stored watts as a % of CP for display (entraînements en % de CP).
+    // Returns { pctStr, wattStr } or null if no power / no CP. Watts stay the stored source
+    // of truth (auto-rescaled when CP change) ; le % est juste la vue principale.
+    function powerPctStrings(low, high, cp) {
+      if (low == null || !cp) return null;
+      const pLow = Math.round(low / cp * 100);
+      const pHigh = high != null ? Math.round(high / cp * 100) : pLow;
+      const pctStr = pLow === pHigh ? `${pLow}% CP` : `${pLow}–${pHigh}% CP`;
+      const wattStr = (high != null && high !== low) ? `${low}–${high} W` : `${low} W`;
+      return { pctStr, wattStr };
+    }
+    // Inverse : un % saisi → watts stockés (arrondi). Stable en aller-retour pour des % entiers.
+    function pctToWatts(pct, cp) {
+      if (pct == null || pct === '' || !cp) return null;
+      const p = parseInt(pct, 10);
+      if (!Number.isFinite(p)) return null;
+      return Math.round(cp * p / 100);
+    }
+    function wattsToPct(w, cp) {
+      if (w == null || !cp) return '';
+      return Math.round(w / cp * 100);
     }
 
     function SessionBlocksEditor({ day, onChange, ctx }) {
@@ -8956,13 +8999,34 @@
                       </div>
                     );
                   }
+                  // Mode puissance. Saisie en % de CP (les entraînements se font en % de CP),
+                  // les watts restent stockés et s'affichent en petit dessous (≈ pour la montre).
+                  const cp = ctx.cp;
+                  if (!cp) {
+                    // Pas de CP renseigné → on retombe sur la saisie en watts bruts.
+                    return (
+                      <div className="flex items-center gap-1">
+                        <div className="t-meta-dim mr-1" style={{ color: 'var(--text-faint)' }}>PUISSANCE</div>
+                        <input type="number" className="input input-mono" style={{ padding: '0.35rem 0.4rem', fontSize: 14, width: 56, textAlign: 'center' }} placeholder="min" value={b.powerLow ?? ''} onChange={(e) => onUpdate({ powerLow: e.target.value ? parseInt(e.target.value) : null })} />
+                        <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 12 }}>–</span>
+                        <input type="number" className="input input-mono" style={{ padding: '0.35rem 0.4rem', fontSize: 14, width: 56, textAlign: 'center' }} placeholder="max" value={b.powerHigh ?? ''} onChange={(e) => onUpdate({ powerHigh: e.target.value ? parseInt(e.target.value) : null })} />
+                        <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 12 }}>W</span>
+                      </div>
+                    );
+                  }
+                  const pp = powerPctStrings(b.powerLow, b.powerHigh, cp);
                   return (
-                    <div className="flex items-center gap-1">
-                      <div className="t-meta-dim mr-1" style={{ color: 'var(--text-faint)' }}>PUISSANCE</div>
-                      <input type="number" className="input input-mono" style={{ padding: '0.35rem 0.4rem', fontSize: 14, width: 56, textAlign: 'center' }} placeholder="min" value={b.powerLow ?? ''} onChange={(e) => onUpdate({ powerLow: e.target.value ? parseInt(e.target.value) : null })} />
-                      <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 12 }}>–</span>
-                      <input type="number" className="input input-mono" style={{ padding: '0.35rem 0.4rem', fontSize: 14, width: 56, textAlign: 'center' }} placeholder="max" value={b.powerHigh ?? ''} onChange={(e) => onUpdate({ powerHigh: e.target.value ? parseInt(e.target.value) : null })} />
-                      <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 12 }}>W</span>
+                    <div className="flex flex-col gap-0.5">
+                      <div className="flex items-center gap-1">
+                        <div className="t-meta-dim mr-1" style={{ color: 'var(--text-faint)' }}>PUISSANCE</div>
+                        <input type="number" className="input input-mono" style={{ padding: '0.35rem 0.4rem', fontSize: 14, width: 52, textAlign: 'center' }} placeholder="min" value={wattsToPct(b.powerLow, cp)} onChange={(e) => onUpdate({ powerLow: pctToWatts(e.target.value, cp) })} />
+                        <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 12 }}>–</span>
+                        <input type="number" className="input input-mono" style={{ padding: '0.35rem 0.4rem', fontSize: 14, width: 52, textAlign: 'center' }} placeholder="max" value={wattsToPct(b.powerHigh, cp)} onChange={(e) => onUpdate({ powerHigh: pctToWatts(e.target.value, cp) })} />
+                        <span className="font-mono" style={{ color: 'var(--text-faint)', fontSize: 12 }}>% CP</span>
+                      </div>
+                      {pp && (
+                        <div className="font-mono" style={{ fontSize: 11, color: 'var(--text-faint)', paddingLeft: 2 }}>≈ {pp.wattStr}</div>
+                      )}
                     </div>
                   );
                 })()}
@@ -9223,7 +9287,7 @@
     // opens above with the full edit form (including SessionBlocksEditor).
     // The grid stays intact behind. Two-modal stacking is handled with z-index.
     // ========================================================================
-    function WeekEditorModal({ wsKey, initial, planOverrides, sessionTemplates = [], onSaveTemplate, onApplyTemplate, onSave, onClose, onDelete, weekContext, activities = [], onImportActivity, onViewActivity }) {
+    function WeekEditorModal({ wsKey, initial, planOverrides, sessionTemplates = [], onSaveTemplate, onApplyTemplate, onDuplicateToDay, onSave, onClose, onDelete, weekContext, activities = [], onImportActivity, onViewActivity }) {
       const dialog = useDialog();
       const toast = useToast();
       const dayKeys = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
@@ -9422,6 +9486,7 @@
               planOverrides={planOverrides}
               onSaveTemplate={onSaveTemplate}
               onApplyTemplate={onApplyTemplate}
+              onDuplicateToDay={onDuplicateToDay}
               onImportActivity={onImportActivity}
               linkedActivity={linkedActivityFor(editingDay)}
               onViewActivity={(a) => { onViewActivity(a); onClose(); }}
@@ -9440,7 +9505,7 @@
     // Design: clear sections separated by hairlines, type picker as chips,
     // library collapsed by default, sticky footer.
     // ========================================================================
-    function DayEditModal({ dayKey, dayLabel, dayDate, day, wsKey, weekContext, sessionTemplates, planOverrides, onSaveTemplate, onApplyTemplate, onImportActivity, linkedActivity, onViewActivity, typeOptions, onSaveDay, onClose }) {
+    function DayEditModal({ dayKey, dayLabel, dayDate, day, wsKey, weekContext, sessionTemplates, planOverrides, onSaveTemplate, onApplyTemplate, onDuplicateToDay, onImportActivity, linkedActivity, onViewActivity, typeOptions, onSaveDay, onClose }) {
       const [localDay, setLocalDay] = useState(() => ({
         type: day.type || 'rest',
         label: day.label ?? (day.type === 'rest' ? 'Repos' : ''),
@@ -9453,6 +9518,12 @@
       const [showLibrary, setShowLibrary] = useState(true);
       const [showZones, setShowZones] = useState(false);
       const dialog = useDialog();
+      const toast = useToast();
+      // Cible de duplication : par défaut le même jour la semaine suivante (J+7).
+      const [dupDate, setDupDate] = useState(() => {
+        const d = new Date(dayDate); d.setDate(d.getDate() + 7);
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      });
 
       // L5.2 — a11y modal : focus-trap + Esc + scroll-lock body + ARIA dialog.
       const dialogRef = useRef(null);
@@ -9477,6 +9548,21 @@
       function setField(field, value) { setLocalDay(prev => ({ ...prev, [field]: value })); }
       function setMulti(patch) { setLocalDay(prev => ({ ...prev, ...patch })); }
       function handleSave() { onSaveDay(localDay); }
+
+      // Duplique la séance courante (avec ses éventuelles modifs non enregistrées) vers
+      // le jour de la date choisie, dans n'importe quelle semaine — sans toucher au reste.
+      function handleDuplicate() {
+        if (!onDuplicateToDay) return;
+        if (localDay.type === 'rest') { toast.push('Rien à dupliquer (jour de repos).', { kind: 'info' }); return; }
+        const d = new Date(dupDate + 'T00:00:00');
+        if (isNaN(d.getTime())) { toast.push('Date invalide.', { kind: 'warn' }); return; }
+        const ws = getWeekStart(d);
+        const tWsKey = `${ws.getFullYear()}-${String(ws.getMonth() + 1).padStart(2, '0')}-${String(ws.getDate()).padStart(2, '0')}`;
+        const dayKeysL = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
+        const tDayKey = dayKeysL[(d.getDay() + 6) % 7];
+        onDuplicateToDay(tWsKey, tDayKey, localDay);
+        toast.push(`Séance copiée au ${DAYS_FR_LONG[d.getDay()]} ${d.getDate()}/${d.getMonth() + 1}.`, { kind: 'success' });
+      }
 
       const dateLabel = `${dayDate.getDate()}/${dayDate.getMonth() + 1}`;
       const isRest = localDay.type === 'rest';
@@ -9803,6 +9889,25 @@
                       </div>
                     )}
                   </section>
+
+                  {/* SECTION 4b — Dupliquer cette séance vers une autre semaine (sans effort) */}
+                  {onDuplicateToDay && !isRest && (
+                    <section>
+                      <div className="t-meta mb-3" style={{ color: 'var(--text-faint)' }}>DUPLIQUER VERS</div>
+                      <div className="rounded-lg p-3 flex items-center gap-2 flex-wrap" style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)' }}>
+                        <span className="text-sm" style={{ color: 'var(--text-dim)' }}>Copier cette séance au :</span>
+                        <input
+                          type="date"
+                          className="input input-mono"
+                          style={{ padding: '0.4rem 0.5rem', fontSize: 13 }}
+                          value={dupDate}
+                          onChange={(e) => setDupDate(e.target.value)}
+                        />
+                        <Button variant="secondary" size="sm" icon={IconLayers} onClick={handleDuplicate}>Dupliquer</Button>
+                        <span className="text-xs" style={{ color: 'var(--text-faint)' }}>La séance reste aussi sur ce jour-ci.</span>
+                      </div>
+                    </section>
+                  )}
 
                   {/* SECTION 5 — Structured blocks editor — full-width in the right column */}
                   <section>
@@ -13994,19 +14099,19 @@
             ? `${fmtSec(block.paceSecLow)}/km`
             : `${fmtSec(block.paceSecLow)}-${fmtSec(block.paceSecHigh)}/km`)
         : null;
-      const watts = !pace && (block.powerLow != null && block.powerHigh != null)
+      // Puissance affichée en % de CP (principal) + watts en petit (≈). Sans CP : watts bruts.
+      const pp = !pace ? powerPctStrings(block.powerLow, block.powerHigh, cp) : null;
+      const wattsRaw = !pace && cp == null && (block.powerLow != null)
         ? (block.powerLow === block.powerHigh ? `${block.powerLow}W` : `${block.powerLow}-${block.powerHigh}W`)
-        : null;
-      const ifRange = (cp && watts && block.powerLow != null && block.powerHigh != null)
-        ? `${(block.powerLow / cp).toFixed(2)}-${(block.powerHigh / cp).toFixed(2)} IF`
         : null;
       return (
         <div className="font-mono flex items-center gap-2" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
           <span style={{ color: kindColors[block.blockKind], fontWeight: 600, minWidth: 110 }}>{kindLabels[block.blockKind] || block.blockKind}</span>
           <span style={{ color: 'var(--text)' }}>{dur}</span>
           {pace && <span style={{ color: 'var(--text)' }}>· {pace}</span>}
-          {watts && <span style={{ color: 'var(--text)' }}>· {watts}</span>}
-          {ifRange && <span style={{ color: 'var(--text-faint)' }}>({ifRange})</span>}
+          {pp && <span style={{ color: 'var(--text)' }}>· {pp.pctStr}</span>}
+          {pp && <span style={{ color: 'var(--text-faint)' }}>(≈ {pp.wattStr})</span>}
+          {wattsRaw && <span style={{ color: 'var(--text)' }}>· {wattsRaw}</span>}
         </div>
       );
     }
