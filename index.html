@@ -4032,6 +4032,68 @@
           { id: 6, name: 'Maintenance', shortName: 'PHASE 6', weeks: [33, 999], multiplier: 0.9, theme: "Minimum efficace pour ne pas perdre", sessionsTarget: 2, criterion: 'Phase indéfinie — tu maintiens tant que tu cours.', graduationText: null },
         ],
       },
+
+      marathon_prevention: {
+        id: 'marathon_prevention',
+        name: 'Renfo marathon',
+        shortName: 'MARATHON',
+        description: "Pour préparer un marathon sans te blesser. Renforce progressivement les zones qui souffrent du volume (mollets/soléaire, bassin, chaîne postérieure). Prévention pure — pas de charges lourdes ni de pliométrie.",
+        mechanism: [
+          "Endurcit mollets et soléaire — la zone qui encaisse le plus de chocs sur les longues sorties",
+          "Stabilise le bassin (moyen fessier) contre l'effondrement et le valgus quand la fatigue arrive en fin de course",
+          "Renforce la chaîne postérieure (ischios, fessiers) au rythme de la montée de volume",
+          "Travail unilatéral + gainage : symétrie gauche/droite et tronc solide pour tenir 42 km",
+        ],
+        targetZones: [],
+        exercises: {
+          seated_calf_raise: { name: 'Mollets assis', subtitle: 'Genoux à 90°, isole le soléaire', videoId: 'gE1PJUrbmoM', why: "Genou plié, le gastrocnémien se met en retrait → seul le soléaire travaille. C'est LE muscle qui fatigue en fin de marathon et lâche le premier ; le préparer évite les crampes et la surcharge de l'achille.", steps: ["Assis, genoux à 90°, une charge légère ou les mains sur les cuisses.", "Monte sur la pointe des pieds, tiens 1 sec.", "Redescends lentement (2 sec)."], keyPoint: "Genou à 90° tout du long, amplitude complète en haut.", avoid: "Étendre les jambes pendant la montée — ça transfère le travail au gastro." },
+          single_leg_calf_raise: { name: 'Mollets une jambe', subtitle: 'Unilatéral, endurance et symétrie', videoId: 'oeocf4iXz3M', why: "Chaque mollet doit tenir des milliers de foulées en solo. Le travail unilatéral construit l'endurance de propulsion et révèle les asymétries qui mènent à la blessure.", steps: ["Sur une marche, un pied sur le bord, l'autre jambe levée.", "Monte sur la pointe avec la jambe d'appui, contrôle.", "Redescends sous le niveau de la marche pour l'amplitude."], keyPoint: "Vise le même nombre de reps des deux côtés — rattrape le côté faible.", avoid: "Sauter ou s'aider d'un élan." },
+          single_leg_deadlift: { name: 'Soulevé de terre une jambe', subtitle: 'Bascule du tronc, jambe arrière tendue', videoId: 'BJ4y4M_Y2BU', why: "Renforce ischios + grand fessier + équilibre proprioceptif. La chaîne postérieure est le moteur d'endurance du coureur et stabilise le bassin sur chaque appui.", steps: ["Debout sur une jambe, l'autre légèrement décollée derrière.", "Bascule le tronc vers l'avant, dos droit, la jambe arrière s'élève.", "Reviens à la verticale en serrant le fessier."], keyPoint: "Hanche, épaule et cheville arrière alignées quand tu bascules.", avoid: "Plier la jambe arrière ou arrondir le dos." },
+          glute_bridge: { name: 'Pont fessier', subtitle: 'Bilatéral, pieds au sol', videoId: 'wPM8icPu6H8', why: "Active le grand fessier sans charger les genoux — neutralise un quadriceps dominant et un fessier sous-utilisé, fréquent chez le coureur. Plus le fessier propulse, moins le mollet et le genou trinquent.", steps: ["Allongé, pieds au sol près des fesses, bras le long du corps.", "Pousse sur les talons pour décoller le bassin, serre les fessiers en haut.", "Redescends sans toucher complètement le sol."], keyPoint: "Le haut de la fesse fait le travail, pas les ischios ni les lombaires.", avoid: "Cambrer le bas du dos en haut ou pousser sur les pointes." },
+          side_plank: { name: 'Planche latérale', subtitle: 'Gainage latéral + moyen fessier', videoId: 'NXr4Fw8q60o', why: "Anti-flexion latérale : empêche le bassin de s'affaisser à chaque foulée. Sur un marathon, c'est cette stabilité qui se dégrade avec la fatigue et fait dévier le genou.", steps: ["Sur le côté, coude sous l'épaule, jambes tendues empilées.", "Soulève le bassin pour aligner cheville → épaule.", "Tiens, puis change de côté."], keyPoint: "Bassin le plus haut possible, pas de rotation du tronc.", avoid: "Bassin qui s'affaisse vers le sol." },
+          monster_walk: { name: 'Monster walk', subtitle: 'Élastique aux genoux, pas latéraux', videoId: '13TUgg6JzGw', why: "Active le moyen fessier EN MOUVEMENT — le plus proche du geste de course. C'est l'assurance directe contre le genou qui rentre et le bassin qui bascule quand tu fatigues.", steps: ["Élastique au-dessus des genoux, position semi-squat.", "Pas latéraux : 10 à droite, 10 à gauche, sans laisser les genoux se rapprocher.", "Garde la tension constante dans l'élastique."], keyPoint: "Genoux toujours écartés, dos droit, ne pas se redresser entre les pas.", avoid: "Se relever entre chaque pas ou perdre la tension de l'élastique." },
+        },
+        base: {
+          seated_calf_raise: { sets: 3, reps: 15, rest: 45 },
+          single_leg_calf_raise: { sets: 3, reps: 12, rest: 45, perSide: true },
+          single_leg_deadlift: { sets: 3, reps: 8, rest: 60, perSide: true },
+          glute_bridge: { sets: 3, reps: 15, rest: 45 },
+          side_plank: { sets: 2, duration: 30, rest: 30, perSide: true, type: 'time' },
+          monster_walk: { sets: 2, reps: 12, rest: 60, perSide: true },
+        },
+        sessions: {
+          A: {
+            id: 'A', name: 'SÉANCE A', title: 'Mollets & chaîne postérieure',
+            subtitle: 'Soléaire, mollets unilatéraux, soulevé une jambe',
+            accent: '#D4FF00', duration: 15,
+            exerciseKeys: ['seated_calf_raise', 'single_leg_calf_raise', 'single_leg_deadlift'],
+            benefits: [
+              "Prépare mollets et soléaire au choc répété des longues sorties",
+              "Construit l'endurance de propulsion jambe par jambe",
+              "Renforce ischios + fessiers, le moteur d'endurance du coureur",
+            ],
+          },
+          B: {
+            id: 'B', name: 'SÉANCE B', title: 'Bassin, fessiers & gainage',
+            subtitle: 'Pont fessier, planche latérale, monster walk',
+            accent: '#FF8040', duration: 15,
+            exerciseKeys: ['glute_bridge', 'side_plank', 'monster_walk'],
+            benefits: [
+              "Développe le grand fessier pour décharger mollets et genoux",
+              "Stabilise le bassin contre l'effondrement en fin de course",
+              "Active le moyen fessier dans le geste (anti-genou rentrant)",
+            ],
+          },
+        },
+        phases: [
+          { id: 1, name: 'Réactivation', shortName: 'PHASE 1', weeks: [1, 3], multiplier: 0.5, theme: "Réveiller mollets, fessiers et gainage en douceur", sessionsTarget: 2, criterion: 'Tenir la planche latérale 30 sec de chaque côté sans que le bassin descende.', graduationText: "Les bons muscles répondent à la commande (soléaire, moyen fessier, tronc). C'est la fondation avant de charger." },
+          { id: 2, name: 'Adaptation', shortName: 'PHASE 2', weeks: [4, 6], multiplier: 0.7, theme: "Mollets et tendons encaissent la charge initiale", sessionsTarget: 2, criterion: 'Mollets assis 15 reps propres + soulevé une jambe sans perte d\'équilibre.', graduationText: "Tes mollets et ta chaîne postérieure absorbent la première charge sans réagir. On passe à la construction." },
+          { id: 3, name: 'Construction', shortName: 'PHASE 3', weeks: [7, 12], multiplier: 1.0, theme: "Endurance-force réelle, soléaire dominant", sessionsTarget: 2, criterion: 'Mollets une jambe 12 reps des deux côtés, pont fessier 15 reps sans à-coup.', graduationText: "L'endurance des mollets et des fessiers est en place. Tes appuis tiennent quand le volume monte." },
+          { id: 4, name: 'Symétrie', shortName: 'PHASE 4', weeks: [13, 20], multiplier: 1.0, theme: "Égaliser gauche/droite, stabilité du bassin sous fatigue", sessionsTarget: 2, criterion: 'Écart ressenti gauche/droite ≤ 2/5 sur les exos unilatéraux (mollet une jambe, soulevé une jambe).', graduationText: "Plus de côté faible qui surcharge. Ton bassin reste stable même fatigué — la zone clé des longues sorties." },
+          { id: 5, name: 'Intégration course', shortName: 'PHASE 5', weeks: [21, 32], multiplier: 1.0, theme: "Tenir sur les longues sans douleur", sessionsTarget: 2, criterion: 'Aucune douleur ni raideur inhabituelle (mollet, achille, genou, hanche) après sortie longue, 3 semaines de suite.', graduationText: "La force se traduit en course : tes longues passent sans douleur. Tu peux passer en maintenance." },
+          { id: 6, name: 'Maintenance', shortName: 'PHASE 6', weeks: [33, 999], multiplier: 0.9, theme: "Minimum efficace pour ne rien perdre tant que tu cours", sessionsTarget: 2, criterion: 'Phase indéfinie — tu maintiens tant que tu cours.', graduationText: null },
+        ],
+      },
     };
 
     // Returns the active archetype object, falling back to pfps_lld if profile has
@@ -25064,8 +25126,11 @@
       useEffect(() => {
         if (!strengthStart || profile.showStrength === false) return;
         const phaseOffset = computePhaseOffset(strengthSessions);
-        const cur = getStrengthPhase(strengthStart, phaseOffset);
-        const lastCompleted = STRENGTH_PHASES.filter(p => p.id < cur.id && p.graduationText).pop();
+        // Utilise les phases de l'archétype ACTIF (sinon le texte de fin de phase serait
+        // toujours celui du programme genou, même sur "Renfo marathon" / "Prévention course").
+        const archPhases = getActiveArchetype(profile).phases || STRENGTH_PHASES;
+        const cur = getStrengthPhase(strengthStart, phaseOffset, archPhases);
+        const lastCompleted = archPhases.filter(p => p.id < cur.id && p.graduationText).pop();
         if (!lastCompleted) return;
         if (phaseGraduations.some(g => g.phaseId === lastCompleted.id)) return;
         setPendingGraduation(lastCompleted);
