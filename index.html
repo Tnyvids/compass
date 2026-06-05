@@ -1770,6 +1770,9 @@
 
       return {
         ok: true, a, d, b, r2, rmse, powMin, powMax, nKm: pts.length, effN: S.ww, rows, halfLifeDays, lastMs,
+        // points individuels (1 par km) pour le nuage de points du graphe ;
+        // w = poids d'ancienneté (0→1), sert à l'opacité (récent = plus visible).
+        points: pts.map(p => ({ p: p.p, pace: p.pace, w: p.w, ageDays: p.ageDays })),
         paceAt,
         powerForPace: (paceSec) => (paceSec - b) / a, // inverse à âge 0
       };
@@ -17132,6 +17135,7 @@
                 );
               })()}
               <div className="mb-4"><RacePredictorCard predictions={predictions} cp={profile.cp} tsb={fitness.tsb} wprime={cpWpFit ? cpWpFit.wprime : 15000} weightKg={profile.weightKg} prs={profile.prs} prsDates={profile.prsDates} bestEfforts={mergedBestEfforts} paceMode={isPaceModePred} vma={profile.vma} /></div>
+              {!isPaceModePred && <div className="mb-4"><PowerPaceCurveCard activities={activities} profile={profile} /></div>}
               <div className="mb-4"><PaceTimelineCard activities={activities} profile={profile} planOverrides={planOverrides} races={races} /></div>
               <div className="mb-4"><VirtualCompetitionCard activities={activities} profile={profile} /></div>
             </>
@@ -18948,6 +18952,169 @@
     }
 
     // ========================================================================
+    // GRAPHE PUISSANCE ↔ ALLURE — relation apprise des séances (buildPowerPaceCurve)
+    // Consultation libre dans Analytics : « à tel watts, je cours à telle allure ».
+    // Nuage de points (1 par km, opacité = récence) + droite ajustée + curseur
+    // interactif watts→allure + tableau dépliable. Aucune constante générique.
+    // ========================================================================
+    function PowerPaceCurveCard({ activities, profile }) {
+      const curve = useMemo(() => buildPowerPaceCurve(activities, { halfLifeDays: 45 }), [activities]);
+      const [selW, setSelW] = useState(null);     // watts sélectionnés (curseur/survol)
+      const [showTable, setShowTable] = useState(false);
+      const svgRef = useRef(null);
+      const cp = profile.cp;
+
+      const fmtPace = sec => { if (!(sec > 0)) return '—'; const m = Math.floor(sec/60); let s = Math.round(sec%60); let mm=m; if (s===60){s=0;mm++;} return `${mm}:${String(s).padStart(2,'0')}`; };
+      const fmtT = sec => { if (!(sec > 0)) return '—'; sec = Math.round(sec); const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60; return h>0?`${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${m}:${String(s).padStart(2,'0')}`; };
+      const clmp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+      if (!curve.ok) {
+        return (
+          <Card className="p-6 flex flex-col justify-center items-center text-center" style={{ minHeight: 220 }}>
+            <IconActivity size={28} style={{ color: 'var(--text-faint)' }} className="mb-3" />
+            <div className="font-display text-base font-bold mb-1">Puissance ↔ allure</div>
+            <div className="text-xs max-w-sm" style={{ color: 'var(--text-dim)' }}>Il faut quelques séances avec <span style={{ color: 'var(--text)' }}>puissance seconde par seconde + splits au km</span> (export Stryd). Importe-les et le graphe se construit tout seul.</div>
+          </Card>
+        );
+      }
+
+      // Bornes axe puissance (arrondies à 5 W)
+      const xLo = Math.floor(curve.powMin/5)*5, xHi = Math.ceil(curve.powMax/5)*5;
+      const sel = selW == null ? Math.round(clmp(cp || (xLo+xHi)/2, xLo, xHi)) : selW;
+      const selPace = curve.paceAt(sel);
+      const selInRange = sel >= curve.powMin - 2 && sel <= curve.powMax + 2;
+
+      // Géométrie SVG
+      const W = 600, H = 300, padL = 50, padR = 16, padT = 16, padB = 40;
+      const cw = W - padL - padR, ch = H - padT - padB;
+      const x = p => padL + (p - xLo) / Math.max(1, xHi - xLo) * cw;
+      // axe allure : centré sur la droite ajustée ± marge (≈3·dispersion), rapide en haut
+      const margin = Math.max(3 * curve.rmse, 18);
+      const pFast = curve.paceAt(xHi) - margin;   // allure mini (haut)
+      const pSlow = curve.paceAt(xLo) + margin;    // allure maxi (bas)
+      const y = pace => padT + clmp((pace - pFast) / Math.max(1, pSlow - pFast), 0, 1) * ch;
+
+      // Ticks
+      const xTicks = []; for (let w = Math.ceil(xLo/20)*20; w <= xHi; w += 20) xTicks.push(w);
+      const yTicks = []; for (let i = 0; i <= 4; i++) yTicks.push(pFast + (pSlow - pFast) * i / 4);
+
+      // Interaction : survol / glissement → watts sous le curseur
+      function handleMove(e) {
+        if (!svgRef.current) return;
+        const rect = svgRef.current.getBoundingClientRect();
+        const cx = getPointerX(e);
+        const ratio = clmp((cx - rect.left) / rect.width, 0, 1);
+        setSelW(Math.round(clmp(xLo + ratio * (xHi - xLo), xLo, xHi)));
+      }
+
+      const lineP1 = { x: x(xLo), y: y(curve.paceAt(xLo)) };
+      const lineP2 = { x: x(xHi), y: y(curve.paceAt(xHi)) };
+
+      return (
+        <Card className="p-6">
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+            <div className="flex items-center gap-2">
+              <IconActivity size={14} style={{ color: 'var(--compass)' }} />
+              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>PUISSANCE ↔ ALLURE · APPRISE DE TES SÉANCES</div>
+            </div>
+            <div className="font-mono text-[10px] tabular" style={{ color: 'var(--text-faint)' }}>
+              dispersion ±{Math.round(curve.rmse)}s/km · {curve.nKm} km · {Math.round(curve.powMin)}–{Math.round(curve.powMax)}W
+            </div>
+          </div>
+
+          {/* Lecture sélectionnée (gros chiffres) */}
+          <div className="flex items-baseline gap-3 flex-wrap mb-2">
+            <div className="font-display text-3xl font-bold tabular" style={{ color: 'var(--compass)' }}>{sel}<span className="font-mono text-sm ml-0.5">W</span></div>
+            <div className="font-mono text-faint" style={{ color: 'var(--text-faint)' }}>→</div>
+            <div className="font-display text-3xl font-bold tabular" style={{ color: 'var(--text)' }}>{fmtPace(selPace)}<span className="font-mono text-sm ml-0.5">/km</span></div>
+            <div className="font-mono text-[11px]" style={{ color: 'var(--text-dim)' }}>
+              {cp ? `${Math.round(sel/cp*100)} % de ta CP · ` : ''}10K ≈ {fmtT(selPace*10)}
+              {!selInRange && <span style={{ color: 'var(--negative)' }}> · extrapolé (hors plage courue)</span>}
+            </div>
+          </div>
+
+          {/* Graphe */}
+          <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full cursor-crosshair" preserveAspectRatio="xMidYMid meet"
+            role="img" aria-label="Nuage puissance-allure et droite ajustée"
+            onMouseMove={handleMove} onMouseLeave={() => setSelW(null)}
+            onTouchStart={handleMove} onTouchMove={handleMove}
+            style={{ touchAction: 'pan-y' }}>
+            {/* grille allure */}
+            {yTicks.map((pc, i) => (
+              <g key={'y'+i}>
+                <line x1={padL} y1={y(pc)} x2={W - padR} y2={y(pc)} stroke="var(--border)" strokeWidth="0.5" strokeDasharray="2,3" />
+                <text x={padL - 6} y={y(pc) + 3} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="var(--text-faint)">{fmtPace(pc)}</text>
+              </g>
+            ))}
+            {/* ticks puissance */}
+            {xTicks.map((w, i) => (
+              <g key={'x'+i}>
+                <line x1={x(w)} y1={padT + ch} x2={x(w)} y2={padT + ch + 3} stroke="var(--text-faint)" strokeWidth="0.5" />
+                <text x={x(w)} y={H - 14} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="9" fill="var(--text-faint)">{w}W</text>
+              </g>
+            ))}
+            <text x={(padL + W - padR)/2} y={H - 2} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="8" fill="var(--text-faint)">PUISSANCE (W)</text>
+            {/* repère CP */}
+            {cp && cp >= xLo && cp <= xHi && (
+              <g>
+                <line x1={x(cp)} y1={padT} x2={x(cp)} y2={padT + ch} stroke="var(--accent)" strokeWidth="1" strokeDasharray="4,3" opacity="0.6" />
+                <text x={x(cp) + 3} y={padT + 9} fontFamily="JetBrains Mono" fontSize="8" fill="var(--accent)">CP {cp}W</text>
+              </g>
+            )}
+            {/* nuage de points (opacité = récence) */}
+            {curve.points.map((pt, i) => (
+              <circle key={i} cx={x(pt.p)} cy={y(pt.pace)} r="2.6" fill="var(--compass)" opacity={0.18 + 0.6 * pt.w} />
+            ))}
+            {/* droite ajustée (prédiction aujourd'hui) */}
+            <line x1={lineP1.x} y1={lineP1.y} x2={lineP2.x} y2={lineP2.y} stroke="var(--compass)" strokeWidth="2.5" strokeLinecap="round" />
+            {/* curseur sélection */}
+            <g>
+              <line x1={x(sel)} y1={padT} x2={x(sel)} y2={padT + ch} stroke="var(--text)" strokeWidth="0.75" strokeDasharray="3,3" opacity="0.6" />
+              <circle cx={x(sel)} cy={y(selPace)} r="5" fill="var(--compass)" stroke="var(--bg)" strokeWidth="2" />
+            </g>
+          </svg>
+
+          {/* Curseur (slider) — pratique sur mobile */}
+          <div className="flex items-center gap-3 mt-1">
+            <span className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>{xLo}W</span>
+            <input type="range" min={xLo} max={xHi} step="1" value={sel}
+              onChange={e => setSelW(Number(e.target.value))}
+              className="flex-1" style={{ accentColor: 'var(--compass)' }} />
+            <span className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>{xHi}W</span>
+          </div>
+
+          {/* Tableau dépliable */}
+          <button onClick={() => setShowTable(s => !s)} className="mt-3 font-mono text-[10px] tracking-widest flex items-center gap-1" style={{ color: 'var(--text-faint)' }}>
+            {showTable ? 'MASQUER' : 'AFFICHER'} LE TABLEAU <IconChevronDown size={10} style={{ transform: showTable ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s' }} />
+          </button>
+          {showTable && (
+            <div className="overflow-x-auto mt-2">
+              <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ color: 'var(--text-faint)' }} className="font-mono text-[9px] tracking-widest">
+                    <th className="text-left py-1">PUISSANCE</th><th className="text-right py-1">ALLURE</th><th className="text-right py-1">≈ 10K</th>
+                  </tr>
+                </thead>
+                <tbody className="font-mono tabular">
+                  {curve.rows.map(r => (
+                    <tr key={r.power}>
+                      <td className="text-left py-1" style={{ color: 'var(--text)' }}>{r.power}W</td>
+                      <td className="text-right py-1" style={{ color: 'var(--text)' }}>{fmtPace(r.paceSec)}/km</td>
+                      <td className="text-right py-1" style={{ color: 'var(--text-dim)' }}>{fmtT(r.paceSec * 10)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="text-[10px] mt-2 leading-relaxed" style={{ color: 'var(--text-faint)' }}>
+            Chaque point = un kilomètre de tes séances (puissance réelle → allure réelle), <span style={{ color: 'var(--text-dim)' }}>les récents plus visibles</span> (pondération par ancienneté, demi-vie {curve.halfLifeDays} j). La droite projette ta forme du moment et se recalcule à chaque import. Hors de {Math.round(curve.powMin)}–{Math.round(curve.powMax)}W, c'est de l'extrapolation.
+          </div>
+        </Card>
+      );
+    }
+
+    // ========================================================================
     // CP PROGRESSION BANNER — non-destructive suggestion when power curve has
     // measurably improved. User can accept (updates profile.cp + history) or
     // dismiss (silent, won't show again until next window).
@@ -19982,117 +20149,6 @@
       );
     }
 
-    // Courbe puissance ↔ allure apprise des séances de l'utilisateur, pondérée
-    // par l'ancienneté (cf. buildPowerPaceCurve). Repliable, fermée par défaut.
-    // Répond à « pour tenir mon objectif il me faut combien de watts, d'après
-    // MES sorties ? » — par opposition à la puissance cible théorique (constante
-    // générique 1.04) affichée plus haut.
-    function PowerPaceCurveSection({ race, profile, activities }) {
-      const [open, setOpen] = useState(false);
-      const curve = useMemo(() => buildPowerPaceCurve(activities, { halfLifeDays: 45 }), [activities]);
-
-      const fmtP = sec => { if (!(sec > 0)) return '—'; const m = Math.floor(sec/60); let s = Math.round(sec%60); let mm=m; if (s===60){s=0;mm++;} return `${mm}:${String(s).padStart(2,'0')}`; };
-      const fmtT = sec => { if (!(sec > 0)) return '—'; sec = Math.round(sec); const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60; return h>0?`${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${m}:${String(s).padStart(2,'0')}`; };
-
-      // Objectif → allure plate → puissance (modèle générique 1.04) vs courbe perso
-      const distKm = (() => {
-        const s = String(race.distance || '').toLowerCase();
-        if (s.includes('marathon')) return 42.195;
-        if (s.includes('semi')) return 21.0975;
-        const m = s.match(/(\d+(?:\.\d+)?)/);
-        return m ? parseFloat(m[1]) : null;
-      })();
-      const objSec = parseObjectiveSec(race.objective);
-      const objPace = (objSec && distKm) ? objSec / distKm : null;
-      const genericW = (objPace && profile.weightKg) ? Math.round((1000/objPace) * profile.weightKg * 1.04) : null;
-      const persoW = (curve.ok && objPace) ? Math.round(curve.powerForPace(objPace)) : null;
-
-      // Fiabilité — validée par simulation (30 coureurs virtuels) : le facteur qui
-      // compte n'est PAS le R² (toujours élevé, il mesure l'ajustement aux données,
-      // pas la justesse) mais le fait que la puissance cible soit DANS la plage
-      // réellement courue. Hors plage, l'erreur passe de ≈9 s/km à 30-50 s/km.
-      const inRange = persoW != null && persoW >= curve.powMin - 2 && persoW <= curve.powMax + 2;
-      const reliability = (() => {
-        if (!curve.ok) return null;
-        if (persoW == null) return { lvl: 'Tableau seul', color: 'var(--text-faint)', warn: false };
-        if (!inRange) return { lvl: 'Extrapolée — peu fiable', color: 'var(--negative)', warn: true };
-        if (curve.effN >= 12) return { lvl: 'Solide', color: 'var(--go)', warn: false };
-        if (curve.effN >= 5) return { lvl: 'Indicative', color: 'var(--caution)', warn: false };
-        return { lvl: 'Peu de données', color: 'var(--text-faint)', warn: true };
-      })();
-      const lastDays = curve.ok ? Math.round((Date.now() - curve.lastMs) / 86400000) : null;
-
-      return (
-        <div className="mt-3 rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)' }}>
-          <button onClick={() => setOpen(o => !o)} className="w-full flex items-center justify-between px-3 py-2.5" style={{ background: 'var(--bg-elev)' }}>
-            <span className="font-mono text-[10px] tracking-widest flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
-              <IconActivity size={12} /> COURBE PUISSANCE ↔ ALLURE · APPRISE DE TES SÉANCES{curve.ok ? '' : ' · données insuffisantes'}
-            </span>
-            <span className="font-mono text-[10px] tracking-widest flex items-center gap-1 flex-shrink-0" style={{ color: 'var(--text-faint)' }}>
-              {open ? 'MASQUER' : 'AFFICHER'} <IconChevronDown size={10} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s' }} />
-            </span>
-          </button>
-          {open && (
-            <div className="p-3 border-t" style={{ borderColor: 'var(--border)' }}>
-              {!curve.ok ? (
-                <div className="text-xs rounded-lg p-3" style={{ background: 'rgba(255,176,32,0.08)', border: '1px solid rgba(255,176,32,0.25)', color: 'var(--text-dim)' }}>
-                  Pas encore assez de séances avec <span style={{ color: 'var(--text)' }}>puissance détaillée + splits au km</span> pour tracer ta courbe (il en faut quelques-unes). Importe tes prochaines sorties Stryd et elle se construira toute seule.
-                </div>
-              ) : (
-                <>
-                  {/* Verdict perso vs générique */}
-                  {persoW != null && objPace != null && (
-                    <div className="rounded-lg p-3 mb-2" style={{ background: 'rgba(74,158,255,0.06)', border: '1px solid rgba(74,158,255,0.25)' }}>
-                      <div className="text-[11px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-                        Pour tenir <span style={{ color: 'var(--text)' }}>{race.objective}</span> ({fmtP(objPace)}/km), <span style={{ color: 'var(--compass)', fontWeight: 700 }}>tes séances</span> indiquent ≈ <span style={{ color: 'var(--compass)', fontWeight: 700, fontSize: 14 }}>{persoW}W</span>
-                        {genericW != null && <span style={{ color: 'var(--text-faint)' }}> — le calcul générique de l'app dit {genericW}W ({persoW > genericW ? '+' : ''}{persoW - genericW}W).</span>}
-                      </div>
-                      {reliability && (
-                        <div className="mt-1.5 flex items-center gap-2 flex-wrap font-mono text-[10px]">
-                          <span style={{ color: reliability.color, fontWeight: 700 }}>● {reliability.lvl}</span>
-                          <span style={{ color: 'var(--text-faint)' }}>dispersion ±{Math.round(curve.rmse)}s/km · {curve.nKm} km · plage {Math.round(curve.powMin)}–{Math.round(curve.powMax)}W · demi-vie {curve.halfLifeDays}j{lastDays != null ? ` · MAJ il y a ${lastDays}j` : ''}</span>
-                        </div>
-                      )}
-                      {reliability && reliability.warn && !inRange && (
-                        <div className="mt-1.5 text-[10px] leading-relaxed" style={{ color: 'var(--negative)' }}>
-                          ⚠ {persoW}W est <span style={{ fontWeight: 700 }}>au-delà de ta plage courue</span> ({Math.round(curve.powMin)}–{Math.round(curve.powMax)}W) : c'est une extrapolation. Pour fiabiliser, fais une séance qui touche cette intensité (intervalles au seuil) — la courbe s'étendra et se confirmera.
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {/* Tableau */}
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
-                      <thead>
-                        <tr style={{ color: 'var(--text-faint)' }} className="font-mono text-[9px] tracking-widest">
-                          <th className="text-left py-1">PUISSANCE</th><th className="text-right py-1">ALLURE</th><th className="text-right py-1">≈ TEMPS 10K</th>
-                        </tr>
-                      </thead>
-                      <tbody className="font-mono tabular">
-                        {curve.rows.map(r => {
-                          const hot = persoW != null && Math.abs(r.power - persoW) < 2.5;
-                          return (
-                            <tr key={r.power} style={hot ? { background: 'rgba(74,158,255,0.12)' } : null}>
-                              <td className="text-left py-1" style={{ color: hot ? 'var(--compass)' : 'var(--text)', fontWeight: hot ? 700 : 400 }}>{r.power}W{hot ? ' ←' : ''}</td>
-                              <td className="text-right py-1" style={{ color: hot ? 'var(--compass)' : 'var(--text)', fontWeight: hot ? 700 : 400 }}>{fmtP(r.paceSec)}/km</td>
-                              <td className="text-right py-1" style={{ color: 'var(--text-dim)' }}>{fmtT(r.paceSec * 10)}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                  <div className="text-[10px] mt-2 leading-relaxed" style={{ color: 'var(--text-faint)' }}>
-                    Construite à partir de chaque kilomètre de tes séances (puissance réelle → allure réelle), <span style={{ color: 'var(--text-dim)' }}>pondérée par l'ancienneté</span> : tes sorties récentes comptent plus, les vieilles s'effacent (demi-vie {curve.halfLifeDays} j). La courbe se recalcule à chaque import et suit ta forme. Hors de la plage {Math.round(curve.powMin)}–{Math.round(curve.powMax)}W, les valeurs sont extrapolées.
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-        </div>
-      );
-    }
-
     // Stratégie parcours repliable : utile mais volumineux → fermé par défaut
     // pour ne pas noyer la fiche course (demande Tony).
     function CollapsibleStrategy({ race, profile, onUpdateRace }) {
@@ -20917,9 +20973,6 @@
                             })}
                           </div>
                         )}
-
-                        {/* Courbe puissance ↔ allure apprise des séances (perso) */}
-                        <PowerPaceCurveSection race={r} profile={profile} activities={activities} />
 
                         {/* Stratégie de course calibrée au dénivelé */}
                         <CollapsibleStrategy race={r} profile={profile} onUpdateRace={onUpdateRace} />
