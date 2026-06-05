@@ -1726,7 +1726,7 @@
           if (n < minKmSamples) continue;
           const p = sum / n, pace = k.paceSecPerKm;
           if (!(pace > 0) || !(p > 0)) continue;
-          pts.push({ p, pace, ageDays, w });
+          pts.push({ p, pace, ageDays, w, date: a.date, file: a.fileName || null, km: k.km });
         }
       }
       if (pts.length < 8) return { ok: false, nKm: pts.length };
@@ -1770,9 +1770,9 @@
 
       return {
         ok: true, a, d, b, r2, rmse, powMin, powMax, nKm: pts.length, effN: S.ww, rows, halfLifeDays, lastMs,
-        // points individuels (1 par km) pour le nuage de points du graphe ;
-        // w = poids d'ancienneté (0→1), sert à l'opacité (récent = plus visible).
-        points: pts.map(p => ({ p: p.p, pace: p.pace, w: p.w, ageDays: p.ageDays })),
+        // points individuels (1 par km) pour le nuage + la lecture par séance.
+        // w = poids d'ancienneté (0→1) ; date/file/km = provenance du km.
+        points: pts.map(p => ({ p: p.p, pace: p.pace, w: p.w, ageDays: p.ageDays, date: p.date, file: p.file, km: p.km })),
         paceAt,
         powerForPace: (paceSec) => (paceSec - b) / a, // inverse à âge 0
       };
@@ -18978,77 +18978,96 @@
         );
       }
 
-      // Bornes axe puissance (arrondies à 5 W)
-      const xLo = Math.floor(curve.powMin/5)*5, xHi = Math.ceil(curve.powMax/5)*5;
-      const sel = selW == null ? Math.round(clmp(cp || (xLo+xHi)/2, xLo, xHi)) : selW;
-      const selPace = curve.paceAt(sel);
-      const selInRange = sel >= curve.powMin - 2 && sel <= curve.powMax + 2;
+      // Petit format de date FR depuis l'ISO d'une activité.
+      const fmtD = iso => { const ms = Date.parse(iso); return Number.isFinite(ms) ? fmtDate(ms, true) : ''; };
 
-      // Géométrie SVG
+      const pts = curve.points;
+      const xLo = Math.floor(curve.powMin/5)*5, xHi = Math.ceil(curve.powMax/5)*5;
+
+      // La « courbe » = MÉDIANE de tes vrais km par tranche de 10 W. Elle passe
+      // donc par tes points réels (pas une droite lissée qui dérive au bord).
+      // Chaque tranche retient son km médian → sa séance sert d'exemple.
+      const binW = 10;
+      const binMap = {};
+      for (const pt of pts) { const b = Math.round(pt.p/binW)*binW; (binMap[b] = binMap[b] || []).push(pt); }
+      const bins = Object.keys(binMap).map(Number).sort((u,v)=>u-v).map(b => {
+        const arr = binMap[b].slice().sort((u,v)=>u.pace-v.pace);
+        const medPt = arr[Math.floor(arr.length/2)];
+        const wAvg = arr.reduce((s,p)=>s+p.p,0)/arr.length;
+        return { w: wAvg, pace: medPt.pace, n: arr.length, ex: medPt };
+      });
+
+      // Sélection : on s'accroche TOUJOURS au vrai km le plus proche en puissance
+      // (jamais une valeur inventée par un lissage). selTarget = cible du curseur.
+      const selTarget = selW == null ? Math.round(clmp(cp || (xLo+xHi)/2, xLo, xHi)) : selW;
+      let nearest = pts[0];
+      for (const pt of pts) if (Math.abs(pt.p - selTarget) < Math.abs(nearest.p - selTarget)) nearest = pt;
+      const near = pts.filter(pt => Math.abs(pt.p - nearest.p) <= 2); // km voisins (≈ même puissance)
+      const offTarget = Math.abs(nearest.p - selTarget) > 3;          // pas de km pile sous le curseur
+      const nearP = Math.round(nearest.p);                            // puissance du km, arrondie pour l'affichage
+
+      // Géométrie SVG — axe allure calé sur tes vrais km (min/max + marge).
       const W = 600, H = 300, padL = 50, padR = 16, padT = 16, padB = 40;
       const cw = W - padL - padR, ch = H - padT - padB;
       const x = p => padL + (p - xLo) / Math.max(1, xHi - xLo) * cw;
-      // axe allure : centré sur la droite ajustée ± marge (≈3·dispersion), rapide en haut
-      const margin = Math.max(3 * curve.rmse, 18);
-      const pFast = curve.paceAt(xHi) - margin;   // allure mini (haut)
-      const pSlow = curve.paceAt(xLo) + margin;    // allure maxi (bas)
+      const paces = pts.map(p => p.pace);
+      const pMinR = Math.min(...paces), pMaxR = Math.max(...paces);
+      const pad = Math.max((pMaxR - pMinR) * 0.06, 8);
+      const pFast = pMinR - pad, pSlow = pMaxR + pad;
       const y = pace => padT + clmp((pace - pFast) / Math.max(1, pSlow - pFast), 0, 1) * ch;
 
-      // Ticks
       const xTicks = []; for (let w = Math.ceil(xLo/20)*20; w <= xHi; w += 20) xTicks.push(w);
       const yTicks = []; for (let i = 0; i <= 4; i++) yTicks.push(pFast + (pSlow - pFast) * i / 4);
 
-      // Interaction : survol / glissement → watts sous le curseur.
-      // On repasse en coordonnées viewBox (0..W) AVANT de retirer la marge
-      // gauche (padL) : sinon le trait est décalé de la largeur des étiquettes.
+      // Interaction : survol / glissement → watts cible (on repasse en coordonnées
+      // viewBox AVANT de retirer la marge gauche, sinon le trait est décalé).
       function handleMove(e) {
         if (!svgRef.current) return;
         const rect = svgRef.current.getBoundingClientRect();
-        const vbX = ((getPointerX(e) - rect.left) / rect.width) * W; // position dans le repère du graphe
-        const ratio = clmp((vbX - padL) / cw, 0, 1);                 // 0..1 dans la zone de tracé
+        const vbX = ((getPointerX(e) - rect.left) / rect.width) * W;
+        const ratio = clmp((vbX - padL) / cw, 0, 1);
         setSelW(Math.round(xLo + ratio * (xHi - xLo)));
       }
 
-      const lineP1 = { x: x(xLo), y: y(curve.paceAt(xLo)) };
-      const lineP2 = { x: x(xHi), y: y(curve.paceAt(xHi)) };
+      const linePts = bins.map(b => `${x(b.w).toFixed(1)},${y(b.pace).toFixed(1)}`).join(' ');
 
       return (
         <Card className="p-6">
           <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
             <div className="flex items-center gap-2">
               <IconActivity size={14} style={{ color: 'var(--compass)' }} />
-              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>PUISSANCE ↔ ALLURE · APPRISE DE TES SÉANCES</div>
+              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--text-dim)' }}>PUISSANCE ↔ ALLURE · TES KM RÉELS</div>
             </div>
             <div className="font-mono text-[10px] tabular" style={{ color: 'var(--text-faint)' }}>
-              dispersion ±{Math.round(curve.rmse)}s/km · {curve.nKm} km · {Math.round(curve.powMin)}–{Math.round(curve.powMax)}W
+              {curve.nKm} km · {Math.round(curve.powMin)}–{Math.round(curve.powMax)}W
             </div>
           </div>
 
-          {/* Lecture sélectionnée (gros chiffres) */}
-          <div className="flex items-baseline gap-3 flex-wrap mb-2">
-            <div className="font-display text-3xl font-bold tabular" style={{ color: 'var(--compass)' }}>{sel}<span className="font-mono text-sm ml-0.5">W</span></div>
-            <div className="font-mono text-faint" style={{ color: 'var(--text-faint)' }}>→</div>
-            <div className="font-display text-3xl font-bold tabular" style={{ color: 'var(--text)' }}>{fmtPace(selPace)}<span className="font-mono text-sm ml-0.5">/km</span></div>
-            <div className="font-mono text-[11px]" style={{ color: 'var(--text-dim)' }}>
-              {cp ? `${Math.round(sel/cp*100)} % de ta CP · ` : ''}10K ≈ {fmtT(selPace*10)}
-              {!selInRange && <span style={{ color: 'var(--negative)' }}> · extrapolé (hors plage courue)</span>}
-            </div>
+          {/* Lecture sélectionnée = un VRAI km, avec sa séance d'origine */}
+          <div className="flex items-baseline gap-3 flex-wrap mb-0.5">
+            <div className="font-display text-3xl font-bold tabular" style={{ color: 'var(--compass)' }}>{nearP}<span className="font-mono text-sm ml-0.5">W</span></div>
+            <div className="font-mono" style={{ color: 'var(--text-faint)' }}>→</div>
+            <div className="font-display text-3xl font-bold tabular" style={{ color: 'var(--text)' }}>{fmtPace(nearest.pace)}<span className="font-mono text-sm ml-0.5">/km</span></div>
+            {cp && <div className="font-mono text-[11px]" style={{ color: 'var(--text-dim)' }}>{Math.round(nearest.p/cp*100)} % de ta CP</div>}
+          </div>
+          <div className="font-mono text-[11px] mb-2" style={{ color: 'var(--text-dim)' }}>
+            km {nearest.km} de la séance du <span style={{ color: 'var(--text)' }}>{fmtD(nearest.date)}</span>{nearest.file ? <span style={{ color: 'var(--text-faint)' }}> · {nearest.file}</span> : ''}
+            {near.length > 1 && <span style={{ color: 'var(--text-faint)' }}> · +{near.length - 1} autre{near.length > 2 ? 's' : ''} km à ≈{nearP}W</span>}
+            {offTarget && <span style={{ color: 'var(--caution)' }}> · (pas de km à ~{selTarget}W ; le plus proche est {nearP}W)</span>}
           </div>
 
-          {/* Graphe */}
+          {/* Graphe : nuage de tes km + ligne médiane par tranche */}
           <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full cursor-crosshair" preserveAspectRatio="xMidYMid meet"
-            role="img" aria-label="Nuage puissance-allure et droite ajustée"
+            role="img" aria-label="Nuage puissance-allure de tes kilomètres et médiane par tranche de puissance"
             onMouseMove={handleMove} onMouseLeave={() => setSelW(null)}
             onTouchStart={handleMove} onTouchMove={handleMove}
             style={{ touchAction: 'pan-y' }}>
-            {/* grille allure */}
             {yTicks.map((pc, i) => (
               <g key={'y'+i}>
                 <line x1={padL} y1={y(pc)} x2={W - padR} y2={y(pc)} stroke="var(--border)" strokeWidth="0.5" strokeDasharray="2,3" />
                 <text x={padL - 6} y={y(pc) + 3} textAnchor="end" fontFamily="JetBrains Mono" fontSize="9" fill="var(--text-faint)">{fmtPace(pc)}</text>
               </g>
             ))}
-            {/* ticks puissance */}
             {xTicks.map((w, i) => (
               <g key={'x'+i}>
                 <line x1={x(w)} y1={padT + ch} x2={x(w)} y2={padT + ch + 3} stroke="var(--text-faint)" strokeWidth="0.5" />
@@ -19056,53 +19075,53 @@
               </g>
             ))}
             <text x={(padL + W - padR)/2} y={H - 2} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="8" fill="var(--text-faint)">PUISSANCE (W)</text>
-            {/* repère CP */}
             {cp && cp >= xLo && cp <= xHi && (
               <g>
                 <line x1={x(cp)} y1={padT} x2={x(cp)} y2={padT + ch} stroke="var(--accent)" strokeWidth="1" strokeDasharray="4,3" opacity="0.6" />
                 <text x={x(cp) + 3} y={padT + 9} fontFamily="JetBrains Mono" fontSize="8" fill="var(--accent)">CP {cp}W</text>
               </g>
             )}
-            {/* nuage de points (opacité = récence) */}
-            {curve.points.map((pt, i) => (
-              <circle key={i} cx={x(pt.p)} cy={y(pt.pace)} r="2.6" fill="var(--compass)" opacity={0.18 + 0.6 * pt.w} />
+            {/* nuage : chaque vrai km (opacité = récence) */}
+            {pts.map((pt, i) => (
+              <circle key={i} cx={x(pt.p)} cy={y(pt.pace)} r={pt === nearest ? 0 : 2.6} fill="var(--compass)" opacity={0.16 + 0.55 * pt.w} />
             ))}
-            {/* droite ajustée (prédiction aujourd'hui) */}
-            <line x1={lineP1.x} y1={lineP1.y} x2={lineP2.x} y2={lineP2.y} stroke="var(--compass)" strokeWidth="2.5" strokeLinecap="round" />
-            {/* curseur sélection */}
+            {/* ligne médiane par tranche de 10 W (passe par tes points) */}
+            {bins.length >= 2 && <polyline points={linePts} fill="none" stroke="var(--compass)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" opacity="0.9" />}
+            {/* km sélectionné mis en avant */}
             <g>
-              <line x1={x(sel)} y1={padT} x2={x(sel)} y2={padT + ch} stroke="var(--text)" strokeWidth="0.75" strokeDasharray="3,3" opacity="0.6" />
-              <circle cx={x(sel)} cy={y(selPace)} r="5" fill="var(--compass)" stroke="var(--bg)" strokeWidth="2" />
+              <line x1={x(nearest.p)} y1={padT} x2={x(nearest.p)} y2={padT + ch} stroke="var(--text)" strokeWidth="0.75" strokeDasharray="3,3" opacity="0.55" />
+              <circle cx={x(nearest.p)} cy={y(nearest.pace)} r="5.5" fill="var(--compass)" stroke="var(--bg)" strokeWidth="2" />
             </g>
           </svg>
 
           {/* Curseur (slider) — pratique sur mobile */}
           <div className="flex items-center gap-3 mt-1">
             <span className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>{xLo}W</span>
-            <input type="range" min={xLo} max={xHi} step="1" value={sel}
+            <input type="range" min={xLo} max={xHi} step="1" value={selTarget}
               onChange={e => setSelW(Number(e.target.value))}
               className="flex-1" style={{ accentColor: 'var(--compass)' }} />
             <span className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>{xHi}W</span>
           </div>
 
-          {/* Tableau dépliable */}
+          {/* Tableau dépliable : médiane par tranche + séance d'exemple */}
           <button onClick={() => setShowTable(s => !s)} className="mt-3 font-mono text-[10px] tracking-widest flex items-center gap-1" style={{ color: 'var(--text-faint)' }}>
-            {showTable ? 'MASQUER' : 'AFFICHER'} LE TABLEAU <IconChevronDown size={10} style={{ transform: showTable ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s' }} />
+            {showTable ? 'MASQUER' : 'AFFICHER'} LE DÉTAIL PAR TRANCHE <IconChevronDown size={10} style={{ transform: showTable ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s' }} />
           </button>
           {showTable && (
             <div className="overflow-x-auto mt-2">
               <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
                 <thead>
                   <tr style={{ color: 'var(--text-faint)' }} className="font-mono text-[9px] tracking-widest">
-                    <th className="text-left py-1">PUISSANCE</th><th className="text-right py-1">ALLURE</th><th className="text-right py-1">≈ 10K</th>
+                    <th className="text-left py-1">PUISSANCE</th><th className="text-right py-1">ALLURE MÉDIANE</th><th className="text-right py-1">KM</th><th className="text-right py-1">EX. SÉANCE</th>
                   </tr>
                 </thead>
                 <tbody className="font-mono tabular">
-                  {curve.rows.map(r => (
-                    <tr key={r.power}>
-                      <td className="text-left py-1" style={{ color: 'var(--text)' }}>{r.power}W</td>
-                      <td className="text-right py-1" style={{ color: 'var(--text)' }}>{fmtPace(r.paceSec)}/km</td>
-                      <td className="text-right py-1" style={{ color: 'var(--text-dim)' }}>{fmtT(r.paceSec * 10)}</td>
+                  {bins.map((b, i) => (
+                    <tr key={i}>
+                      <td className="text-left py-1" style={{ color: 'var(--text)' }}>≈{Math.round(b.w)}W</td>
+                      <td className="text-right py-1" style={{ color: 'var(--text)' }}>{fmtPace(b.pace)}/km</td>
+                      <td className="text-right py-1" style={{ color: 'var(--text-dim)' }}>{b.n}</td>
+                      <td className="text-right py-1" style={{ color: 'var(--text-faint)' }}>{fmtD(b.ex.date)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -19110,7 +19129,7 @@
             </div>
           )}
           <div className="text-[10px] mt-2 leading-relaxed" style={{ color: 'var(--text-faint)' }}>
-            Chaque point = un kilomètre de tes séances (puissance réelle → allure réelle), <span style={{ color: 'var(--text-dim)' }}>les récents plus visibles</span> (pondération par ancienneté, demi-vie {curve.halfLifeDays} j). La droite projette ta forme du moment et se recalcule à chaque import. Hors de {Math.round(curve.powMin)}–{Math.round(curve.powMax)}W, c'est de l'extrapolation.
+            Chaque point = un <span style={{ color: 'var(--text-dim)' }}>vrai kilomètre</span> de tes séances (puissance réelle → allure réelle de ce km), les récents plus visibles. La ligne relie la <span style={{ color: 'var(--text-dim)' }}>médiane de tes km par tranche de 10 W</span> — elle passe donc par tes données, sans extrapoler. Survole (ou glisse) pour lire le km le plus proche et sa séance. Mise à jour à chaque import.
           </div>
         </Card>
       );
