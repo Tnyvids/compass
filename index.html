@@ -18998,13 +18998,15 @@
       const xTicks = []; for (let w = Math.ceil(xLo/20)*20; w <= xHi; w += 20) xTicks.push(w);
       const yTicks = []; for (let i = 0; i <= 4; i++) yTicks.push(pFast + (pSlow - pFast) * i / 4);
 
-      // Interaction : survol / glissement → watts sous le curseur
+      // Interaction : survol / glissement → watts sous le curseur.
+      // On repasse en coordonnées viewBox (0..W) AVANT de retirer la marge
+      // gauche (padL) : sinon le trait est décalé de la largeur des étiquettes.
       function handleMove(e) {
         if (!svgRef.current) return;
         const rect = svgRef.current.getBoundingClientRect();
-        const cx = getPointerX(e);
-        const ratio = clmp((cx - rect.left) / rect.width, 0, 1);
-        setSelW(Math.round(clmp(xLo + ratio * (xHi - xLo), xLo, xHi)));
+        const vbX = ((getPointerX(e) - rect.left) / rect.width) * W; // position dans le repère du graphe
+        const ratio = clmp((vbX - padL) / cw, 0, 1);                 // 0..1 dans la zone de tracé
+        setSelW(Math.round(xLo + ratio * (xHi - xLo)));
       }
 
       const lineP1 = { x: x(xLo), y: y(curve.paceAt(xLo)) };
