@@ -18982,7 +18982,6 @@
       const fmtD = iso => { const ms = Date.parse(iso); return Number.isFinite(ms) ? fmtDate(ms, true) : ''; };
 
       const pts = curve.points;
-      const xLo = Math.floor(curve.powMin/5)*5, xHi = Math.ceil(curve.powMax/5)*5;
 
       // La « courbe » = MÉDIANE de tes vrais km par tranche de 10 W. Elle passe
       // donc par tes points réels (pas une droite lissée qui dérive au bord).
@@ -18997,14 +18996,72 @@
         return { w: wAvg, pace: medPt.pace, n: arr.length, ex: medPt };
       });
 
-      // Sélection : on s'accroche TOUJOURS au vrai km le plus proche en puissance
-      // (jamais une valeur inventée par un lissage). selTarget = cible du curseur.
+      // Allure lue sur la ligne médiane à une puissance P : INTERPOLATION entre
+      // tes tranches (lecture DANS ta plage, jamais d'extrapolation au-delà).
+      const lineAt = (P) => {
+        if (!bins.length) return null;
+        if (P <= bins[0].w) return bins[0].pace;
+        if (P >= bins[bins.length-1].w) return bins[bins.length-1].pace;
+        for (let i = 1; i < bins.length; i++) {
+          const a = bins[i-1], b = bins[i];
+          if (P <= b.w) { const t = (P - a.w) / Math.max(1e-6, b.w - a.w); return a.pace + t * (b.pace - a.pace); }
+        }
+        return bins[bins.length-1].pace;
+      };
+
+      // Zones de puissance de course (% de CP, cohérent avec le reste de l'app :
+      // 5K 108-112 % / 10K 100-104 % / semi 92-96 % / marathon 83-88 %). L'allure
+      // affichée est lue sur ta ligne médiane là où la zone recoupe tes km ; si la
+      // zone est au-dessus de ton max couru, on dit honnêtement « au-delà de tes km ».
+      const RACE_DEFS = cp ? [
+        { label: 'Marathon', lo: 0.83, hi: 0.88, color: 'var(--go)' },
+        { label: 'Semi',     lo: 0.92, hi: 0.96, color: 'var(--compass)' },
+        { label: '10K',      lo: 1.00, hi: 1.04, color: 'var(--caution)' },
+        { label: '5K',       lo: 1.08, hi: 1.12, color: 'var(--negative)' },
+      ] : [];
+      const races = RACE_DEFS.map(r => {
+        const wLo = cp * r.lo, wHi = cp * r.hi;
+        const beyond = wLo > curve.powMax;   // toute la zone est au-dessus de tes km
+        const below = wHi < curve.powMin;     // toute la zone est en dessous
+        let paceFast = null, paceSlow = null; // allure aux deux bords (haut W = rapide)
+        if (!beyond && !below) {
+          paceFast = lineAt(Math.min(wHi, curve.powMax));
+          paceSlow = lineAt(Math.max(wLo, curve.powMin));
+        }
+        return { ...r, wLo, wHi, beyond, below, paceFast, paceSlow };
+      });
+
+      // Axe puissance : englobe tes km ET les zones de course (jusqu'au 5K) pour
+      // qu'elles soient toutes visibles, même au-delà de ce que tu as déjà couru.
+      const xLo = Math.floor(curve.powMin/5)*5;
+      const xHi = Math.max(Math.ceil(curve.powMax/5)*5, cp ? Math.ceil(cp*1.12/5)*5 : 0);
+
+      // Sélection : on lit la MÉDIANE des km autour de la puissance visée (pas un
+      // km isolé — à puissance égale ton allure varie de ±15 s/km selon le jour,
+      // un point unique peut donc être trompeur). Fenêtre élargie si peu de km.
       const selTarget = selW == null ? Math.round(clmp(cp || (xLo+xHi)/2, xLo, xHi)) : selW;
+      let win = [], winR = 5;
+      for (const r of [5, 8, 12]) { win = pts.filter(p => Math.abs(p.p - selTarget) <= r); winR = r; if (win.length >= 3) break; }
+      const winSorted = win.slice().sort((a, b) => a.pace - b.pace);
+      const hasWin = winSorted.length > 0;
+      const medPace = hasWin ? winSorted[Math.floor(winSorted.length/2)].pace : null; // allure typique à cette puissance
+      const fastPt = hasWin ? winSorted[0] : null;                  // jour le plus rapide
+      const slowPt = hasWin ? winSorted[winSorted.length - 1] : null; // jour le plus lent
+      // Valeur mise en avant = le DERNIER km couru à cette puissance (forme du
+      // moment). À date égale, on prend le km le plus proche de la cible.
+      let lastPt = null;
+      for (const pt of win) {
+        if (!lastPt) { lastPt = pt; continue; }
+        const dt = Date.parse(pt.date) - Date.parse(lastPt.date);
+        if (dt > 0 || (dt === 0 && Math.abs(pt.p - selTarget) < Math.abs(lastPt.p - selTarget))) lastPt = pt;
+      }
+      // Fallback : km le plus proche si la fenêtre est vide (trou de données / hors plage)
       let nearest = pts[0];
       for (const pt of pts) if (Math.abs(pt.p - selTarget) < Math.abs(nearest.p - selTarget)) nearest = pt;
-      const near = pts.filter(pt => Math.abs(pt.p - nearest.p) <= 2); // km voisins (≈ même puissance)
-      const offTarget = Math.abs(nearest.p - selTarget) > 3;          // pas de km pile sous le curseur
-      const nearP = Math.round(nearest.p);                            // puissance du km, arrondie pour l'affichage
+      const nearP = Math.round(nearest.p);
+      const dispPt = lastPt || nearest;                 // point mis en avant
+      const dispPace = dispPt.pace;
+      const dispW = Math.round(dispPt.p);
 
       // Géométrie SVG — axe allure calé sur tes vrais km (min/max + marge).
       const W = 600, H = 300, padL = 50, padR = 16, padT = 16, padB = 40;
@@ -19043,17 +19100,17 @@
             </div>
           </div>
 
-          {/* Lecture sélectionnée = un VRAI km, avec sa séance d'origine */}
+          {/* Lecture = DERNIER km couru à cette puissance + médiane en contexte */}
           <div className="flex items-baseline gap-3 flex-wrap mb-0.5">
-            <div className="font-display text-3xl font-bold tabular" style={{ color: 'var(--compass)' }}>{nearP}<span className="font-mono text-sm ml-0.5">W</span></div>
+            <div className="font-display text-3xl font-bold tabular" style={{ color: 'var(--compass)' }}>{dispW}<span className="font-mono text-sm ml-0.5">W</span></div>
             <div className="font-mono" style={{ color: 'var(--text-faint)' }}>→</div>
-            <div className="font-display text-3xl font-bold tabular" style={{ color: 'var(--text)' }}>{fmtPace(nearest.pace)}<span className="font-mono text-sm ml-0.5">/km</span></div>
-            {cp && <div className="font-mono text-[11px]" style={{ color: 'var(--text-dim)' }}>{Math.round(nearest.p/cp*100)} % de ta CP</div>}
+            <div className="font-display text-3xl font-bold tabular" style={{ color: 'var(--text)' }}>{fmtPace(dispPace)}<span className="font-mono text-sm ml-0.5">/km</span></div>
+            {cp && <div className="font-mono text-[11px]" style={{ color: 'var(--text-dim)' }}>{Math.round(dispW/cp*100)} % de ta CP</div>}
           </div>
           <div className="font-mono text-[11px] mb-2" style={{ color: 'var(--text-dim)' }}>
-            km {nearest.km} de la séance du <span style={{ color: 'var(--text)' }}>{fmtD(nearest.date)}</span>{nearest.file ? <span style={{ color: 'var(--text-faint)' }}> · {nearest.file}</span> : ''}
-            {near.length > 1 && <span style={{ color: 'var(--text-faint)' }}> · +{near.length - 1} autre{near.length > 2 ? 's' : ''} km à ≈{nearP}W</span>}
-            {offTarget && <span style={{ color: 'var(--caution)' }}> · (pas de km à ~{selTarget}W ; le plus proche est {nearP}W)</span>}
+            {hasWin
+              ? <>dernier km à ≈{selTarget}W : <span style={{ color: 'var(--text)' }}>{fmtD(lastPt.date)}</span>{lastPt.file ? <span style={{ color: 'var(--text-faint)' }}> · {lastPt.file} km{lastPt.km}</span> : ''}{win.length > 1 ? <span style={{ color: 'var(--text-faint)' }}> · typiquement {fmtPace(medPace)} (de {fmtPace(fastPt.pace)} à {fmtPace(slowPt.pace)}, {win.length} km)</span> : ''}</>
+              : <>aucun km à ~{selTarget}W · le plus proche : {nearP}W <span style={{ color: 'var(--text)' }}>{fmtPace(nearest.pace)}/km</span> ({fmtD(nearest.date)}{nearest.file ? ' · ' + nearest.file : ''})</>}
           </div>
 
           {/* Graphe : nuage de tes km + ligne médiane par tranche */}
@@ -19075,22 +19132,32 @@
               </g>
             ))}
             <text x={(padL + W - padR)/2} y={H - 2} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="8" fill="var(--text-faint)">PUISSANCE (W)</text>
+            {/* zones de course (plages de W par distance) */}
+            {races.map((r, i) => (
+              <g key={'band'+i}>
+                <rect x={x(r.wLo)} y={padT} width={Math.max(0, x(r.wHi) - x(r.wLo))} height={ch} fill={r.color} opacity="0.10" />
+                <line x1={x(r.wLo)} y1={padT} x2={x(r.wLo)} y2={padT + ch} stroke={r.color} strokeWidth="0.5" opacity="0.4" />
+                <line x1={x(r.wHi)} y1={padT} x2={x(r.wHi)} y2={padT + ch} stroke={r.color} strokeWidth="0.5" opacity="0.4" />
+                <text x={(x(r.wLo) + x(r.wHi))/2} y={padT + (i % 2 ? 19 : 9)} textAnchor="middle" fontFamily="JetBrains Mono" fontSize="8" fill={r.color}>{r.label}</text>
+              </g>
+            ))}
             {cp && cp >= xLo && cp <= xHi && (
               <g>
                 <line x1={x(cp)} y1={padT} x2={x(cp)} y2={padT + ch} stroke="var(--accent)" strokeWidth="1" strokeDasharray="4,3" opacity="0.6" />
                 <text x={x(cp) + 3} y={padT + 9} fontFamily="JetBrains Mono" fontSize="8" fill="var(--accent)">CP {cp}W</text>
               </g>
             )}
-            {/* nuage : chaque vrai km (opacité = récence) */}
-            {pts.map((pt, i) => (
-              <circle key={i} cx={x(pt.p)} cy={y(pt.pace)} r={pt === nearest ? 0 : 2.6} fill="var(--compass)" opacity={0.16 + 0.55 * pt.w} />
-            ))}
+            {/* nuage : chaque vrai km (km de la fenêtre sélectionnée mis en avant) */}
+            {pts.map((pt, i) => {
+              const inWin = hasWin && Math.abs(pt.p - selTarget) <= winR;
+              return <circle key={i} cx={x(pt.p)} cy={y(pt.pace)} r={inWin ? 3.3 : 2.6} fill="var(--compass)" opacity={inWin ? 0.95 : 0.16 + 0.5 * pt.w} stroke={inWin ? 'var(--bg)' : 'none'} strokeWidth={inWin ? 1 : 0} />;
+            })}
             {/* ligne médiane par tranche de 10 W (passe par tes points) */}
             {bins.length >= 2 && <polyline points={linePts} fill="none" stroke="var(--compass)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" opacity="0.9" />}
-            {/* km sélectionné mis en avant */}
+            {/* marqueur : dernier km couru à la puissance visée */}
             <g>
-              <line x1={x(nearest.p)} y1={padT} x2={x(nearest.p)} y2={padT + ch} stroke="var(--text)" strokeWidth="0.75" strokeDasharray="3,3" opacity="0.55" />
-              <circle cx={x(nearest.p)} cy={y(nearest.pace)} r="5.5" fill="var(--compass)" stroke="var(--bg)" strokeWidth="2" />
+              <line x1={x(selTarget)} y1={padT} x2={x(selTarget)} y2={padT + ch} stroke="var(--text)" strokeWidth="0.75" strokeDasharray="3,3" opacity="0.45" />
+              <circle cx={x(dispPt.p)} cy={y(dispPace)} r="6" fill="var(--compass)" stroke="var(--text)" strokeWidth="2" />
             </g>
           </svg>
 
@@ -19102,6 +19169,24 @@
               className="flex-1" style={{ accentColor: 'var(--compass)' }} />
             <span className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>{xHi}W</span>
           </div>
+
+          {/* Légende zones de course : plage de W + allure médiane de tes km */}
+          {races.length > 0 && (
+            <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+              {races.map((r, i) => (
+                <div key={i} className="font-mono text-[10px] flex items-center gap-1.5">
+                  <span style={{ width: 9, height: 9, borderRadius: 2, background: r.color, display: 'inline-block', flexShrink: 0 }} />
+                  <span style={{ color: 'var(--text-dim)' }}>{r.label}</span>
+                  <span style={{ color: 'var(--text-faint)' }}>{Math.round(r.wLo)}–{Math.round(r.wHi)}W</span>
+                  {r.beyond
+                    ? <span style={{ color: 'var(--text-faint)' }}>→ au-delà de tes km</span>
+                    : r.below
+                      ? <span style={{ color: 'var(--text-faint)' }}>→ en deçà de tes km</span>
+                      : <span style={{ color: 'var(--text)' }}>→ {Math.abs(r.paceFast - r.paceSlow) < 2 ? fmtPace(r.paceFast) : `${fmtPace(r.paceFast)}–${fmtPace(r.paceSlow)}`}/km</span>}
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Tableau dépliable : médiane par tranche + séance d'exemple */}
           <button onClick={() => setShowTable(s => !s)} className="mt-3 font-mono text-[10px] tracking-widest flex items-center gap-1" style={{ color: 'var(--text-faint)' }}>
@@ -19129,7 +19214,7 @@
             </div>
           )}
           <div className="text-[10px] mt-2 leading-relaxed" style={{ color: 'var(--text-faint)' }}>
-            Chaque point = un <span style={{ color: 'var(--text-dim)' }}>vrai kilomètre</span> de tes séances (puissance réelle → allure réelle de ce km), les récents plus visibles. La ligne relie la <span style={{ color: 'var(--text-dim)' }}>médiane de tes km par tranche de 10 W</span> — elle passe donc par tes données, sans extrapoler. Survole (ou glisse) pour lire le km le plus proche et sa séance. Mise à jour à chaque import.
+            Chaque point = un <span style={{ color: 'var(--text-dim)' }}>vrai kilomètre</span> de tes séances (puissance réelle → allure réelle de ce km), les récents plus visibles. La ligne relie la <span style={{ color: 'var(--text-dim)' }}>médiane de tes km par tranche de 10 W</span> — elle passe donc par tes données, sans extrapoler. Survole (ou glisse) pour lire le <span style={{ color: 'var(--text-dim)' }}>dernier km couru</span> à cette puissance (ta forme du moment) + ton allure typique (médiane). Les <span style={{ color: 'var(--text-dim)' }}>zones colorées</span> = la puissance de course par distance (en % de ta CP) ; l'allure indiquée est la médiane de tes km tombés dans la zone. Mise à jour à chaque import.
           </div>
         </Card>
       );
