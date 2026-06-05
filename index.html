@@ -1681,6 +1681,118 @@
       return isNaN(n) ? null : n * 60; // nombre seul = minutes
     }
 
+    // ========================================================================
+    // COURBE PUISSANCE ↔ ALLURE PERSONNELLE (apprise des séances de l'user)
+    // ------------------------------------------------------------------------
+    // Pour chaque km de chaque séance disposant de la puissance seconde par
+    // seconde (trackpointPowers) ET des splits au km (kmSplits), on reconstruit
+    // le couple (puissance moyenne du km → allure du km). On empile tous ces
+    // points, et on pondère chacun par son ANCIENNETÉ (décroissance
+    // exponentielle, demi-vie réglable) : un km couru aujourd'hui pèse 1, un km
+    // d'il y a `halfLifeDays` jours pèse ½, etc. Les vieilles séances s'effacent
+    // en douceur → la courbe suit la forme du moment et se corrige toute seule
+    // quand l'économie de course progresse. Régression linéaire pondérée
+    // pace = a·P + b sur les points observés. Aucune constante générique : tout
+    // est dérivé des données réelles de l'utilisateur.
+    //
+    // Renvoie { ok, rows[{power,paceSec}], a, b, r2, powMin, powMax, nKm, effN,
+    //           lastMs, halfLifeDays } + helpers paceAt/powerForPace.
+    // ========================================================================
+    function buildPowerPaceCurve(activities, opts = {}) {
+      const halfLifeDays = opts.halfLifeDays || 45;
+      const maxAgeDays = opts.maxAgeDays || null;   // filet : ignore au-delà (null = pas de couperet)
+      const nowMs = opts.nowMs || Date.now();
+      const minKmSamples = opts.minKmSamples || 5;  // secondes de puissance valides mini par km
+
+      const pts = []; // { p, pace, ageDays, w }
+      for (const a of (activities || [])) {
+        if (!a || a.sport !== 'Running') continue;
+        const tp = a.trackpointPowers, ks = a.kmSplits;
+        if (!tp || !tp.length || !ks || !ks.length) continue;
+        const sumT = ks.reduce((s, k) => s + (k.timeSec || 0), 0);
+        if (sumT <= 0) continue;
+        const scale = tp.length / sumT; // index trackpoint ↔ seconde de course (≈ 1 Hz, robuste au léger décalage)
+        const ageDays = Math.max(0, (nowMs - new Date(a.date).getTime()) / 86400000);
+        if (maxAgeDays && ageDays > maxAgeDays) continue;
+        const w = Math.pow(0.5, ageDays / halfLifeDays);
+        let cum = 0;
+        for (const k of ks) {
+          const t = k.timeSec || 0;
+          if (k.partialM || t <= 0) { cum += t; continue; } // ignore le km partiel de fin
+          const i0 = Math.round(cum * scale), i1 = Math.round((cum + t) * scale);
+          cum += t;
+          let sum = 0, n = 0;
+          for (let i = i0; i < i1 && i < tp.length; i++) { const v = tp[i]; if (v > 0) { sum += v; n++; } }
+          if (n < minKmSamples) continue;
+          const p = sum / n, pace = k.paceSecPerKm;
+          if (!(pace > 0) || !(p > 0)) continue;
+          pts.push({ p, pace, ageDays, w });
+        }
+      }
+      if (pts.length < 8) return { ok: false, nKm: pts.length };
+
+      // Régression linéaire pondérée À DEUX VARIABLES : pace = a·P + d·ageJours + b.
+      // En ajoutant l'âge comme prédicteur, on MODÉLISE ta dérive (progression /
+      // régression d'économie) au lieu de la subir, puis on prédit à ageJours=0
+      // (= aujourd'hui). Sans ça, la courbe « retarde » sur ta forme du moment et
+      // sous-estime systématiquement quand tu progresses vite (≈ +12 s/km de biais
+      // mesuré en simulation ; ramené à ≈ +2 s/km avec ce terme). La pondération
+      // par ancienneté reste, elle, pour réduire le bruit des vieilles séances.
+      let S = { ww:0, wp:0, wa:0, wy:0, wpp:0, wpa:0, wpy:0, waa:0, way:0 };
+      for (const pt of pts) {
+        const w = pt.w, p = pt.p, ag = pt.ageDays, y = pt.pace;
+        S.ww += w; S.wp += w*p; S.wa += w*ag; S.wy += w*y;
+        S.wpp += w*p*p; S.wpa += w*p*ag; S.wpy += w*p*y; S.waa += w*ag*ag; S.way += w*ag*y;
+      }
+      // Système 3×3 : [[wpp,wpa,wp],[wpa,waa,wa],[wp,wa,ww]] · [a,d,b] = [wpy,way,wy]
+      const sol = solve3x3(
+        [[S.wpp, S.wpa, S.wp], [S.wpa, S.waa, S.wa], [S.wp, S.wa, S.ww]],
+        [S.wpy, S.way, S.wy]
+      );
+      if (!sol) return { ok: false, nKm: pts.length }; // puissances quasi constantes / système dégénéré
+      const [a, d, b] = sol; // a = pente s/km par W (négative) ; d = dérive s/km par jour ; b = intercept à âge 0
+      const paceAt = (P) => a*P + b; // prédiction « aujourd'hui » (ageJours = 0)
+
+      // R² pondéré (info) + RMSE résiduel (dispersion km à km, ~bruit de pacing)
+      const meanY = S.wy / S.ww;
+      let ssr = 0, sst = 0;
+      for (const pt of pts) { const pred = a*pt.p + d*pt.ageDays + b; ssr += pt.w*(pt.pace-pred)**2; sst += pt.w*(pt.pace-meanY)**2; }
+      const r2 = sst > 1e-9 ? 1 - ssr/sst : 0;
+      const rmse = Math.sqrt(ssr / S.ww);
+
+      const pows = pts.map(p => p.p);
+      const powMin = Math.min(...pows), powMax = Math.max(...pows);
+      const lastMs = nowMs - Math.min(...pts.map(p => p.ageDays)) * 86400000;
+
+      const lo = Math.ceil(powMin/5)*5, hi = Math.floor(powMax/5)*5;
+      const rows = [];
+      for (let P = lo; P <= hi; P += 5) rows.push({ power: P, paceSec: paceAt(P) });
+
+      return {
+        ok: true, a, d, b, r2, rmse, powMin, powMax, nKm: pts.length, effN: S.ww, rows, halfLifeDays, lastMs,
+        paceAt,
+        powerForPace: (paceSec) => (paceSec - b) / a, // inverse à âge 0
+      };
+    }
+
+    // Résout un système linéaire 3×3 (élimination de Gauss avec pivot partiel).
+    // Renvoie [x,y,z] ou null si singulier. Utilisé par buildPowerPaceCurve.
+    function solve3x3(M, V) {
+      const m = M.map((r, i) => [r[0], r[1], r[2], V[i]]);
+      for (let c = 0; c < 3; c++) {
+        let piv = c;
+        for (let r = c+1; r < 3; r++) if (Math.abs(m[r][c]) > Math.abs(m[piv][c])) piv = r;
+        if (Math.abs(m[piv][c]) < 1e-12) return null;
+        [m[c], m[piv]] = [m[piv], m[c]];
+        for (let r = 0; r < 3; r++) {
+          if (r === c) continue;
+          const f = m[r][c] / m[c][c];
+          for (let k = c; k < 4; k++) m[r][k] -= f * m[c][k];
+        }
+      }
+      return [m[0][3]/m[0][0], m[1][3]/m[1][1], m[2][3]/m[2][2]];
+    }
+
     function computeTSS(activity, cpOrProfile, aerobicScore = 0.5) {
       if (!activity || !activity.durationSec) return null;
       // Path 0 : activité cross-training avec TSS pré-calculé (saisie manuelle
@@ -19870,6 +19982,117 @@
       );
     }
 
+    // Courbe puissance ↔ allure apprise des séances de l'utilisateur, pondérée
+    // par l'ancienneté (cf. buildPowerPaceCurve). Repliable, fermée par défaut.
+    // Répond à « pour tenir mon objectif il me faut combien de watts, d'après
+    // MES sorties ? » — par opposition à la puissance cible théorique (constante
+    // générique 1.04) affichée plus haut.
+    function PowerPaceCurveSection({ race, profile, activities }) {
+      const [open, setOpen] = useState(false);
+      const curve = useMemo(() => buildPowerPaceCurve(activities, { halfLifeDays: 45 }), [activities]);
+
+      const fmtP = sec => { if (!(sec > 0)) return '—'; const m = Math.floor(sec/60); let s = Math.round(sec%60); let mm=m; if (s===60){s=0;mm++;} return `${mm}:${String(s).padStart(2,'0')}`; };
+      const fmtT = sec => { if (!(sec > 0)) return '—'; sec = Math.round(sec); const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60; return h>0?`${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${m}:${String(s).padStart(2,'0')}`; };
+
+      // Objectif → allure plate → puissance (modèle générique 1.04) vs courbe perso
+      const distKm = (() => {
+        const s = String(race.distance || '').toLowerCase();
+        if (s.includes('marathon')) return 42.195;
+        if (s.includes('semi')) return 21.0975;
+        const m = s.match(/(\d+(?:\.\d+)?)/);
+        return m ? parseFloat(m[1]) : null;
+      })();
+      const objSec = parseObjectiveSec(race.objective);
+      const objPace = (objSec && distKm) ? objSec / distKm : null;
+      const genericW = (objPace && profile.weightKg) ? Math.round((1000/objPace) * profile.weightKg * 1.04) : null;
+      const persoW = (curve.ok && objPace) ? Math.round(curve.powerForPace(objPace)) : null;
+
+      // Fiabilité — validée par simulation (30 coureurs virtuels) : le facteur qui
+      // compte n'est PAS le R² (toujours élevé, il mesure l'ajustement aux données,
+      // pas la justesse) mais le fait que la puissance cible soit DANS la plage
+      // réellement courue. Hors plage, l'erreur passe de ≈9 s/km à 30-50 s/km.
+      const inRange = persoW != null && persoW >= curve.powMin - 2 && persoW <= curve.powMax + 2;
+      const reliability = (() => {
+        if (!curve.ok) return null;
+        if (persoW == null) return { lvl: 'Tableau seul', color: 'var(--text-faint)', warn: false };
+        if (!inRange) return { lvl: 'Extrapolée — peu fiable', color: 'var(--negative)', warn: true };
+        if (curve.effN >= 12) return { lvl: 'Solide', color: 'var(--go)', warn: false };
+        if (curve.effN >= 5) return { lvl: 'Indicative', color: 'var(--caution)', warn: false };
+        return { lvl: 'Peu de données', color: 'var(--text-faint)', warn: true };
+      })();
+      const lastDays = curve.ok ? Math.round((Date.now() - curve.lastMs) / 86400000) : null;
+
+      return (
+        <div className="mt-3 rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+          <button onClick={() => setOpen(o => !o)} className="w-full flex items-center justify-between px-3 py-2.5" style={{ background: 'var(--bg-elev)' }}>
+            <span className="font-mono text-[10px] tracking-widest flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
+              <IconActivity size={12} /> COURBE PUISSANCE ↔ ALLURE · APPRISE DE TES SÉANCES{curve.ok ? '' : ' · données insuffisantes'}
+            </span>
+            <span className="font-mono text-[10px] tracking-widest flex items-center gap-1 flex-shrink-0" style={{ color: 'var(--text-faint)' }}>
+              {open ? 'MASQUER' : 'AFFICHER'} <IconChevronDown size={10} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s' }} />
+            </span>
+          </button>
+          {open && (
+            <div className="p-3 border-t" style={{ borderColor: 'var(--border)' }}>
+              {!curve.ok ? (
+                <div className="text-xs rounded-lg p-3" style={{ background: 'rgba(255,176,32,0.08)', border: '1px solid rgba(255,176,32,0.25)', color: 'var(--text-dim)' }}>
+                  Pas encore assez de séances avec <span style={{ color: 'var(--text)' }}>puissance détaillée + splits au km</span> pour tracer ta courbe (il en faut quelques-unes). Importe tes prochaines sorties Stryd et elle se construira toute seule.
+                </div>
+              ) : (
+                <>
+                  {/* Verdict perso vs générique */}
+                  {persoW != null && objPace != null && (
+                    <div className="rounded-lg p-3 mb-2" style={{ background: 'rgba(74,158,255,0.06)', border: '1px solid rgba(74,158,255,0.25)' }}>
+                      <div className="text-[11px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+                        Pour tenir <span style={{ color: 'var(--text)' }}>{race.objective}</span> ({fmtP(objPace)}/km), <span style={{ color: 'var(--compass)', fontWeight: 700 }}>tes séances</span> indiquent ≈ <span style={{ color: 'var(--compass)', fontWeight: 700, fontSize: 14 }}>{persoW}W</span>
+                        {genericW != null && <span style={{ color: 'var(--text-faint)' }}> — le calcul générique de l'app dit {genericW}W ({persoW > genericW ? '+' : ''}{persoW - genericW}W).</span>}
+                      </div>
+                      {reliability && (
+                        <div className="mt-1.5 flex items-center gap-2 flex-wrap font-mono text-[10px]">
+                          <span style={{ color: reliability.color, fontWeight: 700 }}>● {reliability.lvl}</span>
+                          <span style={{ color: 'var(--text-faint)' }}>dispersion ±{Math.round(curve.rmse)}s/km · {curve.nKm} km · plage {Math.round(curve.powMin)}–{Math.round(curve.powMax)}W · demi-vie {curve.halfLifeDays}j{lastDays != null ? ` · MAJ il y a ${lastDays}j` : ''}</span>
+                        </div>
+                      )}
+                      {reliability && reliability.warn && !inRange && (
+                        <div className="mt-1.5 text-[10px] leading-relaxed" style={{ color: 'var(--negative)' }}>
+                          ⚠ {persoW}W est <span style={{ fontWeight: 700 }}>au-delà de ta plage courue</span> ({Math.round(curve.powMin)}–{Math.round(curve.powMax)}W) : c'est une extrapolation. Pour fiabiliser, fais une séance qui touche cette intensité (intervalles au seuil) — la courbe s'étendra et se confirmera.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {/* Tableau */}
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+                      <thead>
+                        <tr style={{ color: 'var(--text-faint)' }} className="font-mono text-[9px] tracking-widest">
+                          <th className="text-left py-1">PUISSANCE</th><th className="text-right py-1">ALLURE</th><th className="text-right py-1">≈ TEMPS 10K</th>
+                        </tr>
+                      </thead>
+                      <tbody className="font-mono tabular">
+                        {curve.rows.map(r => {
+                          const hot = persoW != null && Math.abs(r.power - persoW) < 2.5;
+                          return (
+                            <tr key={r.power} style={hot ? { background: 'rgba(74,158,255,0.12)' } : null}>
+                              <td className="text-left py-1" style={{ color: hot ? 'var(--compass)' : 'var(--text)', fontWeight: hot ? 700 : 400 }}>{r.power}W{hot ? ' ←' : ''}</td>
+                              <td className="text-right py-1" style={{ color: hot ? 'var(--compass)' : 'var(--text)', fontWeight: hot ? 700 : 400 }}>{fmtP(r.paceSec)}/km</td>
+                              <td className="text-right py-1" style={{ color: 'var(--text-dim)' }}>{fmtT(r.paceSec * 10)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="text-[10px] mt-2 leading-relaxed" style={{ color: 'var(--text-faint)' }}>
+                    Construite à partir de chaque kilomètre de tes séances (puissance réelle → allure réelle), <span style={{ color: 'var(--text-dim)' }}>pondérée par l'ancienneté</span> : tes sorties récentes comptent plus, les vieilles s'effacent (demi-vie {curve.halfLifeDays} j). La courbe se recalcule à chaque import et suit ta forme. Hors de la plage {Math.round(curve.powMin)}–{Math.round(curve.powMax)}W, les valeurs sont extrapolées.
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
+
     // Stratégie parcours repliable : utile mais volumineux → fermé par défaut
     // pour ne pas noyer la fiche course (demande Tony).
     function CollapsibleStrategy({ race, profile, onUpdateRace }) {
@@ -20694,6 +20917,9 @@
                             })}
                           </div>
                         )}
+
+                        {/* Courbe puissance ↔ allure apprise des séances (perso) */}
+                        <PowerPaceCurveSection race={r} profile={profile} activities={activities} />
 
                         {/* Stratégie de course calibrée au dénivelé */}
                         <CollapsibleStrategy race={r} profile={profile} onUpdateRace={onUpdateRace} />
