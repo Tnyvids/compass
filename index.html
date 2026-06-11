@@ -19087,6 +19087,9 @@
       }
 
       const linePts = bins.map(b => `${x(b.w).toFixed(1)},${y(b.pace).toFixed(1)}`).join(' ');
+      // Allure lue sur la ligne médiane à la puissance survolée — sert à poser le
+      // marqueur pile sous le curseur (cf. bloc marqueur plus bas).
+      const selPace = lineAt(selTarget);
 
       return (
         <Card className="p-6">
@@ -19144,7 +19147,10 @@
             {cp && cp >= xLo && cp <= xHi && (
               <g>
                 <line x1={x(cp)} y1={padT} x2={x(cp)} y2={padT + ch} stroke="var(--accent)" strokeWidth="1" strokeDasharray="4,3" opacity="0.6" />
-                <text x={x(cp) + 3} y={padT + 9} fontFamily="JetBrains Mono" fontSize="8" fill="var(--accent)">CP {cp}W</text>
+                {/* Label en bas de la ligne : la zone 10K démarre pile sur CP,
+                    donc on l'éloigne des labels de zones (en haut) pour ne pas
+                    se superposer au « 10K ». */}
+                <text x={x(cp) + 3} y={padT + ch - 4} fontFamily="JetBrains Mono" fontSize="8" fill="var(--accent)">CP {cp}W</text>
               </g>
             )}
             {/* nuage : chaque vrai km (km de la fenêtre sélectionnée mis en avant) */}
@@ -19154,10 +19160,14 @@
             })}
             {/* ligne médiane par tranche de 10 W (passe par tes points) */}
             {bins.length >= 2 && <polyline points={linePts} fill="none" stroke="var(--compass)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" opacity="0.9" />}
-            {/* marqueur : dernier km couru à la puissance visée */}
+            {/* Marqueur : il SUIT le curseur. Le gros point se pose sur la ligne
+                médiane à la puissance visée (toujours sous le trait vertical) au
+                lieu de sauter sur le « dernier km » du voisinage, qui pouvait être
+                à ±12 W (souvent à gauche) → effet « sélection random ».
+                Le km réel mis en avant reste visible via le surlignage du nuage. */}
             <g>
               <line x1={x(selTarget)} y1={padT} x2={x(selTarget)} y2={padT + ch} stroke="var(--text)" strokeWidth="0.75" strokeDasharray="3,3" opacity="0.45" />
-              <circle cx={x(dispPt.p)} cy={y(dispPace)} r="6" fill="var(--compass)" stroke="var(--text)" strokeWidth="2" />
+              {selPace != null && <circle cx={x(selTarget)} cy={y(selPace)} r="6" fill="var(--compass)" stroke="var(--text)" strokeWidth="2" />}
             </g>
           </svg>
 
