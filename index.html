@@ -84,7 +84,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,400;9..144,500;9..144,600;9..144,700;9..144,800&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
@@ -18959,7 +18959,8 @@
     // ========================================================================
     function PowerPaceCurveCard({ activities, profile }) {
       const curve = useMemo(() => buildPowerPaceCurve(activities, { halfLifeDays: 45 }), [activities]);
-      const [selW, setSelW] = useState(null);     // watts sélectionnés (curseur/survol)
+      const [selW, setSelW] = useState(null);     // watts sélectionnés (slider)
+      const [hoverIdx, setHoverIdx] = useState(null); // index du km survolé (1 seul point)
       const [showTable, setShowTable] = useState(false);
       const svgRef = useRef(null);
       const cp = profile.cp;
@@ -19055,11 +19056,17 @@
         const dt = Date.parse(pt.date) - Date.parse(lastPt.date);
         if (dt > 0 || (dt === 0 && Math.abs(pt.p - selTarget) < Math.abs(lastPt.p - selTarget))) lastPt = pt;
       }
-      // Fallback : km le plus proche si la fenêtre est vide (trou de données / hors plage)
-      let nearest = pts[0];
-      for (const pt of pts) if (Math.abs(pt.p - selTarget) < Math.abs(nearest.p - selTarget)) nearest = pt;
+      // Km le plus proche en puissance (mode slider / valeur par défaut).
+      let nearestIdx = 0;
+      for (let i = 1; i < pts.length; i++) {
+        if (Math.abs(pts[i].p - selTarget) < Math.abs(pts[nearestIdx].p - selTarget)) nearestIdx = i;
+      }
+      const nearest = pts[nearestIdx];
       const nearP = Math.round(nearest.p);
-      const dispPt = lastPt || nearest;                 // point mis en avant
+      // UN SEUL point sélectionné : celui survolé (proximité 2D) sinon le plus
+      // proche en puissance. Plus de surbrillance de toute une tranche.
+      const selIdx = hoverIdx != null && hoverIdx < pts.length ? hoverIdx : nearestIdx;
+      const dispPt = pts[selIdx];
       const dispPace = dispPt.pace;
       const dispW = Math.round(dispPt.p);
 
@@ -19076,20 +19083,28 @@
       const xTicks = []; for (let w = Math.ceil(xLo/20)*20; w <= xHi; w += 20) xTicks.push(w);
       const yTicks = []; for (let i = 0; i <= 4; i++) yTicks.push(pFast + (pSlow - pFast) * i / 4);
 
-      // Interaction : survol / glissement → watts cible (on repasse en coordonnées
-      // viewBox AVANT de retirer la marge gauche, sinon le trait est décalé).
+      // Interaction : survol / glissement → on accroche le km le plus proche du
+      // curseur en 2D (puissance ET allure), donc UN seul point, exactement celui
+      // qu'on vise. On repasse en coordonnées viewBox via getBoundingClientRect.
       function handleMove(e) {
         if (!svgRef.current) return;
         const rect = svgRef.current.getBoundingClientRect();
         const vbX = ((getPointerX(e) - rect.left) / rect.width) * W;
-        const ratio = clmp((vbX - padL) / cw, 0, 1);
-        setSelW(Math.round(xLo + ratio * (xHi - xLo)));
+        const py = (e.touches && e.touches.length) ? e.touches[0].clientY
+                 : (e.changedTouches && e.changedTouches.length) ? e.changedTouches[0].clientY
+                 : e.clientY;
+        const vbY = ((py - rect.top) / rect.height) * H;
+        let bi = 0, bd = Infinity;
+        for (let i = 0; i < pts.length; i++) {
+          const dx = x(pts[i].p) - vbX, dy = y(pts[i].pace) - vbY;
+          const d = dx*dx + dy*dy;
+          if (d < bd) { bd = d; bi = i; }
+        }
+        setHoverIdx(bi);
+        setSelW(Math.round(pts[bi].p));
       }
 
       const linePts = bins.map(b => `${x(b.w).toFixed(1)},${y(b.pace).toFixed(1)}`).join(' ');
-      // Allure lue sur la ligne médiane à la puissance survolée — sert à poser le
-      // marqueur pile sous le curseur (cf. bloc marqueur plus bas).
-      const selPace = lineAt(selTarget);
 
       return (
         <Card className="p-6">
@@ -19111,15 +19126,14 @@
             {cp && <div className="font-mono text-[11px]" style={{ color: 'var(--text-dim)' }}>{Math.round(dispW/cp*100)} % de ta CP</div>}
           </div>
           <div className="font-mono text-[11px] mb-2" style={{ color: 'var(--text-dim)' }}>
-            {hasWin
-              ? <>dernier km à ≈{selTarget}W : <span style={{ color: 'var(--text)' }}>{fmtD(lastPt.date)}</span>{lastPt.file ? <span style={{ color: 'var(--text-faint)' }}> · {lastPt.file} km{lastPt.km}</span> : ''}{win.length > 1 ? <span style={{ color: 'var(--text-faint)' }}> · typiquement {fmtPace(medPace)} (de {fmtPace(fastPt.pace)} à {fmtPace(slowPt.pace)}, {win.length} km)</span> : ''}</>
-              : <>aucun km à ~{selTarget}W · le plus proche : {nearP}W <span style={{ color: 'var(--text)' }}>{fmtPace(nearest.pace)}/km</span> ({fmtD(nearest.date)}{nearest.file ? ' · ' + nearest.file : ''})</>}
+            ce km : <span style={{ color: 'var(--text)' }}>{fmtD(dispPt.date)}</span>{dispPt.file ? <span style={{ color: 'var(--text-faint)' }}> · {dispPt.file} km{dispPt.km}</span> : ''}
+            {hasWin && win.length > 1 ? <span style={{ color: 'var(--text-faint)' }}> · typiquement {fmtPace(medPace)} à ≈{selTarget}W (de {fmtPace(fastPt.pace)} à {fmtPace(slowPt.pace)}, {win.length} km)</span> : ''}
           </div>
 
           {/* Graphe : nuage de tes km + ligne médiane par tranche */}
           <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full cursor-crosshair" preserveAspectRatio="xMidYMid meet"
             role="img" aria-label="Nuage puissance-allure de tes kilomètres et médiane par tranche de puissance"
-            onMouseMove={handleMove} onMouseLeave={() => setSelW(null)}
+            onMouseMove={handleMove} onMouseLeave={() => { setSelW(null); setHoverIdx(null); }}
             onTouchStart={handleMove} onTouchMove={handleMove}
             style={{ touchAction: 'pan-y' }}>
             {yTicks.map((pc, i) => (
@@ -19153,21 +19167,17 @@
                 <text x={x(cp) + 3} y={padT + ch - 4} fontFamily="JetBrains Mono" fontSize="8" fill="var(--accent)">CP {cp}W</text>
               </g>
             )}
-            {/* nuage : chaque vrai km (km de la fenêtre sélectionnée mis en avant) */}
-            {pts.map((pt, i) => {
-              const inWin = hasWin && Math.abs(pt.p - selTarget) <= winR;
-              return <circle key={i} cx={x(pt.p)} cy={y(pt.pace)} r={inWin ? 3.3 : 2.6} fill="var(--compass)" opacity={inWin ? 0.95 : 0.16 + 0.5 * pt.w} stroke={inWin ? 'var(--bg)' : 'none'} strokeWidth={inWin ? 1 : 0} />;
-            })}
+            {/* nuage : chaque vrai km (récence = opacité). Le seul point mis en
+                avant est le point sélectionné, via le gros marqueur plus bas. */}
+            {pts.map((pt, i) => (
+              <circle key={i} cx={x(pt.p)} cy={y(pt.pace)} r="2.6" fill="var(--compass)" opacity={i === selIdx ? 0 : 0.16 + 0.5 * pt.w} />
+            ))}
             {/* ligne médiane par tranche de 10 W (passe par tes points) */}
             {bins.length >= 2 && <polyline points={linePts} fill="none" stroke="var(--compass)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" opacity="0.9" />}
-            {/* Marqueur : il SUIT le curseur. Le gros point se pose sur la ligne
-                médiane à la puissance visée (toujours sous le trait vertical) au
-                lieu de sauter sur le « dernier km » du voisinage, qui pouvait être
-                à ±12 W (souvent à gauche) → effet « sélection random ».
-                Le km réel mis en avant reste visible via le surlignage du nuage. */}
+            {/* Marqueur : LE point sélectionné (un seul), celui visé au curseur. */}
             <g>
-              <line x1={x(selTarget)} y1={padT} x2={x(selTarget)} y2={padT + ch} stroke="var(--text)" strokeWidth="0.75" strokeDasharray="3,3" opacity="0.45" />
-              {selPace != null && <circle cx={x(selTarget)} cy={y(selPace)} r="6" fill="var(--compass)" stroke="var(--text)" strokeWidth="2" />}
+              <line x1={x(dispPt.p)} y1={padT} x2={x(dispPt.p)} y2={padT + ch} stroke="var(--text)" strokeWidth="0.75" strokeDasharray="3,3" opacity="0.45" />
+              <circle cx={x(dispPt.p)} cy={y(dispPt.pace)} r="6" fill="var(--compass)" stroke="var(--text)" strokeWidth="2" />
             </g>
           </svg>
 
@@ -19175,7 +19185,7 @@
           <div className="flex items-center gap-3 mt-1">
             <span className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>{xLo}W</span>
             <input type="range" min={xLo} max={xHi} step="1" value={selTarget}
-              onChange={e => setSelW(Number(e.target.value))}
+              onChange={e => { setSelW(Number(e.target.value)); setHoverIdx(null); }}
               className="flex-1" style={{ accentColor: 'var(--compass)' }} />
             <span className="font-mono text-[10px]" style={{ color: 'var(--text-faint)' }}>{xHi}W</span>
           </div>
