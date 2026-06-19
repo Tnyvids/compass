@@ -2761,54 +2761,113 @@
 
     // ========================================================================
     // DÉTECTION TAPER RATÉ — repère un athlète qui pousse encore pendant la
-    // phase taper (2 dernières semaines avant course objectif).
+    // phase d'affûtage (taper) avant une course objectif.
     //
     // Test ultime niveau 3, archétype E : Élise ajoute +80 TSS pendant le taper,
     // arrive à la course avec TSB -1.4 (au lieu de l'idéal +5 à +15). Compass
     // ne flag pas → on ajoute cette détection.
     //
-    // Critères :
-    //  1. Une course objectif (priorité A) est planifiée dans ≤ 14 jours
-    //  2. TSS hebdo réalisé > 110 % du TSS planifié pour la semaine
-    //     OU TSB courant < 0 (négatif = encore fatigué, pas encore frais)
+    // V2 — la fenêtre d'analyse s'ADAPTE À LA DISTANCE et compare le TSS PRÉVU
+    // au TSS RÉALISÉ sur les vraies semaines d'affûtage du plan, au lieu d'une
+    // fenêtre glissante de 7 jours comparée à un repère « 50 % de la CTL ».
+    //   - Durée du taper = phase taper réelle du plan (getPhasePlan), sinon
+    //     taperWeeksTarget du profil de course : 1 sem (5K/10K), 2 (15K/semi),
+    //     3 (marathon). La fenêtre est calée sur les SEMAINES de plan (lundi→
+    //     course), pas sur « course − N jours » — sinon on ramasse la dernière
+    //     grosse séance d'avant-taper et on crie au loup à tort.
+    //   - On somme, sur les jours d'affûtage DÉJÀ ÉCOULÉS, le TSS prévu (séances
+    //     du plan via estimateSessionTSS) et le TSS réalisé (activités). Compa-
+    //     raison « à isopérimètre » : prévu-à-ce-jour vs réalisé-à-ce-jour.
+    //
+    // Critères de déclenchement :
+    //  1. Course objectif (priorité A) à venir, et on est ENTRÉ dans l'affûtage.
+    //  2. TSS réalisé > 120 % du TSS prévu d'affûtage (et au moins +25 TSS d'écart)
+    //     OU TSB courant < 0 dans la dernière semaine (≤ J-7).
     //
     // Retourne null si pas de course imminente ou pas de souci, sinon :
-    //  { daysToRace, tssRealized, tssPlanned, tssRatio, tsb, reason }
-    function detectTaperRisk(activities, planOverrides, races, fitness, refDate = new Date()) {
+    //  { daysToRace, tssRealized, tssPlanned, tssRatio, tsb, reason, taperWeeks, taperDaysElapsed }
+    function detectTaperRisk(activities, planOverrides, races, fitness, refDate = new Date(), profile = null) {
       if (!Array.isArray(races) || races.length === 0) return null;
       const refMs = refDate.getTime();
       const dayMs = 86400000;
-      // Course A imminente ?
+      // Course A à venir ? Horizon large (≤ 28 j) pour couvrir le taper marathon
+      // (3 sem) ; le vrai filtrage « suis-je dans l'affûtage ? » se fait plus bas.
       const upcoming = races.filter(r => {
         if (!r.date) return false;
         const raceMs = new Date(r.date).getTime();
         if (!Number.isFinite(raceMs)) return false;
         const days = (raceMs - refMs) / dayMs;
-        return days > 0 && days <= 14 && (r.priority || 'A') === 'A';
+        return days > 0 && days <= 28 && (r.priority || 'A') === 'A';
       });
       if (upcoming.length === 0) return null;
       const race = upcoming.sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime())[0];
       const daysToRace = Math.round((new Date(race.date).getTime() - refMs) / dayMs);
-      // TSS réalisé sur les 7 derniers jours
-      const tssRealized = (activities || []).reduce((s, a) => {
-        const ago = (refMs - (a.startMs || 0)) / dayMs;
-        if (ago < 0 || ago >= 7) return s;
-        return s + (a.tss || 0);
-      }, 0);
-      // TSS planifié sur les 7 derniers jours (somme des plannedTss des séances)
-      // Approximation : on cherche la semaine du plan correspondant à aujourd'hui.
-      // Si pas trouvé, on tombe sur un TSS attendu en taper ≈ 50 % du CTL × 7.
-      let tssPlanned = 0;
-      if (planOverrides && fitness && fitness.ctl) {
-        // Taper standard : on s'attend à ~50 % du TSS normal hebdo.
-        tssPlanned = fitness.ctl * 7 * 0.50;
+
+      // --- Durée d'affûtage adaptée à la distance -------------------------------
+      // Profil de course → phase taper réelle du plan si on connaît sa longueur,
+      // sinon le taperWeeksTarget du profil (1/2/3 sem selon la distance).
+      let raceProfile = null;
+      try { raceProfile = getRaceProfile(race.distance); } catch (e) { raceProfile = null; }
+      let taperWeeks = (raceProfile && Number.isFinite(raceProfile.taperWeeksTarget))
+        ? raceProfile.taperWeeksTarget : 1;
+      if (profile && Number(profile.planTotalWeeks) > 0) {
+        try {
+          const pp = getPhasePlan(Number(profile.planTotalWeeks), raceProfile);
+          if (pp && Number.isFinite(pp.taper) && pp.taper > 0) taperWeeks = pp.taper;
+        } catch (e) { /* garde le fallback */ }
       }
-      if (tssPlanned < 50) tssPlanned = 50; // garde-fou
+      taperWeeks = Math.max(1, Math.min(3, taperWeeks));
+
+      // --- Fenêtre d'affûtage calée sur les semaines de plan (lundi → course) ---
+      const raceDay = new Date(race.date); raceDay.setHours(0, 0, 0, 0);
+      const raceWeekStart = getWeekStart(raceDay);
+      const taperStart = new Date(raceWeekStart);
+      taperStart.setDate(raceWeekStart.getDate() - (taperWeeks - 1) * 7); // pas-à-pas en jours locaux (DST-safe)
+      const today = new Date(refDate); today.setHours(0, 0, 0, 0);
+      // Pas encore entré dans l'affûtage → rien à signaler.
+      if (today.getTime() < taperStart.getTime()) return null;
+
+      // --- TSS prévu vs réalisé sur les jours d'affûtage déjà écoulés ------------
+      const ppt = (typeof buildPowerPaceTable === 'function') ? buildPowerPaceTable(activities || []) : [];
+      const cp = profile ? profile.cp : null;
+      const plannedDayTSS = (sess) => {
+        if (!sess || !sess.type || sess.type === 'rest' || sess.type === 'race') return 0;
+        const hasMin = Number.isFinite(sess.plannedMin) && sess.plannedMin > 0;
+        const hasKm = Number.isFinite(sess.plannedKm) && sess.plannedKm > 0;
+        const estDur = estimateSessionDuration(sess.detail, sess.type);
+        const dur = hasMin ? sess.plannedMin
+          : (estDur > 0 ? estDur
+          : (hasKm ? deriveDurationFromKm(sess.type, cp, profile && profile.weightKg, sess.plannedKm, ppt, profile) : 0));
+        return estimateSessionTSS(sess.type, cp, dur) || 0;
+      };
+
+      let tssPlanned = 0, tssRealized = 0, taperDaysElapsed = 0;
+      const cursor = new Date(taperStart);
+      while (cursor.getTime() <= today.getTime() && cursor.getTime() < raceDay.getTime()) {
+        // Prévu du jour (override OU template via getPlannedSession)
+        if (profile) {
+          const sess = getPlannedSession(profile, planOverrides, new Date(cursor));
+          tssPlanned += plannedDayTSS(sess);
+        }
+        // Réalisé du jour
+        const ds = cursor.getTime();
+        const de = ds + dayMs;
+        tssRealized += (activities || []).reduce((s, a) =>
+          (a.startMs >= ds && a.startMs < de) ? s + (a.tss || 0) : s, 0);
+        taperDaysElapsed++;
+        cursor.setDate(cursor.getDate() + 1); // jour local, jamais +86400000 ms
+      }
+
       const tssRatio = tssPlanned > 0 ? tssRealized / tssPlanned : null;
       const tsb = fitness ? fitness.tsb : null;
-      // Conditions de déclenchement
-      const tooMuchVolume = tssRatio != null && tssRatio > 1.10;
-      const notFreshEnough = tsb != null && tsb < 0 && daysToRace <= 7;
+      // Conditions de déclenchement. Volume : seulement si on a un prévu à comparer,
+      // ratio ≥ 1.20 ET au moins +25 TSS d'écart absolu (évite le bruit sur de
+      // petits volumes d'affûtage). Fraîcheur : TSB négatif dans la dernière semaine.
+      const tooMuchVolume = tssRatio != null && tssRatio >= 1.20 && (tssRealized - tssPlanned) >= 25;
+      // Fraîcheur : on ne flag qu'une fatigue NETTE (TSB < -5) dans la dernière
+      // semaine. Un léger négatif (ex. -2.5 à J-2) est normal en fin de taper et
+      // remonte avec les derniers jours de repos → pas d'alerte pour ça.
+      const notFreshEnough = tsb != null && tsb < -5 && daysToRace <= 7;
       if (!tooMuchVolume && !notFreshEnough) return null;
       let reason;
       if (tooMuchVolume && notFreshEnough) reason = 'both';
@@ -2816,6 +2875,8 @@
       else reason = 'fatigue';
       return {
         daysToRace,
+        taperWeeks,
+        taperDaysElapsed,
         tssRealized: Math.round(tssRealized),
         tssPlanned: Math.round(tssPlanned),
         tssRatio: tssRatio != null ? Math.round(tssRatio * 100) / 100 : null,
@@ -5297,8 +5358,8 @@
         [actsTss, fitnessSummary]
       );
       const taperAlert = useMemo(
-        () => detectTaperRisk(actsTss, planOverrides, races, fitnessSummary, new Date()),
-        [actsTss, planOverrides, races, fitnessSummary]
+        () => detectTaperRisk(actsTss, planOverrides, races, fitnessSummary, new Date(), profile),
+        [actsTss, planOverrides, races, fitnessSummary, profile]
       );
       const overAlert = useMemo(
         () => detectVolumeOverreach(actsTss, profile, new Date()),
@@ -5307,10 +5368,11 @@
 
       const renderTaperBanner = () => {
         const taperRisk = taperAlert;
+        const affut = taperRisk.taperWeeks > 1 ? `ton affûtage (${taperRisk.taperWeeks} sem)` : 'ta semaine d\'affûtage';
         const reasonText = {
-          volume: `Volume trop élevé : ${taperRisk.tssRealized} TSS faits cette semaine vs ~${taperRisk.tssPlanned} attendus en taper (ratio ${taperRisk.tssRatio}×).`,
+          volume: `Volume trop élevé : ${taperRisk.tssRealized} TSS réalisés sur ${affut} vs ${taperRisk.tssPlanned} prévus au plan (ratio ${taperRisk.tssRatio}×).`,
           fatigue: `Fraîcheur insuffisante : TSB ${taperRisk.tsb >= 0 ? '+' : ''}${taperRisk.tsb} à J-${taperRisk.daysToRace}, alors que l'idéal est +5 à +15 le jour de la course.`,
-          both: `Volume trop élevé (${taperRisk.tssRealized} TSS vs ${taperRisk.tssPlanned} attendus) ET TSB insuffisant (${taperRisk.tsb >= 0 ? '+' : ''}${taperRisk.tsb} à J-${taperRisk.daysToRace}).`,
+          both: `Volume trop élevé sur ${affut} (${taperRisk.tssRealized} TSS vs ${taperRisk.tssPlanned} prévus) ET TSB insuffisant (${taperRisk.tsb >= 0 ? '+' : ''}${taperRisk.tsb} à J-${taperRisk.daysToRace}).`,
         }[taperRisk.reason];
         return (
           <Card variant="highlighted" accent="caution" className="p-4 md:p-5 mb-3">
